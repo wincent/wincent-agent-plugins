@@ -25,6 +25,10 @@
       "source": "./jj"
     },
     {
+      "name": "pr",
+      "source": "./pr"
+    },
+    {
       "name": "shannon",
       "source": "./shannon"
     }

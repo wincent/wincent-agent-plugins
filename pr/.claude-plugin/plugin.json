@@ -1,0 +1,9 @@
+{
+  "name": "pr",
+  "version": "1.0.0",
+  "description": "GitHub pull request creation and review skills for Claude Code",
+  "author": {
+    "name": "Greg Hurrell",
+    "email": "greg@hurrell.net"
+  }
+}
