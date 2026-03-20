@@ -19,3 +19,4 @@ claude plugin install meme
 ## Plugins
 
 - [meme](./meme) — Generate meme images using popular templates via the imgflip API.
+- [session](./session) — Session management utilities (e.g. export to GitLab snippet).

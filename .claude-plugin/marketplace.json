@@ -11,6 +11,10 @@
     {
       "name": "meme",
       "source": "./meme"
+    },
+    {
+      "name": "session",
+      "source": "./session"
     }
   ]
 }

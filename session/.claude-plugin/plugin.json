@@ -1,0 +1,9 @@
+{
+  "name": "session",
+  "version": "1.0.0",
+  "description": "Session management utilities for Claude Code",
+  "author": {
+    "name": "Greg Hurrell",
+    "email": "greg@hurrell.net"
+  }
+}
