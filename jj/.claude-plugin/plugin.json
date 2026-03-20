@@ -1,0 +1,9 @@
+{
+  "name": "jj",
+  "version": "1.0.0",
+  "description": "Jujutsu version control skills for Claude Code",
+  "author": {
+    "name": "Greg Hurrell",
+    "email": "greg@hurrell.net"
+  }
+}

@@ -15,6 +15,14 @@
     {
       "name": "session",
       "source": "./session"
+    },
+    {
+      "name": "git",
+      "source": "./git"
+    },
+    {
+      "name": "jj",
+      "source": "./jj"
     }
   ]
 }
