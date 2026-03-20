@@ -13,6 +13,8 @@ claude plugin marketplace add wincent/wincent-claude-plugins
 Then install any plugin:
 
 ```
+claude plugin install git
+claude plugin install jj
 claude plugin install meme
 claude plugin install session
 ```
