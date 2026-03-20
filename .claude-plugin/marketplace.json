@@ -1,0 +1,15 @@
+{
+  "name": "wincent-claude-plugins",
+  "version": "1.0.0",
+  "description": "Claude plugins from Greg Hurrell",
+  "owner": {
+    "name": "Greg Hurrell",
+    "email": "greg@hurrell.net"
+  },
+  "plugins": [
+    {
+      "name": "meme",
+      "source": "./meme"
+    }
+  ]
+}
