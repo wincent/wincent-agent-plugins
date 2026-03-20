@@ -1,0 +1,9 @@
+{
+  "name": "meme",
+  "version": "1.0.0",
+  "description": "Generate meme images using popular templates via the imgflip API",
+  "author": {
+    "name": "Greg Hurrell",
+    "email": "greg@hurrell.net"
+  }
+}

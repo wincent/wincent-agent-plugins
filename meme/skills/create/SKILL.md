@@ -100,7 +100,7 @@ Match the user's request against this table (case-insensitive, fuzzy). The
 
 3. **Generate the meme**: Run the caption script:
    ```
-   ${CLAUDE_PLUGIN_ROOT}/create/scripts/caption.sh TEMPLATE_ID "text for box 0" "text for box 1" ...
+   ${CLAUDE_PLUGIN_ROOT}/skills/create/scripts/caption.sh TEMPLATE_ID "text for box 0" "text for box 1" ...
    ```
    Parse the JSON response. On success, extract `data.url` and `data.page_url`.
    On failure, show the `error_message` to the user.
