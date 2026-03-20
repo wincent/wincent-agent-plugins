@@ -23,6 +23,10 @@
     {
       "name": "jj",
       "source": "./jj"
+    },
+    {
+      "name": "shannon",
+      "source": "./shannon"
     }
   ]
 }

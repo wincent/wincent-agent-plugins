@@ -1,0 +1,9 @@
+{
+  "name": "shannon",
+  "version": "1.0.0",
+  "description": "Neovim integration via RPC for annotated code review, walkthroughs, and navigation",
+  "author": {
+    "name": "Greg Hurrell",
+    "email": "greg@hurrell.net"
+  }
+}

@@ -17,6 +17,7 @@ claude plugin install git
 claude plugin install jj
 claude plugin install meme
 claude plugin install session
+claude plugin install shannon
 ```
 
 ## Plugins
@@ -25,3 +26,4 @@ claude plugin install session
 - [jj](./jj): Jujutsu version control skills.
 - [meme](./meme): Generate meme images using popular templates via the imgflip API.
 - [session](./session): Claude session management utilities (e.g. export a Claude session to a GitLab snippet).
+- [shannon](./shannon): Neovim integration via RPC for annotated code review, walkthroughs, and navigation.
