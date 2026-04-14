@@ -1,5 +1,4 @@
 ---
-name: commit
 description: Create a commit in a Git repository
 ---
 
