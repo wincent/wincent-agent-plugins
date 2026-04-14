@@ -1,5 +1,4 @@
 ---
-name: version-control
 description: How to use `jj`, the Jujutsu version control system
 ---
 

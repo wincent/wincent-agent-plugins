@@ -1,5 +1,4 @@
 ---
-name: neovim
 description: Interact with Neovim via RPC to annotate code, navigate files, and do walkthroughs
 allowed-tools:
   - Bash

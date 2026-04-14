@@ -1,5 +1,4 @@
 ---
-name: create-gitlab-snippet
 description: Export the current session as a GitLab snippet. Use when the user asks to "create a snippet", "share session", "export to GitLab", or "/snippet". The user must run /export first to copy the session to the clipboard.
 allowed-tools: Bash(pbpaste:*), Bash(mktemp:*), Bash(${CLAUDE_SKILL_DIR}/scripts/create-gitlab-snippet.sh:*), Write
 ---
