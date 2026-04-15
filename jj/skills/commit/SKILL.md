@@ -6,13 +6,15 @@ description: Create a commit in a Jujutsu repository
 
 Your user may invoke this skill explicitly with a slash command like `/jj:commit`, or informally with a phrase like "commit this". If they use a loose instruction like "commit this" your first task is to determine whether you are working in a Git repository and should make a Git commit (using the `/git:commit` skill), or you are working in a Jujutsu repo and should create a Jujutsu commit (using this `/jj:commit skill)`.
 
+**IMPORTANT:** Always identify the repository root of the current working directory before making a commit. You must ensure that you are actually in a repo, and that the repo uses the specific version control system that you intend to use to create the commit.
+
 ## Creating Git commits
 
 The most common case will be creating a commit in a Git repository. Usually, you will include all changes in the working directory in the commit (that is, you should run `git diff` to see what the changes are, and/or `git diff --staged` to see what has already been staged). Generally, if your user wants you to commit only a subset of the changes in the working directory, they will instruct you to do so.
 
 ## Creating Jujutsu commits
 
-Less frequently, you will find yourself in a Jujutsu repository (which you can determine via the presence of a `.jj` directory in the repository root). Jujutsu does not have a concept of a staging area like Git, and running any `jj` command will cause a snapshot of the working directory (including untracked files) to be made; you should therefore interactively prompt your user to indicate which changed files should be included in the change. In the most common case, you can use `jj st` to see which files are in the current snapshot, and `jj show` to see the diff, then `jj split <file>...` to indicate which specific files to be included in the commit (passing your commit message using the `-m` option.
+Less frequently, you will find yourself in a Jujutsu repository (which you can determine via the presence of a `.jj` directory in the current working directory's repository root). Jujutsu does not have a concept of a staging area like Git, and running any `jj` command will cause a snapshot of the working directory (including untracked files) to be made; you should therefore interactively prompt your user to indicate which changed files should be included in the change. In the most common case, you can use `jj st` to see which files are in the current snapshot, and `jj show` to see the diff, then `jj split <file>...` to indicate which specific files to be included in the commit (passing your commit message using the `-m` option.
 
 In general, because of the lack of staging area, you should be careful with _any_ `jj` command that creates or modifies a change. For example, if you user asks you to squash some changes into the last commit using `jj squash`, you should prompt the user to indicate _which_ files' changes they want squashed (and invoke `jj squash <file>...` accordingly).
 

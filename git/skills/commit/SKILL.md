@@ -6,6 +6,8 @@ description: Create a commit in a Git repository
 
 Your user may invoke this skill explicitly with a slash command like `/git:commit`, or informally with a phrase like "commit this". If they use a loose instruction like "commit this" your first task is to determine whether you are working in a Git repository and should make a Git commit (using this `/git:commit` skill), or you are working in a Jujutsu repo and should create a Jujutsu commit (using the `/jj:commit` skill).
 
+**IMPORTANT:** Always identify the repository root of the current working directory before making a commit. You must ensure that you are actually in a repo, and that the repo uses the specific version control system that you intend to use to create the commit.
+
 ## Creating Git commits
 
 The most common case will be creating a commit in a Git repository. Usually, you will include all changes in the working directory in the commit (that is, you should run `git diff` to see what the changes are, and/or `git diff --staged` to see what has already been staged). Generally, if your user wants you to commit only a subset of the changes in the working directory, they will instruct you to do so.
