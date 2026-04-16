@@ -1,18 +1,20 @@
 # wincent-claude-plugins
 
-Claude plugins from Greg Hurrell.
+Agent[^agent] plugins from Greg Hurrell.
 
-## Setup
+[^agent]: Originally developed for [Claude](https://claude.com/product/claude-code) but usable with other agent(s) such as [Pi](https://pi.dev/) as well. For anything that can't directly consume the plug-ins as is, any agent worth its salt should be able to port them into a suitable format if you point it at this repo and ask it to convert things for you.
+
+## Claude setup
 
 Add the marketplace:
 
-```
+```bash
 claude plugin marketplace add wincent/wincent-claude-plugins
 ```
 
 Then install any plugin:
 
-```
+```bash
 claude plugin install git
 claude plugin install jj
 claude plugin install meme
@@ -23,7 +25,7 @@ claude plugin install shannon
 
 ## Pi compatibility
 
-The [`pi`](./pi) directory is a compatibility layer for use with the [Pi Coding Agent](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent). It contains symlinks that map each plugin skill to a globally unique name, avoiding collisions that arise because Pi uses a flat skill namespace (whereas Claude Code uses the plugin name as a namespace).
+The [`pi`](./pi) directory is a compatibility layer for use with [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent). It contains symlinks that map each plugin skill to a globally unique name, avoiding collisions that arise because Pi uses a flat skill namespace (whereas Claude Code uses the plugin name as a namespace).
 
 ## Plugins
 
