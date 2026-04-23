@@ -20,6 +20,31 @@ In general, because of the lack of staging area, you should be careful with _any
 
 For general information on Jujutsu, see the `/jj:version-control` skill.
 
+### Passing multi-line commit messages
+
+Most `jj` subcommands (`commit`, `split`, `squash` etc) accept `-m <MESSAGE>` but this is a single shell argument and passing multi-line content through it relies on fragile shell quoting. `jj commit` and `jj split` do **not** support `--stdin` or a `-F/--file` flag (only `jj describe` accepts `--stdin`). Use one of the following recipes instead:
+
+1. **Committing the entire snapshot** (no file filtering): use `jj describe --stdin` followed by `jj new`, which is equivalent to `jj commit`:
+
+   ```bash
+   printf '%s' "$MESSAGE" | jj describe --stdin && jj new
+   ```
+
+2. **Committing a subset of files, or any command that would open an editor** (`jj commit <files>`, `jj split <files>`, `jj squash --into <rev>` etc): write the message to a temp file and override `JJ_EDITOR` with `cp`, so that jj's "editor" just overwrites its scratch file with your prepared message:
+
+   ```bash
+   tmp=$(mktemp)
+   cat > "$tmp" <<'EOF'
+   feat: subject line
+
+   Body paragraph, wrapped to 72 columns.
+   EOF
+   JJ_EDITOR="cp $tmp" jj split path/to/file.txt
+   rm -f "$tmp"
+   ```
+
+   This works because jj invokes the editor as `$JJ_EDITOR <scratch-file>`, so `cp $tmp <scratch-file>` replaces the scratch file's contents with your message before jj reads it back.
+
 ## Common instructions
 
 1. Run the appropriate Git-specific or Jujutsu-specific commands to see what should be included in the commit.
