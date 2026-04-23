@@ -59,10 +59,12 @@ Summarize these for the user, grouped by version, with the breaking ones called 
 Enumerate locally installed items that could be affected. Use `ls`, `find`, or `grep` via `bash` as appropriate.
 
 **Extensions** (TypeScript modules):
+
 - `~/.pi/agent/extensions/*.ts`
 - `.pi/extensions/*.ts` in the current working directory (and ancestors up to repo root)
 
 **Skills** (`SKILL.md` files and root-level `.md` files):
+
 - `~/.pi/agent/skills/` (direct `.md` files and `*/SKILL.md`)
 - `~/.agents/skills/` (`*/SKILL.md` only)
 - `.pi/skills/` and `.agents/skills/` in `cwd` and ancestors
