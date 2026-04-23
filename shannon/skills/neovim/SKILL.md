@@ -23,10 +23,10 @@ There are two ways to obtain the Neovim server address:
 
    Extract the server address from this footer.
 
-2. **Auto-discovery** — if no Shannon prompt has been received yet, run the discovery script:
+2. **Auto-discovery** — if no Shannon prompt has been received yet, run the discovery script (path is relative to this skill's directory):
 
    ```bash
-   ${CLAUDE_SKILL_DIR}/scripts/shannon-find-nvim.sh
+   scripts/shannon-find-nvim.sh
    ```
 
    This finds the Neovim instance running in a sibling tmux pane and prints its server socket path. It exits non-zero if no Neovim is found.

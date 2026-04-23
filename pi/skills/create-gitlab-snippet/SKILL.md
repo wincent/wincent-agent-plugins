@@ -35,11 +35,12 @@ Write the summary to a temp file using `mktemp`.
 ## Step 4: Convert and upload (or save locally)
 
 Pipe the conversion output to the upload script, passing the summary file
-as the second argument to the conversion script:
+as the second argument to the conversion script. Both paths are relative to
+this skill's directory:
 
 ```bash
-"${SKILL_DIR}/scripts/jsonl-to-markdown.sh" "<session.jsonl>" "/path/to/summary" \
-  | "${SKILL_DIR}/scripts/create-gitlab-snippet.sh" - "TITLE"
+scripts/jsonl-to-markdown.sh "<session.jsonl>" "/path/to/summary" \
+  | scripts/create-gitlab-snippet.sh - "TITLE"
 ```
 
 The script automatically detects whether `GITLAB_HOST` and `GITLAB_TOKEN` are

@@ -94,13 +94,13 @@ Match the user's request against this table (case-insensitive, fuzzy). The
 
 2. **Collect text**: Based on the box count for the chosen template, ensure you
    have the right number of text strings. If the user hasn't provided enough,
-   use AskUserQuestion to ask for them. Explain what each box represents for
-   the chosen template (e.g. for Drake: box 1 = rejected thing, box 2 =
-   preferred thing).
+   ask the user for them. Explain what each box represents for the chosen
+   template (e.g. for Drake: box 1 = rejected thing, box 2 = preferred thing).
 
-3. **Generate the meme**: Run the caption script:
+3. **Generate the meme**: Run the caption script (path is relative to this
+   skill's directory):
    ```
-   ${CLAUDE_PLUGIN_ROOT}/skills/create/scripts/caption.sh TEMPLATE_ID "text for box 0" "text for box 1" ...
+   scripts/caption.sh TEMPLATE_ID "text for box 0" "text for box 1" ...
    ```
    Parse the JSON response. On success, extract `data.url` and `data.page_url`.
    On failure, show the `error_message` to the user.

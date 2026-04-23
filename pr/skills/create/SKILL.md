@@ -35,10 +35,10 @@ Create a GitHub pull request for the current branch using the `gh` CLI.
    - Generate the body using the template structure if one was found, otherwise write a clear summary of the changes
    - The body should explain what changed and why, based on commit messages and the diff
 
-5. **Present the draft to the user** using AskUserQuestion:
-   - Show the proposed title and body
-   - Ask if they want to make any changes before creating the PR
-   - If the user provides revisions, incorporate them
+5. **Present the draft to the user**:
+   - Show the proposed title and body.
+   - Ask if they want to make any changes before creating the PR.
+   - If the user provides revisions, incorporate them.
 
 6. **Create the PR** by running:
    ```

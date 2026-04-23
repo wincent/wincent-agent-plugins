@@ -26,7 +26,7 @@ Review a GitHub pull request using the `gh` CLI. Examine it as a thorough human 
 
 3. **Read the PR description carefully**:
    - Understand the stated motivation and approach.
-   - If the description contains links (to issues, docs, RFCs, etc.), use WebFetch to read them and understand the context.
+   - If the description contains links (to issues, docs, RFCs, etc.), fetch them (via the host's web-fetch tool, or `curl` via `bash`) to understand the context.
 
 4. **Examine the diff**:
    ```
@@ -55,11 +55,11 @@ Review a GitHub pull request using the `gh` CLI. Examine it as a thorough human 
      - **Nits**: Minor style or preference items
    - For each issue, reference the specific file and line(s), and explain what the problem is and how to fix it.
 
-7. **Offer next steps** using AskUserQuestion. Give the user a choice:
+7. **Offer next steps**. Ask the user which of these to do:
 
    **Option A: Post review comments on the PR**
    - Use `gh pr review <number>` to submit the review.
-   - Each comment must be clearly prefixed with `[Claude Code Review]` so it is obvious the feedback was AI-generated.
+   - Each comment must be clearly prefixed with `[AI Review]` so it is obvious the feedback was AI-generated.
    - Use `--comment` for suggestion-level reviews, `--request-changes` if there are blocking issues.
 
    **Option B: Check out the branch and implement fixes locally**
