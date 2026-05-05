@@ -15,6 +15,7 @@ claude plugin marketplace add wincent/wincent-claude-plugins
 Then install any plugin:
 
 ```bash
+claude plugin install atlassian
 claude plugin install git
 claude plugin install jj
 claude plugin install meme
@@ -29,6 +30,7 @@ The [`pi`](./pi) directory is a compatibility layer for use with [Pi](https://gi
 
 ## Plugins
 
+- [atlassian](./atlassian): Jira and Confluence access via the Atlassian CLI (`acli`).
 - [git](./git): Git version control skills.
 - [jj](./jj): Jujutsu version control skills.
 - [meme](./meme): Generate meme images using popular templates via the imgflip API.

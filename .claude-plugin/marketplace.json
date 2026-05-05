@@ -9,6 +9,10 @@
   },
   "plugins": [
     {
+      "name": "atlassian",
+      "source": "./atlassian"
+    },
+    {
       "name": "meme",
       "source": "./meme"
     },

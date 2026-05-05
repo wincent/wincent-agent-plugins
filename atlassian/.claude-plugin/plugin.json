@@ -1,0 +1,9 @@
+{
+  "name": "atlassian",
+  "version": "1.0.0",
+  "description": "Access Atlassian data (Jira, Confluence) via the Atlassian CLI (`acli`)",
+  "author": {
+    "name": "Greg Hurrell",
+    "email": "greg@hurrell.net"
+  }
+}
