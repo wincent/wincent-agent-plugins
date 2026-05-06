@@ -6,9 +6,12 @@ Before creating any commit that contains changes to Markdown files, run `bin/che
 
 ## Directory structure
 
-Most of the top-level directories in this repository are Claude plugins, each of which contains one or more Claude skills. There is also a `pi/skills/` directory at the top level that contains symlinks to those Claude skills.
+The top level of this repository contains two agent-specific directories:
 
-One motivation for these symlinks is that Claude plugins effectively serve as namespaces (a skill's fully-qualified name is scoped to its plugin), but pi has no namespacing mechanism. The symlinks under `pi/skills/` give each exposed skill a unique, flat name that pi can use.
+- `claude/` holds one subdirectory per Claude plugin, each of which contains one or more Claude skills.
+- `pi/skills/` is a compatibility layer for pi, containing symlinks into `claude/<plugin>/skills/<skill>` (plus a small number of real directories for pi-only skills).
+
+One motivation for the symlinks is that Claude plugins effectively serve as namespaces (a skill's fully-qualified name is scoped to its plugin), but pi has no namespacing mechanism. The symlinks under `pi/skills/` give each exposed skill a unique, flat name that pi can use.
 
 ## Skill portability: avoid "claude-isms"
 

@@ -1,5 +1,5 @@
 {
-  "name": "wincent-claude-plugins",
+  "name": "wincent-agent-plugins",
   "metadata": {
     "description": "Claude plugins from Greg Hurrell"
   },
@@ -10,31 +10,31 @@
   "plugins": [
     {
       "name": "atlassian",
-      "source": "./atlassian"
+      "source": "./claude/atlassian"
     },
     {
       "name": "meme",
-      "source": "./meme"
+      "source": "./claude/meme"
     },
     {
       "name": "session",
-      "source": "./session"
+      "source": "./claude/session"
     },
     {
       "name": "git",
-      "source": "./git"
+      "source": "./claude/git"
     },
     {
       "name": "jj",
-      "source": "./jj"
+      "source": "./claude/jj"
     },
     {
       "name": "pr",
-      "source": "./pr"
+      "source": "./claude/pr"
     },
     {
       "name": "shannon",
-      "source": "./shannon"
+      "source": "./claude/shannon"
     }
   ]
 }

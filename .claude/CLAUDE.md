@@ -8,19 +8,20 @@ Before committing, run:
 
 # Adding a new plugin
 
-When adding a new plugin:
+Claude plugins live under the top-level `claude/` directory. When adding a new plugin:
 
-1. Create the plugin directory with the standard layout:
-   - `<name>/.claude-plugin/plugin.json` — plugin manifest (name, version, description, author)
-   - `<name>/skills/<skill-name>/SKILL.md` — skill definitions
-   - `<name>/README.md` — plugin-level documentation
-2. Register the plugin in `.claude-plugin/marketplace.json` under `plugins` with `name` and `source` (e.g. `"source": "./<name>"`)
+1. Create the plugin directory under `claude/` with the standard layout:
+   - `claude/<name>/.claude-plugin/plugin.json` — plugin manifest (name, version, description, author)
+   - `claude/<name>/skills/<skill-name>/SKILL.md` — skill definitions
+   - `claude/<name>/README.md` — plugin-level documentation
+2. Register the plugin in `.claude-plugin/marketplace.json` under `plugins` with `name` and `source` (e.g. `"source": "./claude/<name>"`)
 3. Add the plugin to the top-level `README.md` plugins list
+4. If any of its skills should be exposed to pi, add a symlink under `pi/skills/<unique-skill-name>` pointing at `../../claude/<name>/skills/<skill-name>`
 
 # Plugin layout
 
 ```
-<plugin-name>/
+claude/<plugin-name>/
   .claude-plugin/
     plugin.json
   skills/

@@ -1,4 +1,4 @@
-# wincent-claude-plugins
+# wincent-agent-plugins
 
 Agent[^agent] plugins from Greg Hurrell.
 
@@ -9,7 +9,7 @@ Agent[^agent] plugins from Greg Hurrell.
 Add the marketplace:
 
 ```bash
-claude plugin marketplace add wincent/wincent-claude-plugins
+claude plugin marketplace add wincent/wincent-agent-plugins
 ```
 
 Then install any plugin:
@@ -30,10 +30,12 @@ The [`pi`](./pi) directory is a compatibility layer for use with [Pi](https://gi
 
 ## Plugins
 
-- [atlassian](./atlassian): Jira and Confluence access via the Atlassian CLI (`acli`).
-- [git](./git): Git version control skills.
-- [jj](./jj): Jujutsu version control skills.
-- [meme](./meme): Generate meme images using popular templates via the imgflip API.
-- [pr](./pr): GitHub pull request creation and review.
-- [session](./session): Claude session management utilities (e.g. export a Claude session to a GitLab snippet).
-- [shannon](./shannon): Neovim integration via RPC for annotated code review, walkthroughs, and navigation.
+All Claude plugins live under [`claude/`](./claude):
+
+- [atlassian](./claude/atlassian): Jira and Confluence access via the Atlassian CLI (`acli`).
+- [git](./claude/git): Git version control skills.
+- [jj](./claude/jj): Jujutsu version control skills.
+- [meme](./claude/meme): Generate meme images using popular templates via the imgflip API.
+- [pr](./claude/pr): GitHub pull request creation and review.
+- [session](./claude/session): Claude session management utilities (e.g. export a Claude session to a GitLab snippet).
+- [shannon](./claude/shannon): Neovim integration via RPC for annotated code review, walkthroughs, and navigation.
