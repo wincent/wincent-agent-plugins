@@ -1,6 +1,6 @@
 ---
 description: Export the current session as a GitLab snippet or local Markdown file. Use when the user asks to "create a snippet", "share session", "export to GitLab", or "/snippet".
-allowed-tools: Bash(command:*), Bash(pbpaste:*), Bash(cat:*), Bash(head:*), Bash(mktemp:*), Bash(${CLAUDE_SKILL_DIR}/scripts/create-gitlab-snippet.sh:*), Write
+allowed-tools: Bash(command:*), Bash(pbpaste:*), Bash(cat:*), Bash(head:*), Bash(mktemp:*), Bash($SKILL_DIR/scripts/create-gitlab-snippet.sh:*), Write
 ---
 
 # Create a GitLab snippet from the current session
@@ -34,18 +34,18 @@ Create a temp file with `mktemp` and write the summary to it using the Write too
 
 ## Step 4: Create the snippet
 
-Run the snippet creation script, passing the chosen title and the summary file via the `SUMMARY_FILE` environment variable.
+Run the snippet creation script, passing the chosen title and the summary file via the `SUMMARY_FILE` environment variable. Below, `$SKILL_DIR` is the absolute path to the directory containing this SKILL.md file; expand it to its absolute value before running, since the current working directory is not guaranteed to be the skill directory.
 
 **If using clipboard:**
 
 ```bash
-pbpaste | SUMMARY_FILE="/path/from/mktemp" ${CLAUDE_SKILL_DIR}/scripts/create-gitlab-snippet.sh - "TITLE"
+pbpaste | SUMMARY_FILE="/path/from/mktemp" $SKILL_DIR/scripts/create-gitlab-snippet.sh - "TITLE"
 ```
 
 **If using exported file:**
 
 ```bash
-SUMMARY_FILE="/path/from/mktemp" ${CLAUDE_SKILL_DIR}/scripts/create-gitlab-snippet.sh /tmp/session.txt "TITLE"
+SUMMARY_FILE="/path/from/mktemp" $SKILL_DIR/scripts/create-gitlab-snippet.sh /tmp/session.txt "TITLE"
 ```
 
 The script uploads to GitLab when `GITLAB_HOST` and `GITLAB_TOKEN` are set; otherwise it writes a local Markdown file.

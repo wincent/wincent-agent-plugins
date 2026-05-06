@@ -67,10 +67,12 @@ The wrapper takes a URL path plus arbitrary `curl` options and prints the JSON r
 
 If the script reports that a required environment variable is unset, surface that to the user and stop — do not try to work around it.
 
+In the examples below, `$SKILL_DIR` is the absolute path to the directory containing the SKILL.md file that defines this skill. Always invoke the wrapper as `$SKILL_DIR/scripts/atlassian-curl.sh` (with `$SKILL_DIR` expanded to its absolute value before running the command); do not invoke it as a bare relative path, since the current working directory is not guaranteed to be the skill directory.
+
 Usage shape:
 
 ```sh
-scripts/atlassian-curl.sh <path> [curl options...]
+$SKILL_DIR/scripts/atlassian-curl.sh <path> [curl options...]
 ```
 
 Notes:

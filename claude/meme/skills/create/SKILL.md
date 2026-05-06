@@ -97,10 +97,12 @@ Match the user's request against this table (case-insensitive, fuzzy). The
    ask the user for them. Explain what each box represents for the chosen
    template (e.g. for Drake: box 1 = rejected thing, box 2 = preferred thing).
 
-3. **Generate the meme**: Run the caption script (path is relative to this
-   skill's directory):
+3. **Generate the meme**: Run the caption script. Below, `$SKILL_DIR` is the
+   absolute path to the directory containing this SKILL.md file; expand it to
+   its absolute value before running, since the current working directory is
+   not guaranteed to be the skill directory.
    ```
-   scripts/caption.sh TEMPLATE_ID "text for box 0" "text for box 1" ...
+   $SKILL_DIR/scripts/caption.sh TEMPLATE_ID "text for box 0" "text for box 1" ...
    ```
    Parse the JSON response. On success, extract `data.url` and `data.page_url`.
    On failure, show the `error_message` to the user.

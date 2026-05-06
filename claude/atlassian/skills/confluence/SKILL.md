@@ -21,10 +21,12 @@ The wrapper takes a URL path plus arbitrary `curl` options and prints the JSON r
 
 If the script reports that a required environment variable is unset, surface that to the user and stop — do not try to work around it.
 
+In the examples below, `$SKILL_DIR` is the absolute path to the directory containing the SKILL.md file that defines this skill. Always invoke the wrapper as `$SKILL_DIR/scripts/atlassian-curl.sh` (with `$SKILL_DIR` expanded to its absolute value before running the command); do not invoke it as a bare relative path, since the current working directory is not guaranteed to be the skill directory.
+
 Usage shape:
 
 ```sh
-scripts/atlassian-curl.sh <path> [curl options...]
+$SKILL_DIR/scripts/atlassian-curl.sh <path> [curl options...]
 ```
 
 Notes:
@@ -47,7 +49,7 @@ The Confluence Cloud search endpoint is `GET /wiki/rest/api/search` and accepts 
 Use `--data-urlencode` so you do not have to hand-encode the CQL:
 
 ```sh
-scripts/atlassian-curl.sh /wiki/rest/api/search \
+$SKILL_DIR/scripts/atlassian-curl.sh /wiki/rest/api/search \
     --get \
     --data-urlencode 'cql=type = page AND text ~ "incident response"' \
     --data-urlencode 'limit=10'
@@ -56,7 +58,7 @@ scripts/atlassian-curl.sh /wiki/rest/api/search \
 The response is JSON with a `results` array. Each entry has `title`, `excerpt`, `url` (relative — prefix with `https://<site>/wiki` for a clickable link), and a nested `content` object with the page id, type, and space. Pipe through `jq` to summarise, e.g.:
 
 ```sh
-scripts/atlassian-curl.sh /wiki/rest/api/search \
+$SKILL_DIR/scripts/atlassian-curl.sh /wiki/rest/api/search \
     --get \
     --data-urlencode 'cql=space = "ENG" AND type = page AND text ~ "deploy"' \
     --data-urlencode 'limit=10' \

@@ -23,10 +23,10 @@ There are two ways to obtain the Neovim server address:
 
    Extract the server address from this footer.
 
-2. **Auto-discovery** — if no Shannon prompt has been received yet, run the discovery script (path is relative to this skill's directory):
+2. **Auto-discovery** — if no Shannon prompt has been received yet, run the discovery script. Below, `$SKILL_DIR` is the absolute path to the directory containing this SKILL.md file; expand it to its absolute value before running, since the current working directory is not guaranteed to be the skill directory.
 
    ```bash
-   scripts/shannon-find-nvim.sh
+   $SKILL_DIR/scripts/shannon-find-nvim.sh
    ```
 
    This finds the Neovim instance running in a sibling tmux pane and prints its server socket path. It exits non-zero if no Neovim is found.
