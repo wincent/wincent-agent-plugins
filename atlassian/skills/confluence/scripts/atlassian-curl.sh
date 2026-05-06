@@ -44,7 +44,7 @@ set +x
 set -eu
 
 usage() {
-    sed -n '3,40p' "$0" | sed 's/^# \{0,1\}//'
+    awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"
 }
 
 case "${1:-}" in
