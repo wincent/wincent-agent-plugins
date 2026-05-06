@@ -7,7 +7,7 @@ allowed-tools:
 
 # Accessing Jira data
 
-Use the Atlassian CLI tool (`acli`) to interact with Jira. Most everyday operations live under `acli jira workitem`; other groups cover boards, sprints, projects, filters, dashboards, and field metadata.
+Prefer the Atlassian CLI tool (`acli`) for interacting with Jira. Most everyday operations live under `acli jira workitem`; other groups cover boards, sprints, projects, filters, dashboards, and field metadata. For endpoints `acli` does not cover, fall back to the authenticated `curl` wrapper at `scripts/atlassian-curl.sh` (see below).
 
 ## Orientation
 
@@ -60,3 +60,25 @@ Use `acli jira <group> --help` to discover subcommands in:
 - `filter` — saved JQL filters (referenceable from `workitem search --filter <id>`).
 - `dashboard` — Jira dashboards.
 - `field` — field metadata.
+
+## Using `scripts/atlassian-curl.sh` (for endpoints `acli` does not expose)
+
+The wrapper takes a URL path plus arbitrary `curl` options and prints the JSON response. Credentials are read from the environment by the script itself; you do **not** need to pass any auth-related arguments, and you do **not** need to read or modify the script. Treat it as an opaque tool.
+
+If the script reports that a required environment variable is unset, surface that to the user and stop — do not try to work around it.
+
+Usage shape:
+
+```sh
+scripts/atlassian-curl.sh <path> [curl options...]
+```
+
+Notes:
+
+- `<path>` begins with `/` (e.g. `/rest/api/3/issue/PROJ-123`) and is appended to the configured Atlassian site.
+- The Jira Cloud REST API lives under `/rest/api/3/...` (and `/rest/agile/1.0/...` for boards/sprints). See <https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/>.
+- The script already sets `Accept: application/json`. Do **not** pass `-v` / `--verbose` (it would echo the `Authorization` header to stderr).
+- Non-2xx responses cause a non-zero exit, with the JSON error body still printed on stdout.
+- For POST/PUT requests, pass `--header 'Content-Type: application/json'` and a body with `--data @file.json` or `--data @-` (piping JSON via stdin).
+
+Reach for `acli jira` first; only fall back to the wrapper for things `acli` lacks.
