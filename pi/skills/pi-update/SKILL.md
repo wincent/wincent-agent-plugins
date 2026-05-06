@@ -1,6 +1,6 @@
 ---
 description: >-
-  Check for pi updates, review the changelog for breaking changes, assess impact on the user's installed extensions and skills, and advise on the upgrade. Use when the user asks to "update pi", "upgrade pi", "check for pi updates", or "/pi:update".
+  Check for pi updates, review the changelog for breaking changes, assess impact on the user's installed extensions and skills, advise on the upgrade, and (with the user's consent) run the upgrade and apply the local pi-tui hyperlink patch. Use when the user asks to "update pi", "upgrade pi", "check for pi updates", or "/pi:update".
 allowed-tools:
   - bash
   - read
@@ -10,9 +10,7 @@ allowed-tools:
 
 # Update pi
 
-Help the user understand what upgrading pi (`@mariozechner/pi-coding-agent`) will entail: what version they are on, what version is available, what breaking changes are in between, and whether any of their locally installed extensions or skills will need adjustment to remain compatible.
-
-**Do not run the upgrade yourself.** Your job is to investigate and advise. Only show the user the command to run.
+Help the user understand what upgrading pi (`@mariozechner/pi-coding-agent`) will entail: what version they are on, what version is available, what breaking changes are in between, and whether any of their locally installed extensions or skills will need adjustment to remain compatible. Then offer to run the upgrade for them and, if they accept, apply the local `@mariozechner/pi-tui` hyperlink patch (Step 8) so OSC 8 hyperlinks keep working under tmux.
 
 ## Step 1: Determine the current installed version
 
@@ -104,9 +102,16 @@ Produce a per-item verdict:
 - **Needs update** — describe what must change and, where possible, propose the specific edit (file + diff-style snippet).
 - **Uncertain** — explain what you could not verify and what the user should double-check manually.
 
-## Step 6: Present findings and the upgrade command
+## Step 6: Present findings and offer to run the upgrade
 
-Choose one of the following scenarios based on Step 2’s classification.
+Choose one of the following scenarios based on Step 2’s classification, present the findings, and end with an explicit prompt asking the user which of the available actions to take. Always include a **don't update** option. Do not start any install until the user has chosen.
+
+The options offered depend on the scenario:
+
+- **Scenario A**: two options — (a) cooldown-respecting update (the plain command), or (b) skip.
+- **Scenarios B / C**: three options — (a) cooldown-respecting update, (b) cooldown-override update to `LATEST`, or (c) skip. In Scenario C, mark the cooldown-respecting option as a **downgrade** and recommend against it (or, if `COOLDOWN_LATEST < CURRENT`, replace it with a no-op pin to `CURRENT`).
+
+When the user chooses to update, proceed to Step 7. When they decline, stop after acknowledging.
 
 ### Scenario A — No cooldown (single block)
 
@@ -117,8 +122,8 @@ Structure the report as:
 3. **Other notable changes**: features, fixes, deprecations.
 4. **Impact on your extensions/skills**: the per-item verdicts from Step 5.
 5. **Recommended action**:
-   - If nothing needs updating, show the upgrade command.
-   - If updates are needed, list them and ask the user whether to apply the fixes now **then** show the upgrade command, or just show the command and let them proceed manually.
+   - If nothing needs updating, offer the upgrade command.
+   - If updates are needed, list them and ask the user whether to apply the fixes now **before** running the upgrade, or to proceed without them.
 
 The upgrade command is:
 
@@ -157,13 +162,47 @@ Open the report with a short **Cooldown notice** stating the configured `min-rel
 
    Include the explicit `@<LATEST>` pin so the resolver cannot choose anything older, and use `--min-release-age=0` as a one-shot override that leaves the user’s global cooldown policy intact. `NPM_CONFIG_MIN_RELEASE_AGE=0 npm install -g @mariozechner/pi-coding-agent@latest` is an equivalent alternative and fine to mention.
 
-### Package manager fallback
+## Step 7: Run the chosen upgrade command
 
-If the user’s installation indicates a different package manager (e.g. `pnpm`, `yarn`, `bun`, or a non-global install), adapt the commands accordingly and mention how you inferred it. Cooldown flags are npm-specific; for other package managers, note that the two-block framing may not apply or may require a different override mechanism.
+Only run this step once the user has explicitly chosen one of the update options offered in Step 6. Echo back which option you are about to execute before running anything, so there is no ambiguity.
+
+Use the command corresponding to the user’s choice:
+
+- Cooldown-respecting (Scenarios A and B): `npm install -g @mariozechner/pi-coding-agent`
+- Cooldown-override (Scenarios B and C): `npm install -g @mariozechner/pi-coding-agent@<LATEST> --min-release-age=0` (with `<LATEST>` replaced by the literal version string from Step 2).
+
+Run the command via `bash`, capturing both stdout and stderr, and surface the result to the user. If the install fails (non-zero exit, or no `pi` binary on the resulting PATH), report the failure and **skip Step 8** — do not patch a half-installed package. If the install succeeds, continue to Step 8.
+
+## Step 8: Patch `@mariozechner/pi-tui` to re-enable hyperlinks under tmux
+
+pi-tui ships with OSC 8 hyperlinks force-disabled when it detects tmux or screen, which breaks this user's clickable-path workflow inside tmux. Each `npm install -g` of pi-coding-agent reinstalls pi-tui and reverts this, so re-apply the patch after every successful upgrade.
+
+The patch flips a single hard-coded boolean in pi-tui's `dist/terminal-image.js` so that, when pi-tui detects it is running inside tmux or screen, it reports `hyperlinks: true` instead of `hyperlinks: false`. The relevant region of the file looks like this:
+
+```diff
+     const inTmuxOrScreen = !!process.env.TMUX || term.startsWith("tmux") || term.startsWith("screen");
+     if (inTmuxOrScreen) {
+         const trueColor = colorTerm === "truecolor" || colorTerm === "24bit";
+-        return { images: null, trueColor, hyperlinks: false };
++        return { images: null, trueColor, hyperlinks: true };
+     }
+```
+
+What to do:
+
+1. Find pi-tui's install directory. `npm -g ls '@mariozechner/pi-tui' -p` is one way; use whatever you prefer. The file to edit is `dist/terminal-image.js` inside that directory. If you can't locate the package or the file, stop and tell the user why.
+
+2. Make sure you change **only** the `return` statement that lives inside the `if (inTmuxOrScreen) { … }` branch of `detectCapabilities`. There is a second, structurally similar `return { images: null, trueColor, hyperlinks: false };` further down that handles unknown terminals; that one must stay `false`. Pick whatever editing approach gives you confidence you're only touching the tmux/screen branch.
+
+3. Be idempotent: if the tmux/screen branch already returns `hyperlinks: true`, just report “already patched” and move on. If neither the patched nor the unpatched form is present in the expected shape, the upstream code has changed — don't guess; show the user the current `detectCapabilities` body and ask how to proceed.
+
+4. After patching, verify the file: the tmux/screen branch should be `true`, the unknown-terminal fallback should still be `false`, and the file should otherwise be unchanged.
+
+5. Tell the user, in plain prose, that you applied the pi-tui hyperlink patch and where, and remind them it will need re-applying after every future `npm install -g @mariozechner/pi-coding-agent` (which is why this skill does it automatically).
 
 ## Notes
 
-- Never run the install command yourself — always let the user execute it.
+- Run the install command (Step 7) only after the user has explicitly chosen an update option in Step 6. Never auto-run an install just because the user invoked the skill.
 - If the changelog cannot be fetched (offline, rate-limited), say so and fall back to `npm view @mariozechner/pi-coding-agent` for whatever release notes are embedded in the package metadata.
 - Pre-release/beta versions (`-next`, `-rc`, etc.) should be mentioned but not recommended unless the user asked for them explicitly.
 - If `CURRENT` is many versions behind, warn the user that the impact assessment is best-effort and that a staged upgrade (or careful manual review) may be wiser than a single jump.
