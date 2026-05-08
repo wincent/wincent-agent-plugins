@@ -1,5 +1,4 @@
 ---
-name: create-gitlab-snippet
 description: >-
   Export the current pi session as a GitLab snippet or local Markdown file.
   Use when the user asks to "create a snippet", "share session",
