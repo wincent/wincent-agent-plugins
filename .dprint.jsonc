@@ -1,12 +1,46 @@
 {
+  "lineWidth": 80,
+  "useTabs": false,
+  "indentWidth": 2,
+  "typescript": {
+    // See: https://github.com/dprint/dprint-plugin-typescript/blob/main/src/configuration/types.rs
+    "arrayExpression.preferSingleLine": true,
+    "arrowFunction.useParentheses": "force",
+    "binaryExpression.operatorPosition": "maintain",
+    "conditionalExpression.operatorPosition": "maintain",
+    "conditionalType.operatorPosition": "maintain",
+    "exportDeclaration.sortNamedExports": "caseSensitive",
+    "exportDeclaration.spaceSurroundingNamedExports": false,
+    "forInStatement.useBraces": "always",
+    "forOfStatement.useBraces": "always",
+    "forStatement.useBraces": "always",
+    "functionExpression.spaceAfterFunctionKeyword": true,
+    "ifStatement.useBraces": "always",
+    "importDeclaration.sortNamedImports": "caseSensitive",
+    "importDeclaration.spaceSurroundingNamedImports": false,
+    "module.sortExportDeclarations": "caseSensitive",
+    "module.sortImportDeclarations": "caseSensitive",
+    "spaceSurroundingProperties": false,
+    "quoteStyle": "preferSingle",
+    "quoteProps": "consistent",
+    "whileStatement.useBraces": "always",
+    "associations": [
+      "**/*.js",
+      "**/*.mts",
+      "**/*.ts",
+      "bin/update-subtrees"
+    ]
+  },
   "markdown": {
     "textWrap": "maintain",
   },
   "includes": [
-    "**/*.md",
+    "**/*.{md,ts}",
   ],
   "excludes": [],
+  // Update with: `dprint config update`.
   "plugins": [
+    "https://plugins.dprint.dev/typescript-0.95.15.wasm",
     "https://plugins.dprint.dev/markdown-0.21.1.wasm",
   ],
 }
