@@ -67,6 +67,17 @@ This gives the agent a reliable way to identify itself at runtime, which matters
 
 Because the block is regenerated every turn, `/model` and `/thinking` changes are reflected live without restarting pi.
 
+### `slack-mcp.ts`
+
+Uses an OAuth grant previously obtained from Claude to talk to Slack's MCP server.
+
+Also registers two slash commands:
+
+- `/slack-status` shows status of Slack connection.
+- `/slack-refresh` forces a token refresh.
+
+A companion `slack-mcp` skill under `pi/skills/slack-mcp/` teaches the agent how to use the `list_tools`, `describe_tool`, and `call_tool` commands.
+
 ### `total-cost.ts`
 
 Adds a `/total-cost` slash command that scans every saved pi session under `$PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`) and shows a per-month breakdown of cumulative LLM cost, message count, and number of distinct sessions:
