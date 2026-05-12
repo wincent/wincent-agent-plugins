@@ -26,7 +26,7 @@ claude plugin install shannon
 
 ## Pi compatibility
 
-The [`pi`](./pi) directory is a compatibility layer for use with [Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent). It contains [some Pi extensions](./pi/extensions/README.md), and skill symlinks that map each plugin skill to a globally unique name, avoiding collisions that arise because Pi uses a flat skill namespace (whereas Claude Code uses the plugin name as a namespace).
+The [`pi`](./pi) directory is a compatibility layer for use with [Pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent). It contains [some Pi extensions](./pi/extensions/README.md), and skill symlinks that map each plugin skill to a globally unique name, avoiding collisions that arise because Pi uses a flat skill namespace (whereas Claude Code uses the plugin name as a namespace).
 
 ## Plugins
 

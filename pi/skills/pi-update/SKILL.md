@@ -57,10 +57,10 @@ Classify the situation using `CURRENT`, `COOLDOWN_LATEST`, and `LATEST`:
 Fetch the raw changelog via `curl`:
 
 ```
-curl -sSL https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/CHANGELOG.md
+curl -sSL https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/CHANGELOG.md
 ```
 
-(The human-readable URL is <https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md>.)
+(The human-readable URL is <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/CHANGELOG.md>.)
 
 Extract the entries for every version strictly greater than `CURRENT` and less than or equal to `LATEST`. Pay particular attention to:
 
