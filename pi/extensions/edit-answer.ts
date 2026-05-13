@@ -19,7 +19,9 @@ interface AssistantAnswer {
 }
 
 function extractAssistantText(entry: SessionEntry): string | undefined {
-  if (entry.type !== 'message') { return; }
+  if (entry.type !== 'message') {
+    return;
+  }
   const message = entry.message;
   if (message.role !== 'assistant' || !Array.isArray(message.content)) {
     return;
@@ -48,7 +50,9 @@ function recentAssistantAnswers(ctx: ExtensionContext): AssistantAnswer[] {
   for (let i = branch.length - 1; i >= 0 && out.length < MAX_RECENT; i--) {
     const entry = branch[i];
     const text = extractAssistantText(entry);
-    if (text) { out.push({entry: entry as AssistantAnswer['entry'], text}); }
+    if (text) {
+      out.push({entry: entry as AssistantAnswer['entry'], text});
+    }
   }
 
   return out;
@@ -56,17 +60,27 @@ function recentAssistantAnswers(ctx: ExtensionContext): AssistantAnswer[] {
 
 function relativeTime(iso: string): string {
   const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) { return '?'; }
+  if (!Number.isFinite(then)) {
+    return '?';
+  }
 
   const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
-  if (seconds < 5) { return 'just now'; }
-  if (seconds < 60) { return `${seconds}s ago`; }
+  if (seconds < 5) {
+    return 'just now';
+  }
+  if (seconds < 60) {
+    return `${seconds}s ago`;
+  }
 
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) { return `${minutes}m ago`; }
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
 
   const hours = Math.round(minutes / 60);
-  if (hours < 24) { return `${hours}h ago`; }
+  if (hours < 24) {
+    return `${hours}h ago`;
+  }
 
   const days = Math.round(hours / 24);
   return `${days}d ago`;
@@ -118,7 +132,9 @@ async function editLatest(ctx: CtxWithIdle) {
   }
 
   const edited = openInEditor(latest.text, ctx);
-  if (edited !== undefined) { ctx.ui.setEditorText(edited); }
+  if (edited !== undefined) {
+    ctx.ui.setEditorText(edited);
+  }
 }
 
 async function editPicked(ctx: CtxWithIdle) {
@@ -145,13 +161,19 @@ async function editPicked(ctx: CtxWithIdle) {
   });
 
   const choice = await ctx.ui.select('Pick an answer to edit:', labels);
-  if (!choice) { return; }
+  if (!choice) {
+    return;
+  }
 
   const picked = byLabel.get(choice);
-  if (!picked) { return; }
+  if (!picked) {
+    return;
+  }
 
   const edited = openInEditor(picked.text, ctx);
-  if (edited !== undefined) { ctx.ui.setEditorText(edited); }
+  if (edited !== undefined) {
+    ctx.ui.setEditorText(edited);
+  }
 }
 
 function isPickArg(args: string): boolean {

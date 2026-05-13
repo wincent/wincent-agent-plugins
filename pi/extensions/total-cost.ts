@@ -56,7 +56,9 @@ async function listSessionFiles(dir: string): Promise<string[]> {
     let files: string[];
     try {
       const st = await stat(projectPath);
-      if (!st.isDirectory()) { continue; }
+      if (!st.isDirectory()) {
+        continue;
+      }
       files = await readdir(projectPath);
     } catch {
       continue;
@@ -71,11 +73,15 @@ async function listSessionFiles(dir: string): Promise<string[]> {
 }
 
 function bucketKey(timestamp: string | number | undefined): string | null {
-  if (timestamp === undefined || timestamp === null) { return null; }
+  if (timestamp === undefined || timestamp === null) {
+    return null;
+  }
   const d = typeof timestamp === 'number'
     ? new Date(timestamp)
     : new Date(timestamp);
-  if (Number.isNaN(d.getTime())) { return null; }
+  if (Number.isNaN(d.getTime())) {
+    return null;
+  }
   const year = d.getUTCFullYear();
   const month = String(d.getUTCMonth() + 1).padStart(2, '0');
   return `${year}-${month}`;
@@ -102,7 +108,9 @@ async function computeTotals(): Promise<Totals> {
 
     const lines = raw.split('\n');
     for (const line of lines) {
-      if (!line) { continue; }
+      if (!line) {
+        continue;
+      }
       let entry: any;
       try {
         entry = JSON.parse(line);
@@ -110,18 +118,26 @@ async function computeTotals(): Promise<Totals> {
         continue; // tolerate corrupt/partial trailing lines
       }
 
-      if (entry?.type !== 'message') { continue; }
+      if (entry?.type !== 'message') {
+        continue;
+      }
       const message = entry.message;
-      if (!message || message.role !== 'assistant') { continue; }
+      if (!message || message.role !== 'assistant') {
+        continue;
+      }
 
       const cost = message.usage?.cost?.total;
       if (
         typeof cost !== 'number' || !Number.isFinite(cost) || cost <= 0
-      ) { continue; }
+      ) {
+        continue;
+      }
 
       // Prefer entry-level ISO timestamp; fall back to message timestamp (unix ms).
       const month = bucketKey(entry.timestamp) ?? bucketKey(message.timestamp);
-      if (!month) { continue; }
+      if (!month) {
+        continue;
+      }
 
       let bucket = buckets.get(month);
       if (!bucket) {
@@ -316,7 +332,9 @@ export default function (pi: ExtensionAPI) {
         const msg = err instanceof Error ? err.message : String(err);
         if (ctx.hasUI) {
           ctx.ui.notify(`Failed to compute totals: ${msg}`, 'error');
-        } else { console.error(`Failed to compute totals: ${msg}`); }
+        } else {
+          console.error(`Failed to compute totals: ${msg}`);
+        }
         return;
       }
       await showTotals(totals, ctx);

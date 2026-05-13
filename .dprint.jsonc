@@ -23,6 +23,7 @@
     "spaceSurroundingProperties": false,
     "quoteStyle": "preferSingle",
     "quoteProps": "consistent",
+    "singleBodyPosition": "nextLine",
     "whileStatement.useBraces": "always",
     "associations": [
       "**/*.js",

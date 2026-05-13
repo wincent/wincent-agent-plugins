@@ -23,18 +23,26 @@ const BLOCKED_PATTERNS = [
 
 async function isJujutsuRepo(pi: ExtensionAPI): Promise<boolean> {
   const {stdout, code} = await pi.exec('git', ['rev-parse', '--show-toplevel']);
-  if (code !== 0) { return false; }
+  if (code !== 0) {
+    return false;
+  }
   return existsSync(join(stdout.trim(), '.jj'));
 }
 
 export default function (pi: ExtensionAPI) {
   pi.on('tool_call', async (event) => {
-    if (!isToolCallEventType('bash', event)) { return; }
+    if (!isToolCallEventType('bash', event)) {
+      return;
+    }
 
     const command = event.input.command;
-    if (!BLOCKED_PATTERNS.some((p) => p.test(command))) { return; }
+    if (!BLOCKED_PATTERNS.some((p) => p.test(command))) {
+      return;
+    }
 
-    if (!(await isJujutsuRepo(pi))) { return; }
+    if (!(await isJujutsuRepo(pi))) {
+      return;
+    }
 
     return {
       block: true,
