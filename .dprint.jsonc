@@ -38,7 +38,9 @@
   "includes": [
     "**/*.{md,ts}",
   ],
-  "excludes": [],
+  "excludes": [
+    "pi/extensions/node_modules/**",
+  ],
   // Update with: `dprint config update`.
   "plugins": [
     "https://plugins.dprint.dev/typescript-0.95.15.wasm",
