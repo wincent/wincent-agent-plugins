@@ -1,24 +1,18 @@
 # subagent extension
 
-A pi extension that delegates tasks to specialized subagents running in their own pi processes inside tmux panes. Communicates over a typed Unix domain socket bus; never via `tmux capture-pane` or `tmux send-keys`.
+A Pi extension that delegates tasks to specialized subagents running in their own Pi processes inside tmux panes. Communicates over a typed Unix domain socket bus; never via `tmux capture-pane` or `tmux send-keys`.
 
 See [PLAN.md](../../../PLAN.md) for the full design.
 
 ## Install
 
-This extension is a directory, not a single file, so the per-file install pattern from [the parent README](../README.md) doesn't apply. Install with a single symlink:
+The six default agents under `agents/` are auto-discovered relative to the loaded extension module. To override a shipped agent or add a project-local one, drop a `.md` file with the same name (or a new name) under `<repo>/.pi/agents/` (project-scoped) or `~/.pi/agent/agents/` (user-scoped); both shadow the extension-bundled tier.
 
-```bash
-ln -s "$PWD/pi/extensions/subagent" ~/.pi/agent/extensions/subagent
-```
-
-The six default agents under `agents/` are auto-discovered relative to the loaded extension module; no additional symlinks needed. To override a shipped agent or add a project-local one, drop a `.md` file with the same name (or a new name) under `<repo>/.pi/agents/` (project-scoped) or `~/.pi/agent/agents/` (user-scoped); both shadow the extension-bundled tier.
-
-The companion skill at [`pi/skills/subagent/`](../../skills/subagent/) and the prompts under `prompts/` are discovered by pi itself, not by this extension; if you want them available globally, symlink them into `~/.pi/agent/skills/subagent/` and `~/.pi/agent/prompts/` respectively, or rely on your dotfiles flow to do so.
+The companion skill at [`pi/skills/subagent/`](../../skills/subagent/) and the prompts under `prompts/` are discovered by Pi itself, not by this extension.
 
 ## Requirements
 
-- pi (globally installed; see [parent README](../README.md))
+- Pi (globally installed; see [parent README](../README.md))
 - tmux 3.2 or later, running. The extension verifies `$TMUX` at spawn time and fails loudly if absent.
 - git (only for the `worker` agent; `worktree: true` requires the repo to have at least one commit).
 

@@ -9,12 +9,12 @@ Before creating any commit that contains changes to Markdown files, run `bin/che
 The top level of this repository contains two agent-specific directories:
 
 - `claude/` holds one subdirectory per Claude plugin, each of which contains one or more Claude skills.
-- `pi/skills/` is a compatibility layer for pi, containing symlinks into `claude/<plugin>/skills/<skill>` (plus a small number of real directories for pi-only skills).
+- `pi/skills/` is a compatibility layer for Pi, containing symlinks into `claude/<plugin>/skills/<skill>` (plus a small number of real directories for Pi-only skills).
 
-One motivation for the symlinks is that Claude plugins effectively serve as namespaces (a skill's fully-qualified name is scoped to its plugin), but pi has no namespacing mechanism. The symlinks under `pi/skills/` give each exposed skill a unique, flat name that pi can use.
+One motivation for the symlinks is that Claude plugins effectively serve as namespaces (a skill's fully-qualified name is scoped to its plugin), but Pi has no namespacing mechanism. The symlinks under `pi/skills/` give each exposed skill a unique, flat name that Pi can use.
 
 ## Skill portability: avoid "claude-isms"
 
-Claude skills in this repository should be written in a way that is free of "claude-isms" — that is, patterns, tools, or assumptions that only work in Claude. They should be usable as-is from both Claude and pi via the symlinks described above.
+Claude skills in this repository should be written in a way that is free of "claude-isms" — that is, patterns, tools, or assumptions that only work in Claude. They should be usable as-is from both Claude and Pi via the symlinks described above.
 
-In the rare case where a task genuinely requires a completely different approach that cannot be shared between Claude and pi, a pi-specific skill may be added directly under `pi/skills/` (rather than as a symlink to a Claude plugin skill). The `pi-update` skill is an example of such a pi-only skill.
+In the rare case where a task genuinely requires a completely different approach that cannot be shared between Claude and Pi, a Pi-specific skill may be added directly under `pi/skills/` (rather than as a symlink to a Claude plugin skill). The `pi-update` skill is an example of such a Pi-only skill.

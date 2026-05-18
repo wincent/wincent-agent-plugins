@@ -16,7 +16,7 @@ Claude plugins live under the top-level `claude/` directory. When adding a new p
    - `claude/<name>/README.md` — plugin-level documentation
 2. Register the plugin in `.claude-plugin/marketplace.json` under `plugins` with `name` and `source` (e.g. `"source": "./claude/<name>"`)
 3. Add the plugin to the top-level `README.md` plugins list
-4. If any of its skills should be exposed to pi, add a symlink under `pi/skills/<unique-skill-name>` pointing at `../../claude/<name>/skills/<skill-name>`
+4. If any of its skills should be exposed to Pi, add a symlink under `pi/skills/<unique-skill-name>` pointing at `../../claude/<name>/skills/<skill-name>`
 
 # Plugin layout
 
