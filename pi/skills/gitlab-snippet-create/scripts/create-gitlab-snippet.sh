@@ -11,7 +11,7 @@
 # snippet URL. Otherwise, writes to a local file and prints the path.
 #
 # Optional: set OUTPUT_DIR to control where the local file is written
-# (defaults to /tmp).
+# (defaults to $TMPDIR, falling back to /tmp).
 
 set -e
 
@@ -66,7 +66,7 @@ print(json.dumps(payload))
         exit 1
     fi
 else
-    OUT_DIR="${OUTPUT_DIR:-/tmp}"
+    OUT_DIR="${OUTPUT_DIR:-${TMPDIR:-/tmp}}"
     SLUG=$(echo "$TITLE" | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | head -c 60)
     OUT_FILE="${OUT_DIR}/${SLUG}-$(date '+%Y%m%d-%H%M%S').md"
 

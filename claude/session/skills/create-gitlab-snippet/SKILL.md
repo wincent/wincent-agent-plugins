@@ -15,7 +15,7 @@ Run `pbpaste | head -5` to check whether the clipboard contains a session export
 
 **If `pbpaste` is not available (e.g. Ubuntu VM):**
 
-Tell the user to run `/export /tmp/session.txt` and wait for them to confirm. Then verify the file exists with `head -5 /tmp/session.txt`.
+Compute a temp path with `SESSION_FILE=$(mktemp -u "${TMPDIR:-/tmp}/session.XXXXXX")` (`-u` so `/export` itself creates the file). Tell the user to run `/export <SESSION_FILE>` (with the actual path expanded) and wait for them to confirm. Then verify the file exists with `head -5 "$SESSION_FILE"`.
 
 ## Step 2: Choose a title
 
@@ -45,7 +45,7 @@ pbpaste | SUMMARY_FILE="/path/from/mktemp" $SKILL_DIR/scripts/create-gitlab-snip
 **If using exported file:**
 
 ```bash
-SUMMARY_FILE="/path/from/mktemp" $SKILL_DIR/scripts/create-gitlab-snippet.sh /tmp/session.txt "TITLE"
+SUMMARY_FILE="/path/from/mktemp" $SKILL_DIR/scripts/create-gitlab-snippet.sh "$SESSION_FILE" "TITLE"
 ```
 
 The script uploads to GitLab when `GITLAB_HOST` and `GITLAB_TOKEN` are set; otherwise it writes a local Markdown file.
