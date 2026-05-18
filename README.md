@@ -42,7 +42,7 @@ Many of these are symlinks pointing to the corresponding Claude skills (all the 
 
 #### Extensions
 
-Pi extensions live under [`pi/extensions`](./pi/skills/):
+Pi extensions live under [`pi/extensions`](./pi/extensions/):
 
 - [edit-answer](./pi/extensions/edit-answer.ts)
 - [jj-guard](./pi/extensions/jj-guard.ts)
