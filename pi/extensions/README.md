@@ -9,15 +9,7 @@ Pi auto-discovers extensions placed in either:
 - `~/.pi/agent/extensions/` (global, all sessions)
 - `.pi/extensions/` (project-local, current repo only)
 
-Symlink or copy the files you want from this directory into one of those locations, then run `/reload` in a running pi session (or just start a new one).
-
-For example, to enable all of them globally:
-
-```bash
-for f in pi/extensions/*.ts; do
-  ln -s "$PWD/$f" ~/.pi/agent/extensions/
-done
-```
+Symlink or copy the files you want from this directory into one of those locations, then run `/reload` in a running Pi session (or just start a new one). Alternatively, if you've installed the plugin marketplace in Claude, you can configure Pi to look for extensions under `~/.claude/plugins/marketplaces/wincent-agent-plugins/` (see the [top-level README](../../README.md) for details).
 
 See the [pi extensions documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md) for the full lifecycle, event, and API reference.
 
@@ -65,7 +57,15 @@ Hooks `before_agent_start` and appends a "Pi runtime" block to the system prompt
 
 This gives the agent a reliable way to identify itself at runtime, which matters for skills that need accurate self-attribution. For example, the `git-commit` and `jj-commit` skills in this repo derive their `Co-Authored-By` trailer from the model identity; without this extension they fall back to a generic `AI Assistant <noreply@example.com>` line.
 
-Because the block is regenerated every turn, `/model` and `/thinking` changes are reflected live without restarting pi.
+Because the block is regenerated every turn, `/model` and `/thinking` changes are reflected live without restarting Pi.
+
+### `subagent/`
+
+Delegates focused tasks to specialized subagents that run as their own Pi processes inside tmux panes, communicating with the main agent over a typed Unix domain socket bus (never via `tmux capture-pane` or `send-keys`). Ships six default agent personalities (`scout`, `linter`, `tester`, `reviewer`, `formatter`, `worker`); more can be added by dropping files into `~/.pi/agent/agents/`.
+
+In main mode, registers `subagent`, `subagent_steer`, `subagent_cancel`, and `subagent_status` tools. In sub mode (when spawned by another Pi), registers `report`, `progress`, and `ask` tools so the child can talk back. Lifecycle events are emitted on `pi.events` under the `subagent:*` namespace.
+
+See [`subagent/README.md`](subagent/README.md) for more.
 
 ### `slack-mcp.ts`
 
@@ -80,7 +80,7 @@ A companion `slack-mcp` skill under `pi/skills/slack-mcp/` teaches the agent how
 
 ### `total-cost.ts`
 
-Adds a `/total-cost` slash command that scans every saved pi session under `$PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`) and shows a per-month breakdown of cumulative LLM cost, message count, and number of distinct sessions:
+Adds a `/total-cost` slash command that scans every saved Pi session under `$PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`) and shows a per-month breakdown of cumulative LLM cost, message count, and number of distinct sessions:
 
 ```
 Month       Cost   Messages   Sessions
