@@ -72,35 +72,61 @@ Summarize these for the user, grouped by version, with the breaking ones called 
 
 ## Step 4: Inventory the user's extensions and skills
 
-Enumerate locally installed items that could be affected. Use `ls`, `find`, or `grep` via `bash` as appropriate.
+The goal of this step is to discover **every** extension and skill that pi will load for this user, so that the impact analysis in Step 5 covers all of them. Missing a configured root and then declaring "all extensions are compatible" based on a partial sample is a serious failure mode of this skill; treat completeness as a hard requirement.
 
-**Extensions** (TypeScript modules):
+### Step 4a: Always read `settings.json` first
 
-- `~/.pi/agent/extensions/*.ts`
-- `.pi/extensions/*.ts` in the current working directory (and ancestors up to repo root)
+Before enumerating anything, read `~/.pi/agent/settings.json` (if it exists). Two top-level keys matter:
 
-**Skills** (`SKILL.md` files and root-level `.md` files):
+- `"extensions"`: an array of directories pi loads extensions from. Each entry is a directory; pi loads every `*.ts` file directly inside it, plus any subdirectory containing an `index.ts` (e.g. the `subagent/` package). Tilde-expand `~` against `$HOME`.
+- `"skills"`: an array of directories pi loads skills from. Each entry is a directory; pi loads direct `.md` files in it and `*/SKILL.md` from immediate subdirectories. Tilde-expand `~` against `$HOME`.
 
-- `~/.pi/agent/skills/` (direct `.md` files and `*/SKILL.md`)
-- `~/.agents/skills/` (`*/SKILL.md` only)
-- `.pi/skills/` and `.agents/skills/` in `cwd` and ancestors
-- Plugin marketplace skill directories under `~/.claude/plugins/marketplaces/*/` (these often contain pi skills)
+If `settings.json` defines these arrays, treat them as authoritative and use them in place of any hardcoded defaults below. Do **not** silently fall back to the defaults if the keys are present but list different paths; the user has explicitly opted into a different set of roots.
 
-For each discovered extension/skill, briefly note its name and purpose (read the file header or frontmatter).
+If `settings.json` is missing or does not set one of the keys, fall back to pi's built-in defaults for the missing key:
+
+- Default extension roots: `~/.pi/agent/extensions`, and `.pi/extensions` in the current working directory and ancestors up to the repo root.
+- Default skill roots: `~/.pi/agent/skills`, `~/.agents/skills`, and `.pi/skills` / `.agents/skills` in cwd and ancestors.
+
+List the roots you ended up with explicitly in your scratch reasoning so it is obvious which extensions/skills are in scope.
+
+### Step 4b: Enumerate every item under every configured root
+
+For each extension root, list:
+
+- All `*.ts` files directly inside the root.
+- All immediate subdirectories that contain an `index.ts` (these are packaged extensions, e.g. `subagent/index.ts`).
+
+For each skill root, list:
+
+- All `*.md` files directly inside the root.
+- All immediate subdirectories containing a `SKILL.md`.
+
+Resolve symlinks where helpful, but if two roots point at the same physical directory (e.g. a `pi/skills/foo` symlink into a `claude/<plugin>/skills/foo`), only analyze the underlying file once and note that both names map to it.
+
+### Step 4c: Record name and purpose for each discovered item
+
+For every extension/skill you found, read the file header / frontmatter and briefly note its name and purpose. This list must be the input to Step 5: any item present here must appear in the per-item verdict table you produce in Step 5/6. If you skip an item because you judge it irrelevant, say so explicitly rather than dropping it silently.
+
+### Step 4d: Sanity-check coverage before continuing
+
+Before moving on, ask yourself: "Have I enumerated every entry in `settings.json`'s `extensions` and `skills` arrays?" If the answer is anything other than yes, go back and finish. Do not start Step 5 until the inventory is complete.
 
 ## Step 5: Cross-reference against breaking changes
 
-For every breaking change identified in Step 3, check each extension/skill for usage of the affected API, flag, or convention. Concretely:
+For every breaking change identified in Step 3, check each extension/skill discovered in Step 4 for usage of the affected API, flag, or convention. The search must span **every** configured extension and skill root, not just the default `~/.pi/agent/...` paths. Concretely:
 
-- For API renames/removals: `grep` for the old symbol across the extensions directory.
-- For event name changes: search for the old event name.
+- For API renames/removals: `grep` (use `rg`) for the old symbol across all configured extension roots simultaneously.
+- For event name changes: search for the old event name across the same set of roots.
 - For config/frontmatter changes: inspect the relevant files directly.
 
-Produce a per-item verdict:
+Produce a per-item verdict, with **one row per item enumerated in Step 4**. Do not omit items just because they appear obviously fine; an explicit "Compatible" verdict tells the user you actually looked.
 
 - **Compatible** — no action needed.
 - **Needs update** — describe what must change and, where possible, propose the specific edit (file + diff-style snippet).
 - **Uncertain** — explain what you could not verify and what the user should double-check manually.
+
+When presenting the table in Step 6, organize rows by source root (e.g. group items from `~/.pi/agent/extensions` together, then items from each `settings.json`-configured root) so the user can see at a glance that every root was covered.
 
 ## Step 6: Present findings and offer to run the upgrade
 
