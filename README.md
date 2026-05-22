@@ -20,6 +20,12 @@ Plugins live under [`claude/`](./claude):
 
 ### Pi
 
+#### Prompt templates
+
+Pi prompt templates live under [`pi/prompts`](./pi/prompts/):
+
+- [pi-update](./pi/prompts/pi-update.md) (Pi-only): check for pi updates, assess local resource compatibility, and safely apply the tmux hyperlink patch after upgrading.
+
 #### Skills
 
 Pi skills live under [`pi/skills`](./pi/skills/):
@@ -32,7 +38,6 @@ Pi skills live under [`pi/skills`](./pi/skills/):
 - [jj-version-control](./pi/skills/jj-version-control)
 - [meme-create](./pi/skills/meme-create)
 - [neovim](./pi/skills/neovim) (corresponds to "shannon" Claude skill, above)
-- [pi-update](./pi/skills/pi-update) (Pi-only)
 - [pr-create](./pi/skills/pr-create)
 - [pr-review](./pi/skills/pr-review)
 - [slack-mcp](./pi/skills/slack-mcp) (Pi-only)
@@ -73,7 +78,7 @@ claude plugin install shannon
 
 ## Pi setup
 
-If you install the Claude marketplace, you can configure Pi to look for skills and extensions under `~/.claude/plugins/marketplaces/wincent-agent-plugins/` in your `~/.pi/agent/settings.json`:
+If you install the Claude marketplace, you can configure Pi to look for skills, prompt templates, and extensions under `~/.claude/plugins/marketplaces/wincent-agent-plugins/` in your `~/.pi/agent/settings.json`:
 
 ```json
 {
@@ -82,6 +87,9 @@ If you install the Claude marketplace, you can configure Pi to look for skills a
   ],
   "skills": [
     "~/.claude/plugins/marketplaces/wincent-agent-plugins/pi/skills"
+  ],
+  "prompts": [
+    "~/.claude/plugins/marketplaces/wincent-agent-plugins/pi/prompts"
   ]
 }
 ```
