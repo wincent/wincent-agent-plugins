@@ -11,7 +11,7 @@ import {isToolCallEventType} from '@earendil-works/pi-coding-agent';
 import {existsSync} from 'node:fs';
 import {join} from 'node:path';
 
-// Not a security boundary — just a heuristic to catch the most common forms
+// Not a security boundary; just a heuristic to catch the most common forms
 // of `git add`, `git stage`, and `git commit` that an LLM agent is likely to
 // produce. Won't catch every possible invocation (eg. `env A=1 git -c key=value
 // -C workdir commit`) but covers the reasonable cases.

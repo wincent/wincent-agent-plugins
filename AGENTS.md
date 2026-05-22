@@ -15,6 +15,6 @@ One motivation for the symlinks is that Claude plugins effectively serve as name
 
 ## Skill portability: avoid "claude-isms"
 
-Claude skills in this repository should be written in a way that is free of "claude-isms" — that is, patterns, tools, or assumptions that only work in Claude. They should be usable as-is from both Claude and Pi via the symlinks described above.
+Claude skills in this repository should be written in a way that is free of "claude-isms" (that is, patterns, tools, or assumptions that only work in Claude). They should be usable as-is from both Claude and Pi via the symlinks described above.
 
 In the rare case where a task genuinely requires a completely different approach that cannot be shared between Claude and Pi, a Pi-specific skill may be added directly under `pi/skills/` (rather than as a symlink to a Claude plugin skill). The `pi-update` skill is an example of such a Pi-only skill.

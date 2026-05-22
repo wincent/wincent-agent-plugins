@@ -15,7 +15,7 @@ When a prompt arrives from Shannon (indicated by a footer like `(Shannon prompt 
 
 There are two ways to obtain the Neovim server address:
 
-1. **From a Shannon prompt** — Shannon prompts include a footer of the form:
+1. **From a Shannon prompt**: Shannon prompts include a footer of the form:
 
    ```
    (Shannon prompt via Neovim server /path/to/socket)
@@ -23,7 +23,7 @@ There are two ways to obtain the Neovim server address:
 
    Extract the server address from this footer.
 
-2. **Auto-discovery** — if no Shannon prompt has been received yet, run the discovery script. Below, `$SKILL_DIR` is the absolute path to the directory containing this SKILL.md file; expand it to its absolute value before running, since the current working directory is not guaranteed to be the skill directory.
+2. **Auto-discovery**: if no Shannon prompt has been received yet, run the discovery script. Below, `$SKILL_DIR` is the absolute path to the directory containing this SKILL.md file; expand it to its absolute value before running, since the current working directory is not guaranteed to be the skill directory.
 
    ```bash
    $SKILL_DIR/scripts/shannon-find-nvim.sh
@@ -60,10 +60,10 @@ nvim --server <addr> --remote-expr 'luaeval("require(\"wincent.shannon.private.a
 
 The third argument is a highlight group. Use these to convey meaning:
 
-- `DiagnosticInfo` — informational annotations (blue)
-- `DiagnosticWarn` — warnings (yellow)
-- `DiagnosticError` — errors/issues (red)
-- `DiagnosticHint` — hints/suggestions (green)
+- `DiagnosticInfo`: informational annotations (blue)
+- `DiagnosticWarn`: warnings (yellow)
+- `DiagnosticError`: errors/issues (red)
+- `DiagnosticHint`: hints/suggestions (green)
 
 If omitted, defaults to `DiagnosticInfo`.
 
@@ -95,9 +95,9 @@ Use RPC when:
 
 The Shannon plugin provides the following commands, which can be invoked via RPC:
 
-- `:ShannonNextMark` — jump to the next Shannon extmark in the current buffer (wraps around).
-- `:ShannonPreviousMark` — jump to the previous Shannon extmark (wraps around).
-- `:ShannonClearMarks` — clear all Shannon extmarks in the current buffer.
+- `:ShannonNextMark`: jump to the next Shannon extmark in the current buffer (wraps around).
+- `:ShannonPreviousMark`: jump to the previous Shannon extmark (wraps around).
+- `:ShannonClearMarks`: clear all Shannon extmarks in the current buffer.
 
 After adding annotations, tell the user they can navigate between marks with `:ShannonNextMark` / `:ShannonPreviousMark` (or their configured mappings). When you are done with an annotation session and the user has finished reviewing, clear the marks via RPC:
 

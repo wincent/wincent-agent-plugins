@@ -149,7 +149,7 @@ async function editPicked(ctx: CtxWithIdle) {
   const byLabel = new Map<string, AssistantAnswer>();
   const labels = candidates.map((candidate, idx) => {
     const ordinal = String(idx + 1).padStart(2, ' ');
-    const label = `${ordinal}. ${relativeTime(candidate.entry.timestamp)} — ${
+    const label = `${ordinal}. ${relativeTime(candidate.entry.timestamp)} - ${
       preview(candidate.text)
     }`;
     // Disambiguate the rare case of identical labels (same time, same preview).

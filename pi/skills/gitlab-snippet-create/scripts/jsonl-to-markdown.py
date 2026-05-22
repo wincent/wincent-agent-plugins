@@ -3,7 +3,7 @@
 Convert a pi session JSONL file to Markdown.
 
 Reads the JSONL, reconstructs the active branch (leaf to root), and renders
-each entry as readable Markdown. Deterministic — no LLM involvement.
+each entry as readable Markdown. Deterministic: no LLM involvement.
 
 Usage:
     jsonl-to-markdown.py <session.jsonl>
@@ -166,7 +166,7 @@ def render_message(msg):
         if model:
             header += f" ({provider}/{model})" if provider else f" ({model})"
         if total_cost:
-            header += f" — ${total_cost:.4f}"
+            header += f" - ${total_cost:.4f}"
 
         return f"{header}\n\n{body}"
 

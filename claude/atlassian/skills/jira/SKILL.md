@@ -37,14 +37,14 @@ acli jira workitem search --filter 10001
 
 Useful flags on `search`:
 
-- `--jql <query>` — JQL query (see <https://support.atlassian.com/jira-software-cloud/docs/use-advanced-search-with-jira-query-language-jql/>).
-- `--filter <id>` — search using a saved filter ID instead of inline JQL.
-- `--fields <list>` — comma-separated list of fields (default `issuetype,key,assignee,priority,status,summary`).
-- `--limit <n>` — cap the result count.
-- `--paginate` — fetch all matching items across pages.
-- `--count` — return only the total count rather than rows.
-- `--json` / `--csv` — output formats.
-- `--web` — open the search in a browser instead of printing.
+- `--jql <query>`: JQL query (see <https://support.atlassian.com/jira-software-cloud/docs/use-advanced-search-with-jira-query-language-jql/>).
+- `--filter <id>`: search using a saved filter ID instead of inline JQL.
+- `--fields <list>`: comma-separated list of fields (default `issuetype,key,assignee,priority,status,summary`).
+- `--limit <n>`: cap the result count.
+- `--paginate`: fetch all matching items across pages.
+- `--count`: return only the total count rather than rows.
+- `--json` / `--csv`: output formats.
+- `--web`: open the search in a browser instead of printing.
 
 ## Other workitem operations
 
@@ -54,18 +54,18 @@ Useful flags on `search`:
 
 Use `acli jira <group> --help` to discover subcommands in:
 
-- `board` — Jira boards (Kanban/Scrum).
-- `sprint` — sprints under those boards.
-- `project` — Jira projects.
-- `filter` — saved JQL filters (referenceable from `workitem search --filter <id>`).
-- `dashboard` — Jira dashboards.
-- `field` — field metadata.
+- `board`: Jira boards (Kanban/Scrum).
+- `sprint`: sprints under those boards.
+- `project`: Jira projects.
+- `filter`: saved JQL filters (referenceable from `workitem search --filter <id>`).
+- `dashboard`: Jira dashboards.
+- `field`: field metadata.
 
 ## Using `scripts/atlassian-curl.sh` (for endpoints `acli` does not expose)
 
 The wrapper takes a URL path plus arbitrary `curl` options and prints the JSON response. Credentials are read from the environment by the script itself; you do **not** need to pass any auth-related arguments, and you do **not** need to read or modify the script. Treat it as an opaque tool.
 
-If the script reports that a required environment variable is unset, surface that to the user and stop — do not try to work around it.
+If the script reports that a required environment variable is unset, surface that to the user and stop: do not try to work around it.
 
 In the examples below, `$SKILL_DIR` is the absolute path to the directory containing the SKILL.md file that defines this skill. Always invoke the wrapper as `$SKILL_DIR/scripts/atlassian-curl.sh` (with `$SKILL_DIR` expanded to its absolute value before running the command); do not invoke it as a bare relative path, since the current working directory is not guaranteed to be the skill directory.
 

@@ -4,8 +4,8 @@ Access Atlassian data via the [Atlassian CLI](https://developer.atlassian.com/cl
 
 ## Skills
 
-- `/atlassian:jira` — Access Jira issues, projects, and other Jira data via `acli jira`.
-- `/atlassian:confluence` — Access Confluence pages, spaces, and other Confluence data via `acli confluence`.
+- `/atlassian:jira`: Access Jira issues, projects, and other Jira data via `acli jira`.
+- `/atlassian:confluence`: Access Confluence pages, spaces, and other Confluence data via `acli confluence`.
 
 ## Setup
 
@@ -21,6 +21,6 @@ export ATLASSIAN_EMAIL=you@example.com  # email associated with the token
 export ATLASSIAN_API_KEY=…              # the token itself
 ```
 
-The token is a regular (non-scoped) Atlassian API token, so the same value can be used for any Confluence or Jira REST endpoint. Store it somewhere your shell can read it (keychain helper, `pass`, `.netrc`-style file, …) — never commit it.
+The token is a regular (non-scoped) Atlassian API token, so the same value can be used for any Confluence or Jira REST endpoint. Store it somewhere your shell can read it (keychain helper, `pass`, `.netrc`-style file, …). Never commit it.
 
 The agent never sees these variable values: it only invokes the wrapper script, which reads them from the environment at runtime.

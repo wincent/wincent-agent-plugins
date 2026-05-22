@@ -56,12 +56,12 @@ You can override any of these by adding a `.md` file with the same name under `<
 
 Per-task state lives at `${XDG_STATE_HOME:-~/.local/state}/pi/subagent/<task_id>/`:
 
-- `meta.json` — task metadata (status, pids, pane id, started/ended timestamps)
-- `main.sock` — Unix domain socket the main side listens on (cleaned up on close)
-- `bus.jsonl` — append-only audit log of every envelope in both directions
-- `system-prompt.md` — the rendered system prompt the subagent was given
-- `task.txt` / `run.sh` — wrapper artifacts written by the spawner
-- `worktree` — symlink to the isolated worktree, when `worktree: true`
+- `meta.json`: task metadata (status, pids, pane id, started/ended timestamps)
+- `main.sock`: Unix domain socket the main side listens on (cleaned up on close)
+- `bus.jsonl`: append-only audit log of every envelope in both directions
+- `system-prompt.md`: the rendered system prompt the subagent was given
+- `task.txt` / `run.sh`: wrapper artifacts written by the spawner
+- `worktree`: symlink to the isolated worktree, when `worktree: true`
 
 On extension load, stale entries whose recorded pids are gone are marked `crashed` automatically.
 

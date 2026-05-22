@@ -35,7 +35,7 @@ Record this as `LATEST` (the absolute latest published version).
 This user has npm's `min-release-age` set to **7 days**. Treat this as a hard-coded fact and set `COOLDOWN = 7 days`. Do **not** try to detect it at runtime:
 
 - `npm config get min-release-age` currently returns `null` (npm bug) and `npm config list` also fails to surface it.
-- Do **not** read `~/.npmrc` — it contains auth tokens that must not leak into session context.
+- Do **not** read `~/.npmrc`: it contains auth tokens that must not leak into session context.
 
 Now compute the version that a plain `npm install -g @earendil-works/pi-coding-agent` would actually install today. Fetch publish timestamps:
 
@@ -122,9 +122,9 @@ For every breaking change identified in Step 3, check each extension/skill disco
 
 Produce a per-item verdict, with **one row per item enumerated in Step 4**. Do not omit items just because they appear obviously fine; an explicit "Compatible" verdict tells the user you actually looked.
 
-- **Compatible** — no action needed.
-- **Needs update** — describe what must change and, where possible, propose the specific edit (file + diff-style snippet).
-- **Uncertain** — explain what you could not verify and what the user should double-check manually.
+- **Compatible**: no action needed.
+- **Needs update**: describe what must change and, where possible, propose the specific edit (file + diff-style snippet).
+- **Uncertain**: explain what you could not verify and what the user should double-check manually.
 
 When presenting the table in Step 6, organize rows by source root (e.g. group items from `~/.pi/agent/extensions` together, then items from each `settings.json`-configured root) so the user can see at a glance that every root was covered.
 
@@ -134,12 +134,12 @@ Choose one of the following scenarios based on Step 2’s classification, presen
 
 The options offered depend on the scenario:
 
-- **Scenario A**: two options — (a) cooldown-respecting update (the plain command), or (b) skip.
-- **Scenarios B / C**: three options — (a) cooldown-respecting update, (b) cooldown-override update to `LATEST`, or (c) skip. In Scenario C, mark the cooldown-respecting option as a **downgrade** and recommend against it (or, if `COOLDOWN_LATEST < CURRENT`, replace it with a no-op pin to `CURRENT`).
+- **Scenario A**: two options, (a) cooldown-respecting update (the plain command), or (b) skip.
+- **Scenarios B / C**: three options, (a) cooldown-respecting update, (b) cooldown-override update to `LATEST`, or (c) skip. In Scenario C, mark the cooldown-respecting option as a **downgrade** and recommend against it (or, if `COOLDOWN_LATEST < CURRENT`, replace it with a no-op pin to `CURRENT`).
 
 When the user chooses to update, proceed to Step 7. When they decline, stop after acknowledging.
 
-### Scenario A — No cooldown (single block)
+### Scenario A: no cooldown (single block)
 
 Structure the report as:
 
@@ -157,13 +157,13 @@ The upgrade command is:
 npm install -g @earendil-works/pi-coding-agent
 ```
 
-### Scenarios B and C — Cooldown active (two blocks)
+### Scenarios B and C: cooldown active (two blocks)
 
 When `min-release-age` is in effect, a plain `npm install -g @earendil-works/pi-coding-agent` will resolve only to versions at least `COOLDOWN` old. Present the findings as **two blocks** so the user can make an informed choice between respecting their cooldown and overriding it for this install.
 
 Open the report with a short **Cooldown notice** stating the configured `min-release-age` value and naming both targets (`COOLDOWN_LATEST` and `LATEST`) with their publish dates. Then:
 
-**Block 1 — Respect the cooldown (`CURRENT` → `COOLDOWN_LATEST`)**
+**Block 1: respect the cooldown (`CURRENT` → `COOLDOWN_LATEST`)**
 
 1. Version summary for that span.
 2. Breaking changes in the span (or “none”).
@@ -174,7 +174,7 @@ Open the report with a short **Cooldown notice** stating the configured `min-rel
    - If `COOLDOWN_LATEST == CURRENT`: say “no-op under the current cooldown” and omit the command.
    - If `COOLDOWN_LATEST < CURRENT` (Scenario C, downgrade hazard): lead with a prominent warning that running the plain command will **downgrade** the user from `CURRENT` to `COOLDOWN_LATEST`, may break already-working extensions whose transitive deps came from the newer pi, and recommend against running it. Either suggest pinning with `npm install -g @earendil-works/pi-coding-agent@<CURRENT>` to stay put, or skipping Block 1 entirely and going straight to Block 2.
 
-**Block 2 — Override the cooldown (`CURRENT` → `LATEST`)**
+**Block 2: override the cooldown (`CURRENT` → `LATEST`)**
 
 1. Version summary for that span.
 2. Breaking changes in the span (or “none”).
@@ -197,7 +197,7 @@ Use the command corresponding to the user’s choice:
 - Cooldown-respecting (Scenarios A and B): `npm install -g @earendil-works/pi-coding-agent`
 - Cooldown-override (Scenarios B and C): `npm install -g @earendil-works/pi-coding-agent@<LATEST> --min-release-age=0` (with `<LATEST>` replaced by the literal version string from Step 2).
 
-Run the command via `bash`, capturing both stdout and stderr, and surface the result to the user. If the install fails (non-zero exit, or no `pi` binary on the resulting PATH), report the failure and **skip Step 8** — do not patch a half-installed package. If the install succeeds, continue to Step 8.
+Run the command via `bash`, capturing both stdout and stderr, and surface the result to the user. If the install fails (non-zero exit, or no `pi` binary on the resulting PATH), report the failure and **skip Step 8**: do not patch a half-installed package. If the install succeeds, continue to Step 8.
 
 ## Step 8: Patch `@earendil-works/pi-tui` to re-enable hyperlinks under tmux
 
@@ -220,7 +220,7 @@ What to do:
 
 2. Make sure you change **only** the `return` statement that lives inside the `if (inTmuxOrScreen) { … }` branch of `detectCapabilities`. There is a second, structurally similar `return { images: null, trueColor, hyperlinks: false };` further down that handles unknown terminals; that one must stay `false`. Pick whatever editing approach gives you confidence you're only touching the tmux/screen branch.
 
-3. Be idempotent: if the tmux/screen branch already returns `hyperlinks: true`, just report “already patched” and move on. If neither the patched nor the unpatched form is present in the expected shape, the upstream code has changed — don't guess; show the user the current `detectCapabilities` body and ask how to proceed.
+3. Be idempotent: if the tmux/screen branch already returns `hyperlinks: true`, just report “already patched” and move on. If neither the patched nor the unpatched form is present in the expected shape, the upstream code has changed. Don't guess; show the user the current `detectCapabilities` body and ask how to proceed.
 
 4. After patching, verify the file: the tmux/screen branch should be `true`, the unknown-terminal fallback should still be `false`, and the file should otherwise be unchanged.
 
@@ -232,6 +232,6 @@ What to do:
 - If the changelog cannot be fetched (offline, rate-limited), say so and fall back to `npm view @earendil-works/pi-coding-agent` for whatever release notes are embedded in the package metadata.
 - Pre-release/beta versions (`-next`, `-rc`, etc.) should be mentioned but not recommended unless the user asked for them explicitly.
 - If `CURRENT` is many versions behind, warn the user that the impact assessment is best-effort and that a staged upgrade (or careful manual review) may be wiser than a single jump.
-- `min-release-age` (npm 11+) makes `npm install` resolve to “the newest version older than the cooldown,” and npm does **not** protect against downgrades — if every version newer than `CURRENT` is inside the cooldown window, a plain install will silently move the user to a lower version. Always check Step 2’s classification before recommending the plain command.
+- `min-release-age` (npm 11+) makes `npm install` resolve to “the newest version older than the cooldown,” and npm does **not** protect against downgrades: if every version newer than `CURRENT` is inside the cooldown window, a plain install will silently move the user to a lower version. Always check Step 2’s classification before recommending the plain command.
 - The cooldown is hard-coded to 7 days for this user because `npm config get min-release-age` returns `null` (bug) and reading `~/.npmrc` would leak auth tokens. If the user later says their cooldown has changed, update the `COOLDOWN = 7 days` line in Step 2 rather than adding runtime detection.
 - When a breaking change landed inside the cooldown window (Scenario B/C), extensions authored against the newer API may work on `LATEST` but not on `COOLDOWN_LATEST` (or vice versa on downgrade). Call this out in the per-block impact analysis.

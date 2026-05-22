@@ -45,7 +45,7 @@ function detectSubMode(): SubModeEnv | null {
   }
   if (!taskId || !busDir) {
     throw new Error(
-      'subagent extension: corrupt environment — both PI_SUBAGENT_TASK_ID and PI_SUBAGENT_BUS_DIR must be set, or neither',
+      'subagent extension: corrupt environment; both PI_SUBAGENT_TASK_ID and PI_SUBAGENT_BUS_DIR must be set, or neither',
     );
   }
   return {taskId, busDir, parentId: parentId ?? ''};

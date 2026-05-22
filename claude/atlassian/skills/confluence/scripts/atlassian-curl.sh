@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# atlassian-curl.sh — authenticated curl wrapper for the Atlassian Cloud
+# atlassian-curl.sh: authenticated curl wrapper for the Atlassian Cloud
 # REST API. Used by skills that need to call endpoints `acli` doesn't
 # expose (notably Confluence search via CQL).
 #
@@ -39,7 +39,7 @@
 #     is still printed (via `--fail-with-body`).
 
 # Defensively disable shell tracing even if the parent invoked us with
-# `sh -x` — we don't want the credential-bearing argv to be echoed.
+# `sh -x`: we don't want the credential-bearing argv to be echoed.
 set +x
 set -eu
 
