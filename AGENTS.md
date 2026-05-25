@@ -1,8 +1,8 @@
 # Agent instructions
 
-## Formatting checks before committing Markdown
+## Formatting checks before committing
 
-Before creating any commit that contains changes to Markdown files, run `bin/check-format` to see whether any files need formatting fixes. If fixes are needed, run `bin/format` to apply them, then include the resulting changes in the commit.
+Before creating any commit, run `bin/check-format` to see whether any files need formatting fixes. If fixes are needed, run `bin/format` to apply them, then include the resulting changes in the commit.
 
 ## Directory structure
 
