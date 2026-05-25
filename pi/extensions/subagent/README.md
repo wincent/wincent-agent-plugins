@@ -2,8 +2,6 @@
 
 A Pi extension that delegates tasks to specialized subagents running in their own Pi processes inside tmux panes. Communicates over a typed Unix domain socket bus; never via `tmux capture-pane` or `tmux send-keys`.
 
-See [PLAN.md](../../../PLAN.md) for the full design.
-
 ## Install
 
 The six default agents under `agents/` are auto-discovered relative to the loaded extension module. To override a shipped agent or add a project-local one, drop a `.md` file with the same name (or a new name) under `<repo>/.pi/agents/` (project-scoped) or `~/.pi/agent/agents/` (user-scoped); both shadow the extension-bundled tier.

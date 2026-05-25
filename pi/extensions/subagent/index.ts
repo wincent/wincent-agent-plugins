@@ -12,9 +12,6 @@
  *     Connects to the main side's UDS at PI_SUBAGENT_BUS_DIR/main.sock
  *     and hooks lifecycle events to ensure a final `done` envelope is
  *     always sent.
- *
- * See pi/extensions/subagent/PLAN.md for the full design (link is to the
- * repo's PLAN.md at the root).
  */
 
 import type {

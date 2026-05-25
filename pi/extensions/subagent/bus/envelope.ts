@@ -2,8 +2,7 @@
  * Envelope schema and validators for the subagent bus.
  *
  * Every message on the wire (and tee'd into bus.jsonl) is one of these.
- * Schema is versioned via `v`. Receivers warn-and-drop unknown `v` values;
- * see PLAN.md ("The bus" / "Envelope schema") for the rationale.
+ * Schema is versioned via `v`. Receivers warn-and-drop unknown `v` values.
  */
 
 export const PROTOCOL_VERSION = 1 as const;

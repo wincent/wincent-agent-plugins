@@ -1,7 +1,7 @@
 /**
  * Discovery and parsing of agent .md files.
  *
- * Frontmatter is intentionally minimal (see PLAN.md "Agent definitions"):
+ * Frontmatter is intentionally minimal:
  *
  *   description       (required)
  *   tools             (required)

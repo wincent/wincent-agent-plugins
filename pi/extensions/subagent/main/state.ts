@@ -1,7 +1,7 @@
 /**
  * State-directory layout and reaper for the subagent bus.
  *
- * Per-task layout (see PLAN.md):
+ * Per-task layout:
  *
  *   ${XDG_STATE_HOME:-~/.local/state}/pi/subagent/<task_id>/
  *     meta.json           # status metadata
