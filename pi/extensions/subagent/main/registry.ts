@@ -13,6 +13,7 @@
 
 import type {Bus} from '../bus/bus.js';
 import type {Envelope, ReportEnvelope} from '../bus/envelope.js';
+import type {AskPolicy} from './agents.js';
 
 export type TaskMode = 'sync' | 'background';
 
@@ -35,6 +36,26 @@ export interface ActiveTask {
   lastReport?: ReportEnvelope['payload'];
   /** Last status from the subagent. */
   status: 'running' | 'ok' | 'failed' | 'aborted' | 'crashed';
+  /**
+   * Resolved ask policy for this task: per-call override beats agent
+   * frontmatter beats the global default of `'human'`. Read by routing
+   * for background-mode asks; sync mode passes it through as a closure.
+   */
+  askPolicy: AskPolicy;
+  /**
+   * Number of successful `'llm'`-policy answers given since the last
+   * budget escalation (or since the task started). Compared against
+   * the budget in `ask.ts` to decide when to escalate to a human.
+   * Reset to 0 every time an escalation is attempted, regardless of
+   * whether the human typed an answer.
+   */
+  llmAnswersSinceEscalation: number;
+  /**
+   * Total successful `'llm'`-policy answers given over the lifetime of
+   * the task. Diagnostic; never reset. Surfaced in the `subagent:done`
+   * lifecycle event.
+   */
+  llmAnswersTotal: number;
 }
 
 const tasks = new Map<string, ActiveTask>();

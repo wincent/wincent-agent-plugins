@@ -9,6 +9,7 @@
  *   placement         (optional)
  *   worktree          (optional)
  *   close_on_success  (optional)
+ *   ask_policy        (optional; one of "human", "deny", "llm")
  *
  * Frontmatter is authoritative for the fields it sets. Per-call `subagent`
  * tool parameters fill in fields the agent file leaves unspecified.
@@ -25,6 +26,8 @@ export type Placement =
   | 'window'
   | 'window-detached';
 
+export type AskPolicy = 'human' | 'deny' | 'llm';
+
 export type AgentSource = 'project' | 'user' | 'extension';
 
 export interface AgentConfig {
@@ -35,6 +38,12 @@ export interface AgentConfig {
   placement: Placement;
   worktree: boolean;
   closeOnSuccess: boolean;
+  /**
+   * Default policy for handling `ask` envelopes from the subagent.
+   * Undefined means the agent file did not set one; the per-call
+   * argument (or the global default `'human'`) applies.
+   */
+  askPolicy?: AskPolicy;
   systemPrompt: string;
   source: AgentSource;
   filePath: string;
@@ -47,6 +56,7 @@ interface RawFrontmatter {
   placement?: string;
   worktree?: string | boolean;
   close_on_success?: string | boolean;
+  ask_policy?: string;
 }
 
 interface ParsedFrontmatter {
@@ -109,6 +119,12 @@ const VALID_PLACEMENTS: ReadonlySet<Placement> = new Set([
   'window-detached',
 ]);
 
+const VALID_ASK_POLICIES: ReadonlySet<AskPolicy> = new Set([
+  'human',
+  'deny',
+  'llm',
+]);
+
 function parseBool(
   value: string | boolean | undefined,
   fallback: boolean,
@@ -138,6 +154,14 @@ function parsePlacement(
   }
   const trimmed = value.trim() as Placement;
   return VALID_PLACEMENTS.has(trimmed) ? trimmed : fallback;
+}
+
+function parseAskPolicy(value: string | undefined): AskPolicy | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim().toLowerCase() as AskPolicy;
+  return VALID_ASK_POLICIES.has(trimmed) ? trimmed : undefined;
 }
 
 function parseToolList(value: string | undefined): string[] {
@@ -210,6 +234,7 @@ function loadAgentsFromDir(
         frontmatter.close_on_success as string | boolean | undefined,
         true,
       ),
+      askPolicy: parseAskPolicy(frontmatter.ask_policy),
       systemPrompt: body.trim(),
       source,
       filePath,

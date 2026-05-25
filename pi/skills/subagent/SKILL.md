@@ -52,7 +52,32 @@ For a campaign of multiple workers, see the `/sweep` workflow prompt: scout out 
 | Run the formatter and have it write changes                 | `formatter` |
 | Implement a scoped change in isolation, with its own branch | `worker`    |
 
-If none of these fits, define a new agent at `pi/extensions/subagent/agents/<name>.md` (in this repo) with frontmatter (`description`, `tools`, optional `placement`/`worktree`/`close_on_success`/`disallowed_tools`) and a system prompt body.
+If none of these fits, define a new agent at `pi/extensions/subagent/agents/<name>.md` (in this repo) with frontmatter (`description`, `tools`, optional `placement`/`worktree`/`close_on_success`/`disallowed_tools`/`ask_policy`) and a system prompt body.
+
+## How subagents ask clarifying questions (`ask_policy`)
+
+Subagents can call their `ask` tool to request clarification mid-task. The main side answers the question one of three ways, controlled by `ask_policy`:
+
+| Policy  | What happens when the subagent asks                                                                                    | When to use                                                                                                                                                          |
+| ------- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `human` | The watching user gets a TUI input prompt. Whatever they type is the answer.                                           | **Default.** Right for case-1 helpers in a visible split where the user is at the keyboard and a single popup is fine.                                               |
+| `deny`  | No one is consulted. The subagent gets a canned reply telling it to make a reasonable assumption and document it.      | Unattended or high-fan-out work where popups would be intrusive (e.g. a sweep of background workers). Already the default for the bundled `worker` agent.            |
+| `llm`   | The question is forwarded to the main agent's own model via a one-shot out-of-band call. The reply is sent on the bus. | Background or parallel work where you want better-than-deny answer quality without bothering the user. Costs extra tokens per ask; adds latency. Use when justified. |
+
+Precedence: the per-call `ask_policy` argument to the `subagent` tool wins; if absent, the agent .md frontmatter wins; if absent there too, the global default `human` applies.
+
+Practical guidance for choosing:
+
+- Single visible helper, user is watching: leave it alone (`human`).
+- A `worker` (especially via `/sweep`): leave it alone (`worker`'s frontmatter already sets `deny`).
+- `background: true` task you launched while the user is doing something else: prefer `deny` unless the work is high-value enough to justify `llm` round-trips.
+- You want the subagent to clarify with "the same brain that delegated the task" rather than the user: `llm`.
+
+If you set `llm` and the main agent has no model configured or the API call fails, the system falls back to the `deny` behaviour automatically (and emits `subagent:answered` with `source: "llm-fallback"`).
+
+### Budget and human escalation
+
+The `llm` policy is gated by a per-task budget of 10 successful LLM-answered questions. On the 11th question, the next ask is escalated to a `human` prompt regardless of policy: the user gets a TUI input dialog so they can sanity-check that the subagent has not drifted. The counter then resets, and the subagent gets another 10 LLM-answered questions before the next check-in. If the user dismisses the escalation (Esc / empty input / no UI available), the subagent receives the deny-style canned reply (`source: "policy-escalated"`) and the counter still resets, so the user is not re-prompted on every subsequent question. Only successful `'llm'`-answered asks count toward the budget; fallbacks (`source: "llm-fallback"`) do not.
 
 ## Reading the report
 

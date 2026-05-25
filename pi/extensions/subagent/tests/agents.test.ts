@@ -112,3 +112,86 @@ test('discoverAgents reads disallowed_tools', async () => {
     assert.deepEqual(limited!.disallowedTools, ['bash', 'edit']);
   });
 });
+
+test('discoverAgents leaves askPolicy undefined when not set in frontmatter', async () => {
+  await withTempPiAgentDir(async (dir) => {
+    await writeFile(
+      join(dir, 'agents', 'plain.md'),
+      ['---', 'description: Plain agent', 'tools: read', '---', 'Body.'].join(
+        '\n',
+      ),
+    );
+    const result = discoverAgents(TMP);
+    const plain = result.agents.find((a) => a.name === 'plain');
+    assert.ok(plain);
+    assert.equal(plain!.askPolicy, undefined);
+  });
+});
+
+test('discoverAgents parses each valid ask_policy value', async () => {
+  await withTempPiAgentDir(async (dir) => {
+    for (const value of ['human', 'deny', 'llm'] as const) {
+      await writeFile(
+        join(dir, 'agents', `${value}.md`),
+        [
+          '---',
+          `description: Agent with ${value} policy`,
+          'tools: read',
+          `ask_policy: ${value}`,
+          '---',
+          'Body.',
+        ].join('\n'),
+      );
+    }
+    const result = discoverAgents(TMP);
+    const human = result.agents.find((a) => a.name === 'human');
+    const deny = result.agents.find((a) => a.name === 'deny');
+    const llm = result.agents.find((a) => a.name === 'llm');
+    assert.ok(human);
+    assert.ok(deny);
+    assert.ok(llm);
+    assert.equal(human!.askPolicy, 'human');
+    assert.equal(deny!.askPolicy, 'deny');
+    assert.equal(llm!.askPolicy, 'llm');
+  });
+});
+
+test('discoverAgents normalises mixed-case ask_policy values', async () => {
+  await withTempPiAgentDir(async (dir) => {
+    await writeFile(
+      join(dir, 'agents', 'shouty.md'),
+      [
+        '---',
+        'description: Shouty agent',
+        'tools: read',
+        'ask_policy: DENY',
+        '---',
+        'Body.',
+      ].join('\n'),
+    );
+    const result = discoverAgents(TMP);
+    const shouty = result.agents.find((a) => a.name === 'shouty');
+    assert.ok(shouty);
+    assert.equal(shouty!.askPolicy, 'deny');
+  });
+});
+
+test('discoverAgents drops invalid ask_policy values', async () => {
+  await withTempPiAgentDir(async (dir) => {
+    await writeFile(
+      join(dir, 'agents', 'weird.md'),
+      [
+        '---',
+        'description: Weird agent',
+        'tools: read',
+        'ask_policy: telepathy',
+        '---',
+        'Body.',
+      ].join('\n'),
+    );
+    const result = discoverAgents(TMP);
+    const weird = result.agents.find((a) => a.name === 'weird');
+    assert.ok(weird);
+    assert.equal(weird!.askPolicy, undefined);
+  });
+});

@@ -17,8 +17,9 @@ import {AuditLog} from '../bus/audit-log.js';
 import {Bus} from '../bus/bus.js';
 import {newEnvelopeId} from '../bus/envelope.js';
 import {listenForPeer} from '../bus/transport-uds.js';
-import type {AgentConfig, Placement} from './agents.js';
+import type {AgentConfig, AskPolicy, Placement} from './agents.js';
 import {discoverAgents} from './agents.js';
+import {handleAsk} from './ask.js';
 import {emitLifecycle} from './events.js';
 import {
   type ActiveTask,
@@ -64,6 +65,25 @@ const PlacementSchema = Type.Union([
   Type.Literal('window-detached'),
 ]);
 
+const AskPolicySchema = Type.Union(
+  [Type.Literal('human'), Type.Literal('deny'), Type.Literal('llm')],
+  {
+    description: [
+      'How to handle `ask` envelopes from the subagent.',
+      '"human" prompts the watching user (the default; use for short',
+      'visible helpers running in a split). "deny" replies with a canned',
+      'message telling the subagent to make a reasonable assumption and',
+      'document it (use for unattended/background fan-out where a popup',
+      'would interrupt the user). "llm" forwards the question to the main',
+      "agent's own model via a one-shot out-of-band call and returns the",
+      'reply (use when you want autonomous clarification without bothering',
+      'the user, at the cost of extra tokens). If unset, the per-call',
+      'value beats the agent .md frontmatter, which beats the global',
+      'default of "human".',
+    ].join(' '),
+  },
+);
+
 const SubagentParams = Type.Object({
   agent: Type.String({description: 'Name of an agent (matches an .md file)'}),
   task: Type.String({description: 'The task to delegate, in natural language'}),
@@ -85,12 +105,7 @@ const SubagentParams = Type.Object({
         'Return immediately; route results as user messages. Default false.',
     }),
   ),
-  ask_policy: Type.Optional(
-    Type.Union(
-      [Type.Literal('human'), Type.Literal('deny')],
-      {description: 'How to handle ask envelopes; default "human".'},
-    ),
-  ),
+  ask_policy: Type.Optional(AskPolicySchema),
 });
 
 const SteerParams = Type.Object({
@@ -268,7 +283,7 @@ async function runSubagentTool(
     cwd?: string;
     close_on_success?: boolean;
     background?: boolean;
-    ask_policy?: 'human' | 'deny';
+    ask_policy?: AskPolicy;
   },
   signal: AbortSignal | undefined,
   onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
@@ -294,7 +309,7 @@ async function runSubagentTool(
   const placement: Placement = params.placement ?? agent.placement;
   const closeOnSuccess = params.close_on_success ?? agent.closeOnSuccess;
   const useWorktree = params.worktree ?? agent.worktree;
-  const askPolicy = params.ask_policy ?? 'human';
+  const askPolicy: AskPolicy = params.ask_policy ?? agent.askPolicy ?? 'human';
   const background = params.background ?? false;
   const taskId = `task_${newEnvelopeId().replace(/^msg_/, '')}`;
   const requestedCwd = params.cwd ?? ctx.cwd;
@@ -415,6 +430,9 @@ async function runSubagentTool(
     startedAt: Date.now(),
     cleanup: [],
     status: 'running',
+    askPolicy,
+    llmAnswersSinceEscalation: 0,
+    llmAnswersTotal: 0,
   };
   register(task);
 
@@ -478,7 +496,7 @@ function runSyncWait(
   agent: AgentConfig,
   worktreePlan: WorktreePlan | null,
   closeOnSuccess: boolean,
-  askPolicy: 'human' | 'deny',
+  askPolicy: AskPolicy,
   userTask: string,
   useWorktree: boolean,
 ): Promise<AgentToolResult<SubagentDetails>> {
@@ -525,15 +543,15 @@ function runSyncWait(
           pushUpdate();
           break;
         case 'ask':
-          void handleAsk(
+          void handleAsk({
             pi,
             ctx,
             task,
-            env.id,
-            env.payload.question,
-            env.payload.default,
-            askPolicy,
-          );
+            askId: env.id,
+            question: env.payload.question,
+            defaultAnswer: env.payload.default,
+            policy: askPolicy,
+          });
           progressMessages.push(`asked: ${env.payload.question}`);
           pushUpdate();
           break;
@@ -650,6 +668,7 @@ function runSyncWait(
         taskId: task.taskId,
         status: details.status,
         durationMs: Date.now() - task.startedAt,
+        llmAnswersTotal: task.llmAnswersTotal,
       });
       updateMeta(task.taskId, {
         status: details.status,
@@ -717,6 +736,7 @@ function handleBackgroundFinalization(
       status: task.status,
       durationMs: Date.now() - task.startedAt,
       worktree: worktreeOutcome,
+      llmAnswersTotal: task.llmAnswersTotal,
     });
     updateMeta(task.taskId, {
       status: task.status,
@@ -747,40 +767,6 @@ function handleBackgroundFinalization(
   task.cleanup.push(subDone);
 
   task.bus.onPeerClose(() => settle());
-}
-
-async function handleAsk(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  task: ActiveTask,
-  askId: string,
-  question: string,
-  defaultAnswer: string | undefined,
-  policy: 'human' | 'deny',
-): Promise<void> {
-  emitLifecycle(pi, 'subagent:asked', {taskId: task.taskId, question});
-
-  let answerText: string;
-  if (policy === 'deny') {
-    answerText =
-      `(ask_policy=deny) No answer available; please make a reasonable assumption and note it in your report. Question was: ${question}`;
-  } else {
-    try {
-      const fromUi = await ctx.ui.input(
-        `Subagent ${task.agentName} asks:`,
-        question,
-      );
-      answerText = fromUi ?? defaultAnswer ?? '(no answer)';
-    } catch (err) {
-      answerText = defaultAnswer ?? `(no answer: ${(err as Error).message})`;
-    }
-  }
-  task.bus.emit('answer', {text: answerText}, {inReplyTo: askId});
-  emitLifecycle(pi, 'subagent:answered', {
-    taskId: task.taskId,
-    text: answerText,
-    source: policy === 'deny' ? 'policy' : 'human',
-  });
 }
 
 async function cancelTask(

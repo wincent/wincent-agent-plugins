@@ -39,16 +39,32 @@ It also emits lifecycle events on `pi.events`: `subagent:spawned`, `subagent:con
 
 The extension ships six agent personalities under `agents/`. They are discovered from `~/.pi/agent/agents/` (user) and `<repo>/.pi/agents/` (project) once symlinked.
 
-| Agent       | Use case                                                            | Tools                                   | Worktree | Placement       |
-| ----------- | ------------------------------------------------------------------- | --------------------------------------- | -------- | --------------- |
-| `scout`     | Read-only recon                                                     | read, grep, find, ls, bash              | false    | split-right     |
-| `linter`    | Run linter, report findings                                         | read, grep, find, ls, bash              | false    | split-right     |
-| `tester`    | Run tests, report failures                                          | read, grep, find, ls, bash              | false    | split-right     |
-| `reviewer`  | Review code, report concerns                                        | read, grep, find, ls, bash              | false    | split-right     |
-| `formatter` | Run formatter, write changes, report                                | read, write, edit, grep, find, ls, bash | false    | split-right     |
-| `worker`    | Implement scoped change in isolated worktree, commit, report branch | read, write, edit, grep, find, ls, bash | true     | window-detached |
+| Agent       | Use case                                                            | Tools                                   | Worktree | Placement       | ask_policy |
+| ----------- | ------------------------------------------------------------------- | --------------------------------------- | -------- | --------------- | ---------- |
+| `scout`     | Read-only recon                                                     | read, grep, find, ls, bash              | false    | split-right     | (human)    |
+| `linter`    | Run linter, report findings                                         | read, grep, find, ls, bash              | false    | split-right     | (human)    |
+| `tester`    | Run tests, report failures                                          | read, grep, find, ls, bash              | false    | split-right     | (human)    |
+| `reviewer`  | Review code, report concerns                                        | read, grep, find, ls, bash              | false    | split-right     | (human)    |
+| `formatter` | Run formatter, write changes, report                                | read, write, edit, grep, find, ls, bash | false    | split-right     | (human)    |
+| `worker`    | Implement scoped change in isolated worktree, commit, report branch | read, write, edit, grep, find, ls, bash | true     | window-detached | deny       |
 
-You can override any of these by adding a `.md` file with the same name under `<repo>/.pi/agents/` (project) or `~/.pi/agent/agents/` (user; the symlinks above target the shipped versions).
+Parenthesised values mean the agent file does not set the field explicitly and the global default applies. You can override any of these by adding a `.md` file with the same name under `<repo>/.pi/agents/` (project) or `~/.pi/agent/agents/` (user; the symlinks above target the shipped versions).
+
+## Agent frontmatter
+
+Agent `.md` files start with YAML-ish frontmatter:
+
+| Field              | Required | Values                                                             | Notes                                                                                                                              |
+| ------------------ | -------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `description`      | yes      | string                                                             | One-line summary surfaced to the main agent.                                                                                       |
+| `tools`            | yes      | comma-separated list                                               | Allowed tools (in addition to the runtime bus tools `report`, `progress`, `ask`).                                                  |
+| `disallowed_tools` | no       | comma-separated list                                               | Explicit denylist.                                                                                                                 |
+| `placement`        | no       | `split-right` (default), `split-down`, `window`, `window-detached` | tmux placement for the spawned pane.                                                                                               |
+| `worktree`         | no       | `true` / `false` (default `false`)                                 | Provision an isolated git worktree (case-2 isolation).                                                                             |
+| `close_on_success` | no       | `true` (default) / `false`                                         | Whether to close the pane when the subagent finishes cleanly.                                                                      |
+| `ask_policy`       | no       | `human` (default), `deny`, `llm`                                   | How to answer the subagent's `ask` envelopes. Per-call argument to the `subagent` tool overrides this. See the skill for guidance. |
+
+Fields the agent file does not set fall through to per-call defaults and ultimately to the extension defaults shown above.
 
 ## Where state lives
 
@@ -104,9 +120,14 @@ pi/extensions/subagent/
   tests/                    # unit + integration harnesses
 ```
 
+## `ask_policy: llm` budget
+
+When a task runs with `ask_policy: llm`, each successful LLM-answered question costs one `complete()` round-trip against `ctx.model`. To bound that spend and to keep a human in the loop, the extension counts those answers and escalates to a `human` prompt every `LLM_ASK_BUDGET` answers (10, defined at the top of `main/ask.ts`). The escalation prompt shows the question and the budget context; whatever the user types becomes the answer (`source: "human-escalated"`), and the counter resets so the subagent gets another 10 LLM answers before the next check-in. If the user dismisses the prompt or no UI is available, the subagent unblocks with the deny-style reply (`source: "policy-escalated"`) and the counter still resets.
+
+The lifetime total of LLM-answered questions is surfaced as `llmAnswersTotal` on the `subagent:answered` and `subagent:done` lifecycle events for diagnostics.
+
 ## Known limitations (v1)
 
-- The `ask_policy` of `"llm"` (let the main LLM answer the subagent's clarifying questions) is not implemented; only `"human"` and `"deny"`.
 - Reconnection on a dropped UDS is not supported; a closed socket terminates the task.
 - Hard bash denylists for soft-control agents (e.g. blocking `git commit` for the `formatter`) are not enforced; the agent's system prompt is the only constraint.
 - Headless `pi -p` does not wait for background subagents.
