@@ -86,7 +86,13 @@ export async function spawnSubagentPane(args: SpawnArgs): Promise<SpawnedPane> {
     ? windowIdRaw
     : await lookupWindowId(paneId);
 
-  await trySetTitles(paneId, windowId, args.agentName, args.taskId);
+  await trySetTitles(
+    paneId,
+    windowId,
+    args.agentName,
+    args.taskId,
+    args.placement,
+  );
 
   return {paneId, windowId, pid};
 }
@@ -105,6 +111,7 @@ async function trySetTitles(
   windowId: string,
   agentName: string,
   taskId: string,
+  placement: Placement,
 ): Promise<void> {
   const shortTask = taskId.replace(/^msg_/, '').slice(0, 8);
   // Best-effort: these requires tmux 3.2+ and the right options; ignore errors.
@@ -116,6 +123,9 @@ async function trySetTitles(
     );
   } catch {
     // ignored
+  }
+  if (placement !== 'window' && placement !== 'window-detached') {
+    return;
   }
   try {
     await execFileAsync(
