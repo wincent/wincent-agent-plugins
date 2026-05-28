@@ -208,16 +208,15 @@ The patch flips a single hard-coded boolean in pi-tui's `dist/terminal-image.js`
 ```diff
      const inTmuxOrScreen = !!process.env.TMUX || term.startsWith("tmux") || term.startsWith("screen");
      if (inTmuxOrScreen) {
-         const trueColor = colorTerm === "truecolor" || colorTerm === "24bit";
--        return { images: null, trueColor, hyperlinks: false };
-+        return { images: null, trueColor, hyperlinks: true };
+-        return { images: null, trueColor: hasTrueColorHint, hyperlinks: false };
++        return { images: null, trueColor: hasTrueColorHint, hyperlinks: true };
      }
 ```
 
 What to do:
 
 1. Find pi-tui's install directory. `npm -g ls '@earendil-works/pi-tui' -p` is one way; use whatever you prefer. The file to edit is `dist/terminal-image.js` inside that directory. If you cannot locate the package or the file, stop and tell the user why.
-2. Make sure you change only the `return` statement that lives inside the `if (inTmuxOrScreen) { ... }` branch of `detectCapabilities`. There is a second, structurally similar `return { images: null, trueColor, hyperlinks: false };` further down that handles unknown terminals; that one must stay `false`. Pick whatever editing approach gives you confidence you are only touching the tmux or screen branch.
+2. Make sure you change only the `return` statement that lives inside the `if (inTmuxOrScreen) { ... }` branch of `detectCapabilities`. There is a second, structurally similar `return { images: null, trueColor: hasTrueColorHint || !!process.env.WT_SESSION, hyperlinks: false };` further down that handles unknown terminals; that one must stay `false`. Pick whatever editing approach gives you confidence you are only touching the tmux or screen branch.
 3. Be idempotent: if the tmux or screen branch already returns `hyperlinks: true`, just report already patched and move on. If neither the patched nor the unpatched form is present in the expected shape, the upstream code has changed. Do not guess; show the user the current `detectCapabilities` body and ask how to proceed.
 4. After patching, verify the file: the tmux or screen branch should be `true`, the unknown-terminal fallback should still be `false`, and the file should otherwise be unchanged.
 5. Tell the user, in plain prose, that you applied the pi-tui hyperlink patch and where, and remind them it will need re-applying after every future `npm install -g @earendil-works/pi-coding-agent`, which is why this prompt does it automatically.
