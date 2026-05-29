@@ -16,9 +16,9 @@ import {join} from 'node:path';
 // produce. Won't catch every possible invocation (eg. `env A=1 git -c key=value
 // -C workdir commit`) but covers the reasonable cases.
 const BLOCKED_PATTERNS = [
-  /(?:^|[;&|]\s*)git\b.+\badd\b/,
-  /(?:^|[;&|]\s*)git\b.+\bstage\b/,
-  /(?:^|[;&|]\s*)git\b.+\bcommit\b/,
+  /(?:^|[\n;&|]\s*)git\b.+\badd\b/,
+  /(?:^|[\n;&|]\s*)git\b.+\bstage\b/,
+  /(?:^|[\n;&|]\s*)git\b.+\bcommit\b/,
 ];
 
 async function isJujutsuRepo(pi: ExtensionAPI): Promise<boolean> {
