@@ -5,7 +5,7 @@ argument-hint: "[instructions]"
 
 # Update pi
 
-You are helping the user understand what upgrading pi (`@earendil-works/pi-coding-agent`) will entail: what version they are on, what version is available, what breaking changes are in between, and whether any of their locally installed extensions, skills, or prompt templates will need adjustment to remain compatible. Then offer to run the upgrade for them and, if they accept, apply the local `@earendil-works/pi-tui` hyperlink patch in Step 8 so OSC 8 hyperlinks keep working under tmux.
+You are helping the user understand what upgrading pi (`@earendil-works/pi-coding-agent`) will entail: what version they are on, what version is available, what breaking changes are in between, and whether any of their locally installed extensions, skills, or prompt templates will need adjustment to remain compatible. Then offer to run the upgrade for them and, if they accept, run it.
 
 User request: $ARGUMENTS
 
@@ -197,29 +197,7 @@ Use the command corresponding to the user's choice:
 - Cooldown-respecting for Scenarios A and B: `npm install -g @earendil-works/pi-coding-agent`
 - Cooldown-override for Scenarios B and C: `npm install -g @earendil-works/pi-coding-agent@<LATEST> --min-release-age=0`, with `<LATEST>` replaced by the literal version string from Step 2.
 
-Run the command via `bash`, capturing both stdout and stderr, and surface the result to the user. If the install fails with a non-zero exit or no `pi` binary on the resulting PATH, report the failure and skip Step 8: do not patch a half-installed package. If the install succeeds, continue to Step 8.
-
-## Step 8: Patch `@earendil-works/pi-tui` to re-enable hyperlinks under tmux
-
-pi-tui ships with OSC 8 hyperlinks force-disabled when it detects tmux or screen, which breaks this user's clickable-path workflow inside tmux. Each `npm install -g` of pi-coding-agent reinstalls pi-tui and reverts this, so re-apply the patch after every successful upgrade.
-
-The patch flips a single hard-coded boolean in pi-tui's `dist/terminal-image.js` so that, when pi-tui detects it is running inside tmux or screen, it reports `hyperlinks: true` instead of `hyperlinks: false`. The relevant region of the file looks like this:
-
-```diff
-     const inTmuxOrScreen = !!process.env.TMUX || term.startsWith("tmux") || term.startsWith("screen");
-     if (inTmuxOrScreen) {
--        return { images: null, trueColor: hasTrueColorHint, hyperlinks: false };
-+        return { images: null, trueColor: hasTrueColorHint, hyperlinks: true };
-     }
-```
-
-What to do:
-
-1. Find pi-tui's install directory. `npm -g ls '@earendil-works/pi-tui' -p` is one way; use whatever you prefer. The file to edit is `dist/terminal-image.js` inside that directory. If you cannot locate the package or the file, stop and tell the user why.
-2. Make sure you change only the `return` statement that lives inside the `if (inTmuxOrScreen) { ... }` branch of `detectCapabilities`. There is a second, structurally similar `return { images: null, trueColor: hasTrueColorHint || !!process.env.WT_SESSION, hyperlinks: false };` further down that handles unknown terminals; that one must stay `false`. Pick whatever editing approach gives you confidence you are only touching the tmux or screen branch.
-3. Be idempotent: if the tmux or screen branch already returns `hyperlinks: true`, just report already patched and move on. If neither the patched nor the unpatched form is present in the expected shape, the upstream code has changed. Do not guess; show the user the current `detectCapabilities` body and ask how to proceed.
-4. After patching, verify the file: the tmux or screen branch should be `true`, the unknown-terminal fallback should still be `false`, and the file should otherwise be unchanged.
-5. Tell the user, in plain prose, that you applied the pi-tui hyperlink patch and where, and remind them it will need re-applying after every future `npm install -g @earendil-works/pi-coding-agent`, which is why this prompt does it automatically.
+Run the command via `bash`, capturing both stdout and stderr, and surface the result to the user. If the install fails with a non-zero exit or no `pi` binary on the resulting PATH, report the failure. If the install succeeds, report the new version to the user.
 
 ## Notes
 
