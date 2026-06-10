@@ -199,6 +199,14 @@ Use the command corresponding to the user's choice:
 
 Run the command via `bash`, capturing both stdout and stderr, and surface the result to the user. If the install fails with a non-zero exit or no `pi` binary on the resulting PATH, report the failure. If the install succeeds, report the new version to the user.
 
+After a successful upgrade, remind the user to run the `bin/install-types` helper script in each repository where they keep pi extensions, so the bundled pi extension API type definitions are regenerated to match the newly installed version. At the time of writing, those repositories are:
+
+- `wincent` (public dotfiles)
+- `wincent` (private/corporate dotfiles)
+- `wincent-agent-plugins` (public)
+
+Present this as a manual follow-up step for the user to perform in each repo; do not attempt to run `bin/install-types` yourself, since the repos live in different locations and may not all be checked out on this machine.
+
 ## Notes
 
 - Run the install command in Step 7 only after the user has explicitly chosen one of the update options offered in Step 6. Never auto-run an install just because the user invoked this prompt.
