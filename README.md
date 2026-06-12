@@ -24,7 +24,7 @@ Plugins live under [`claude/`](./claude):
 
 Pi prompt templates live under [`pi/prompts`](./pi/prompts/):
 
-- [pi-update](./pi/prompts/pi-update.md) (Pi-only): check for pi updates, assess local resource compatibility, and safely apply the tmux hyperlink patch after upgrading.
+- [pi-update](./pi/prompts/pi-update.md) (Pi-only): check for Pi updates, checking against installed skills, extensions, and prompts for compatibility issues.
 
 #### Skills
 
