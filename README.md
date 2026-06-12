@@ -2,7 +2,7 @@
 
 Agent[^agent] plugins, skills, and extensions from Greg Hurrell.
 
-[^agent]: Originally developed for [Claude](https://claude.com/product/claude-code) but usable with other agent(s) such as [Pi](https://pi.dev/) as well. For anything that can't directly consume the plug-ins as is, any agent worth its salt should be able to port them into a suitable format if you point it at this repo and ask it to convert things for you.
+[^agent]: Originally developed for [Claude](https://claude.com/product/claude-code) but usable with other agent(s) such as [Pi](https://pi.dev/) as well. For anything that can't directly consume the plug-ins as-is, any agent worth its salt should be able to port them into a suitable format if you point it at this repo and ask it to convert things for you.
 
 ## Plugins
 
