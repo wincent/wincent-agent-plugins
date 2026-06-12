@@ -67,11 +67,23 @@ In main mode, registers `subagent`, `subagent_steer`, `subagent_cancel`, and `su
 
 See [`subagent/README.md`](subagent/README.md) for more.
 
+### `datadog-mcp.ts`
+
+Talks to Datadog's MCP server.
+
+Registers three slash commands:
+
+- `/datadog-login` signs in via the browser.
+- `/datadog-logout` clears stored tokens for the current domain.
+- `/datadog-status` shows connection status (no token material).
+
+A companion `datadog-mcp` skill under `pi/skills/datadog-mcp/` teaches the agent the `list_tools`, `describe_tool`, and `call_tool` pattern. Mutating tools are gated behind a confirmation prompt unless `DATADOG_MCP_ALLOW_WRITES=1`. The target site defaults to `mcp.datadoghq.com`, overridable via `DATADOG_MCP_DOMAIN`.
+
 ### `slack-mcp.ts`
 
 Uses an OAuth grant previously obtained from Claude to talk to Slack's MCP server.
 
-Also registers two slash commands:
+Registers two slash commands:
 
 - `/slack-status` shows status of Slack connection.
 - `/slack-refresh` forces a token refresh.

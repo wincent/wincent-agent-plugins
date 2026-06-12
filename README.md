@@ -32,6 +32,7 @@ Pi skills live under [`pi/skills`](./pi/skills/):
 
 - [atlassian-confluence](./pi/skills/atlassian-confluence)
 - [atlassian-jira](./pi/skills/atlassian-jira)
+- [datadog-mcp](./pi/skills/datadog-mcp) (Pi-only)
 - [git-commit](./pi/skills/git-commit)
 - [gitlab-snippet-create](./pi/skills/gitlab-snippet-create) (Pi-only)
 - [jj-commit](./pi/skills/jj-commit)
@@ -49,6 +50,7 @@ Many of these are symlinks pointing to the corresponding Claude skills (all the 
 
 Pi extensions live under [`pi/extensions`](./pi/extensions/):
 
+- [datadog-mcp](./pi/extensions/datadog-mcp.ts)
 - [edit-answer](./pi/extensions/edit-answer.ts)
 - [jj-guard](./pi/extensions/jj-guard.ts)
 - [model-info](./pi/extensions/model-info.ts)
