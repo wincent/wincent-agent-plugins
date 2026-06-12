@@ -1,0 +1,1 @@
+Shared modules live in this subdirectory (without an `index.ts`), so Pi's extension loader ignores them (it only loads top-level `*.ts` files and subdirectories that contain an `index.ts` or a `package.json` with a `pi` field).
