@@ -4,10 +4,21 @@
  * Adds a `/total-cost` command that scans every saved pi session under
  * `$PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`) and shows a
  * per-month breakdown of cumulative LLM cost, message count, and number of
- * distinct sessions that contributed.
+ * distinct sessions that contributed. By default the cost is also broken down
+ * per model, with one extra column per model.
+ *
+ * Optional arguments:
+ *   - `no-model-breakdown` suppresses the per-model columns and shows totals
+ *     only.
+ *   - any other word is treated as a model-name filter: only models whose name
+ *     contains one of the given substrings are counted, and the cost, message,
+ *     and session columns reflect just those models (for example `claude`
+ *     restricts the table to Claude models). Filters and `no-model-breakdown`
+ *     can be combined.
  *
  * Costs come from the `usage.cost.total` field stored on each assistant
- * message. Months are bucketed by the entry-level ISO timestamp (UTC).
+ * message and the model from `message.model`. Months are bucketed by the
+ * entry-level ISO timestamp (UTC).
  */
 
 import type {
@@ -20,11 +31,30 @@ import {readFile, readdir, stat} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 
+const UNKNOWN_MODEL = 'unknown';
+
+const NO_MODEL_BREAKDOWN_FLAG = 'no-model-breakdown';
+
+interface ModelStats {
+  cost: number;
+  messages: number;
+  sessions: Set<string>;
+}
+
+interface RawData {
+  months: Map<string, Map<string, ModelStats>>; // month -> model -> stats
+  files: number;
+  skippedFiles: number;
+}
+
+type ModelFilter = (model: string) => boolean;
+
 interface MonthBucket {
   month: string; // YYYY-MM
   cost: number;
   messages: number;
   sessions: Set<string>;
+  modelCost: Map<string, number>;
 }
 
 interface Totals {
@@ -34,6 +64,8 @@ interface Totals {
   files: number;
   skippedFiles: number;
   byMonth: MonthBucket[];
+  models: string[]; // model names ordered by total cost, descending
+  modelTotals: Map<string, number>;
 }
 
 function getSessionsDir(): string {
@@ -87,14 +119,11 @@ function bucketKey(timestamp: string | number | undefined): string | null {
   return `${year}-${month}`;
 }
 
-async function computeTotals(): Promise<Totals> {
+async function collectData(): Promise<RawData> {
   const sessionsDir = getSessionsDir();
   const files = await listSessionFiles(sessionsDir);
 
-  const buckets = new Map<string, MonthBucket>();
-  let totalCost = 0;
-  let totalMessages = 0;
-  const allSessions = new Set<string>();
+  const months = new Map<string, Map<string, ModelStats>>();
   let skippedFiles = 0;
 
   for (const file of files) {
@@ -139,33 +168,82 @@ async function computeTotals(): Promise<Totals> {
         continue;
       }
 
-      let bucket = buckets.get(month);
-      if (!bucket) {
-        bucket = {month, cost: 0, messages: 0, sessions: new Set()};
-        buckets.set(month, bucket);
-      }
-      bucket.cost += cost;
-      bucket.messages += 1;
-      bucket.sessions.add(file);
+      const model = typeof message.model === 'string' && message.model.trim()
+        ? message.model
+        : UNKNOWN_MODEL;
 
-      totalCost += cost;
-      totalMessages += 1;
+      let byModel = months.get(month);
+      if (!byModel) {
+        byModel = new Map();
+        months.set(month, byModel);
+      }
+      let stats = byModel.get(model);
+      if (!stats) {
+        stats = {cost: 0, messages: 0, sessions: new Set()};
+        byModel.set(model, stats);
+      }
+      stats.cost += cost;
+      stats.messages += 1;
+      stats.sessions.add(file);
+    }
+  }
+
+  return {months, files: files.length, skippedFiles};
+}
+
+function summarize(raw: RawData, filter: ModelFilter | null): Totals {
+  const byMonth: MonthBucket[] = [];
+  let totalCost = 0;
+  let totalMessages = 0;
+  const allSessions = new Set<string>();
+  const modelTotals = new Map<string, number>();
+
+  for (const [month, byModel] of raw.months) {
+    let cost = 0;
+    let messages = 0;
+    const sessions = new Set<string>();
+    const modelCost = new Map<string, number>();
+
+    for (const [model, stats] of byModel) {
+      if (filter && !filter(model)) {
+        continue;
+      }
+      cost += stats.cost;
+      messages += stats.messages;
+      for (const file of stats.sessions) {
+        sessions.add(file);
+      }
+      modelCost.set(model, stats.cost);
+      modelTotals.set(model, (modelTotals.get(model) ?? 0) + stats.cost);
+    }
+
+    if (messages === 0) {
+      continue; // no models matched the filter this month
+    }
+
+    byMonth.push({month, cost, messages, sessions, modelCost});
+    totalCost += cost;
+    totalMessages += messages;
+    for (const file of sessions) {
       allSessions.add(file);
     }
   }
 
-  const byMonth = [...buckets.values()].sort((
-    a,
-    b,
-  ) => (a.month < b.month ? 1 : -1));
+  byMonth.sort((a, b) => (a.month < b.month ? 1 : -1));
+
+  const models = [...modelTotals.entries()]
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+    .map(([name]) => name);
 
   return {
     cost: totalCost,
     messages: totalMessages,
     sessions: allSessions.size,
-    files: files.length,
-    skippedFiles,
+    files: raw.files,
+    skippedFiles: raw.skippedFiles,
     byMonth,
+    models,
+    modelTotals,
   };
 }
 
@@ -177,11 +255,167 @@ function fmtInt(n: number): string {
   return n.toLocaleString('en-US');
 }
 
-function buildLines(totals: Totals, theme: any): string[] {
+type Align = 'left' | 'right';
+
+interface ColumnSpec {
+  header: string;
+  align: Align;
+  dataColor: string;
+  totalColor: string;
+}
+
+interface TableModel {
+  columns: ColumnSpec[];
+  rows: string[][]; // one entry per month, parallel to columns
+  totalRow: string[];
+}
+
+const COL_GAP = '  ';
+
+function pad(s: string, width: number, align: Align): string {
+  const fill = ' '.repeat(Math.max(0, width - s.length));
+  return align === 'left' ? s + fill : fill + s;
+}
+
+function buildTableModel(totals: Totals, showModels: boolean): TableModel {
+  const models = showModels ? totals.models : [];
+
+  const columns: ColumnSpec[] = [
+    {header: 'Month', align: 'left', dataColor: 'accent', totalColor: 'accent'},
+    {
+      header: 'Cost',
+      align: 'right',
+      dataColor: 'warning',
+      totalColor: 'warning',
+    },
+    ...models.map((model): ColumnSpec => ({
+      header: model,
+      align: 'right',
+      dataColor: 'success',
+      totalColor: 'success',
+    })),
+    {header: 'Messages', align: 'right', dataColor: 'dim', totalColor: 'muted'},
+    {header: 'Sessions', align: 'right', dataColor: 'dim', totalColor: 'muted'},
+  ];
+
+  const modelCells = (lookup: Map<string, number>): string[] =>
+    models.map((model) => {
+      const cost = lookup.get(model) ?? 0;
+      return cost > 0 ? fmtMoney(cost) : '-';
+    });
+
+  const rows = totals.byMonth.map((
+    b,
+  ) => [
+    b.month,
+    fmtMoney(b.cost),
+    ...modelCells(b.modelCost),
+    fmtInt(b.messages),
+    fmtInt(b.sessions.size),
+  ]);
+
+  const totalRow = [
+    'Total',
+    fmtMoney(totals.cost),
+    ...modelCells(totals.modelTotals),
+    fmtInt(totals.messages),
+    fmtInt(totals.sessions),
+  ];
+
+  return {columns, rows, totalRow};
+}
+
+function columnWidths(model: TableModel): number[] {
+  return model.columns.map((col, i) => {
+    let width = col.header.length;
+    for (const row of model.rows) {
+      width = Math.max(width, row[i].length);
+    }
+    return Math.max(width, model.totalRow[i].length);
+  });
+}
+
+function tableWidth(widths: number[]): number {
+  return widths.reduce((a, b) => a + b, 0) +
+    COL_GAP.length * Math.max(0, widths.length - 1);
+}
+
+function renderThemedTable(model: TableModel, theme: any): string[] {
+  const widths = columnWidths(model);
+  const rule = theme.fg('dim', '─'.repeat(tableWidth(widths)));
+  const lines: string[] = [];
+
+  lines.push(
+    model.columns
+      .map((col, i) => theme.fg('muted', pad(col.header, widths[i], col.align)))
+      .join(COL_GAP),
+  );
+  lines.push(rule);
+
+  for (const row of model.rows) {
+    lines.push(
+      model.columns
+        .map((col, i) =>
+          theme.fg(col.dataColor, pad(row[i], widths[i], col.align))
+        )
+        .join(COL_GAP),
+    );
+  }
+
+  lines.push(rule);
+  lines.push(
+    model.columns
+      .map((col, i) =>
+        theme.bold(
+          theme.fg(
+            col.totalColor,
+            pad(model.totalRow[i], widths[i], col.align),
+          ),
+        )
+      )
+      .join(COL_GAP),
+  );
+
+  return lines;
+}
+
+function renderPlainTable(model: TableModel): string[] {
+  const widths = columnWidths(model);
+  const rule = '─'.repeat(tableWidth(widths));
+  const renderRow = (cells: string[]) =>
+    cells
+      .map((cell, i) => pad(cell, widths[i], model.columns[i].align))
+      .join(COL_GAP);
+
+  return [
+    renderRow(model.columns.map((c) => c.header)),
+    rule,
+    ...model.rows.map(renderRow),
+    rule,
+    renderRow(model.totalRow),
+  ];
+}
+
+function filterNote(filterTokens: string[]): string {
+  return `Filtered to models matching: ${filterTokens.join(', ')}`;
+}
+
+function emptyMessage(filterTokens: string[]): string {
+  return filterTokens.length > 0
+    ? `No models matching ${filterTokens.join(', ')} found.`
+    : 'No sessions with cost data found.';
+}
+
+function buildLines(
+  totals: Totals,
+  theme: any,
+  showModels: boolean,
+  filterTokens: string[],
+): string[] {
   const lines: string[] = [];
 
   if (totals.byMonth.length === 0) {
-    lines.push(theme.fg('muted', 'No sessions with cost data found.'));
+    lines.push(theme.fg('muted', emptyMessage(filterTokens)));
     lines.push(
       theme.fg(
         'dim',
@@ -193,64 +427,20 @@ function buildLines(totals: Totals, theme: any): string[] {
     return lines;
   }
 
-  // Column widths
-  const monthW = 7; // YYYY-MM
-  const costW = Math.max(
-    8,
-    ...totals.byMonth.map((b) => fmtMoney(b.cost).length),
-    fmtMoney(totals.cost).length,
-  );
-  const msgW = Math.max(
-    8,
-    ...totals.byMonth.map((b) => fmtInt(b.messages).length),
-  );
-  const sessW = Math.max(
-    8,
-    ...totals.byMonth.map((b) => fmtInt(b.sessions.size).length),
-  );
-
-  const padL = (s: string, w: number) =>
-    s + ' '.repeat(Math.max(0, w - s.length));
-  const padR = (s: string, w: number) =>
-    ' '.repeat(Math.max(0, w - s.length)) + s;
-
-  const header = theme.fg('muted', padL('Month', monthW)) +
-    '  ' +
-    theme.fg('muted', padR('Cost', costW)) +
-    '  ' +
-    theme.fg('muted', padR('Messages', msgW)) +
-    '  ' +
-    theme.fg('muted', padR('Sessions', sessW));
-  lines.push(header);
-  lines.push(
-    theme.fg('dim', '─'.repeat(monthW + 2 + costW + 2 + msgW + 2 + sessW)),
-  );
-
-  for (const b of totals.byMonth) {
+  if (filterTokens.length > 0) {
+    lines.push(theme.fg('muted', filterNote(filterTokens)));
+    lines.push('');
+  }
+  lines.push(...renderThemedTable(buildTableModel(totals, showModels), theme));
+  lines.push('');
+  if (showModels && totals.models.length > 0) {
     lines.push(
-      theme.fg('accent', padL(b.month, monthW)) +
-        '  ' +
-        theme.fg('warning', padR(fmtMoney(b.cost), costW)) +
-        '  ' +
-        theme.fg('dim', padR(fmtInt(b.messages), msgW)) +
-        '  ' +
-        theme.fg('dim', padR(fmtInt(b.sessions.size), sessW)),
+      theme.fg(
+        'dim',
+        'Tip: pass `no-model-breakdown` to hide the per-model columns.',
+      ),
     );
   }
-
-  lines.push(
-    theme.fg('dim', '─'.repeat(monthW + 2 + costW + 2 + msgW + 2 + sessW)),
-  );
-  lines.push(
-    theme.bold(theme.fg('accent', padL('Total', monthW))) +
-      '  ' +
-      theme.bold(theme.fg('warning', padR(fmtMoney(totals.cost), costW))) +
-      '  ' +
-      theme.bold(theme.fg('muted', padR(fmtInt(totals.messages), msgW))) +
-      '  ' +
-      theme.bold(theme.fg('muted', padR(fmtInt(totals.sessions), sessW))),
-  );
-  lines.push('');
   lines.push(
     theme.fg(
       'dim',
@@ -267,24 +457,24 @@ function buildLines(totals: Totals, theme: any): string[] {
 async function showTotals(
   totals: Totals,
   ctx: ExtensionCommandContext,
+  showModels: boolean,
+  filterTokens: string[],
 ): Promise<void> {
   if (!ctx.hasUI) {
     // Fallback for non-interactive modes: print plain text.
-    const plain: string[] = [];
-    plain.push('Total Cost by Month');
-    plain.push('===================');
-    for (const b of totals.byMonth) {
-      plain.push(
-        `${b.month}  ${fmtMoney(b.cost).padStart(10)}  ${
-          fmtInt(b.messages).padStart(8)
-        } msgs  ${fmtInt(b.sessions.size).padStart(4)} sessions`,
-      );
+    const plain: string[] = ['Total Cost by Month'];
+    if (totals.byMonth.length === 0) {
+      plain.push(emptyMessage(filterTokens));
+    } else {
+      if (filterTokens.length > 0) {
+        plain.push(filterNote(filterTokens));
+      }
+      plain.push(...renderPlainTable(buildTableModel(totals, showModels)));
     }
-    plain.push('-------------------');
+    plain.push('');
     plain.push(
-      `Total     ${fmtMoney(totals.cost).padStart(10)}  ${
-        fmtInt(totals.messages).padStart(8)
-      } msgs  ${fmtInt(totals.sessions).padStart(4)} sessions`,
+      `Scanned ${fmtInt(totals.files)} session file(s) in ${getSessionsDir()}` +
+        (totals.skippedFiles > 0 ? `, skipped ${totals.skippedFiles}` : ''),
     );
     console.log(plain.join('\n'));
     return;
@@ -297,7 +487,7 @@ async function showTotals(
     container.addChild(
       new Text(theme.fg('accent', theme.bold('Total Cost by Month')), 1, 1),
     );
-    for (const line of buildLines(totals, theme)) {
+    for (const line of buildLines(totals, theme, showModels, filterTokens)) {
       container.addChild(new Text(line, 1, 0));
     }
     container.addChild(
@@ -317,17 +507,55 @@ async function showTotals(
   });
 }
 
+interface ParsedArgs {
+  showModels: boolean;
+  filterTokens: string[];
+}
+
+function parseArgs(args: string): ParsedArgs {
+  const tokens = args.trim().split(/\s+/).filter(Boolean);
+  const isFlag = (token: string) =>
+    token.toLowerCase() === NO_MODEL_BREAKDOWN_FLAG;
+  return {
+    showModels: !tokens.some(isFlag),
+    filterTokens: tokens.filter((token) => !isFlag(token)),
+  };
+}
+
+function makeModelFilter(filterTokens: string[]): ModelFilter | null {
+  if (filterTokens.length === 0) {
+    return null;
+  }
+  const needles = filterTokens.map((token) => token.toLowerCase());
+  return (model) => {
+    const name = model.toLowerCase();
+    return needles.some((needle) => name.includes(needle));
+  };
+}
+
 export default function (pi: ExtensionAPI) {
   pi.registerCommand('total-cost', {
     description:
-      'Show total LLM cost across all sessions, broken down by month',
-    handler: async (_args, ctx) => {
+      'Show total LLM cost across all sessions, broken down by month and ' +
+      'model. Pass a model-name substring (e.g. "claude") to filter to ' +
+      'matching models, or `no-model-breakdown` for totals only',
+    getArgumentCompletions: (prefix: string) => {
+      const item = {
+        value: NO_MODEL_BREAKDOWN_FLAG,
+        label: NO_MODEL_BREAKDOWN_FLAG,
+        description: 'Hide the per-model columns and show totals only',
+      };
+      return item.value.startsWith(prefix.trim()) ? [item] : [];
+    },
+    handler: async (args, ctx) => {
+      const {showModels, filterTokens} = parseArgs(args);
       if (ctx.hasUI) {
         ctx.ui.notify('Computing total cost across sessions…', 'info');
       }
       let totals: Totals;
       try {
-        totals = await computeTotals();
+        const raw = await collectData();
+        totals = summarize(raw, makeModelFilter(filterTokens));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (ctx.hasUI) {
@@ -337,7 +565,7 @@ export default function (pi: ExtensionAPI) {
         }
         return;
       }
-      await showTotals(totals, ctx);
+      await showTotals(totals, ctx, showModels, filterTokens);
     },
   });
 }

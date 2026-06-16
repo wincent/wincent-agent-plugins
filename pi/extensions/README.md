@@ -92,17 +92,20 @@ A companion `slack-mcp` skill under `pi/skills/slack-mcp/` teaches the agent how
 
 ### `total-cost.ts`
 
-Adds a `/total-cost` slash command that scans every saved Pi session under `$PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`) and shows a per-month breakdown of cumulative LLM cost, message count, and number of distinct sessions:
+Adds a `/total-cost` slash command that scans every saved Pi session under `$PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`) and shows a per-month breakdown of cumulative LLM cost, message count, and number of distinct sessions. The cost is also broken down per model, with one extra column per model (ordered by total cost, descending) in the same table:
 
 ```
-Month       Cost   Messages   Sessions
-─────────────────────────────────────
-2026-05   $42.17        318         24
-2026-04   $89.04        612         41
-─────────────────────────────────────
-Total    $131.21        930         65
+Month       Cost  claude-opus-4-8  gpt-5.5  Messages  Sessions
+─────────────────────────────────────────────────────────────
+2026-05   $42.17           $38.02    $4.15       318        24
+2026-04   $89.04           $89.04        -       612        41
+─────────────────────────────────────────────────────────────
+Total    $131.21          $127.06    $4.15       930        65
 ```
 
-Costs are pulled from the `usage.cost.total` field stored on each assistant message; months are bucketed by entry-level ISO timestamp (UTC). Sessions without cost data (e.g. local/free models) are silently skipped.
+It accepts two optional arguments:
+
+- `no-model-breakdown` suppresses the per-model columns and shows totals only, for a compact view on narrow terminals.
+- any other word is treated as a model-name filter: only models whose name contains one of the given substrings are counted, and the cost, message, and session columns reflect just those models. For example `/total-cost claude` restricts the table to Claude models, and `/total-cost gpt gemini` keeps both families. Filters and `no-model-breakdown` can be combined (e.g. `/total-cost claude no-model-breakdown`).
 
 Renders as a TUI modal when running interactively, or plain text on stdout in non-interactive mode.
