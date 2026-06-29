@@ -34,7 +34,7 @@
  * subagent always unblocks.
  */
 
-import {type UserMessage, complete} from '@earendil-works/pi-ai';
+import {type UserMessage, complete} from '@earendil-works/pi-ai/compat';
 import type {
   ExtensionAPI,
   ExtensionContext,
