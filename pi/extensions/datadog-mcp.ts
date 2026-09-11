@@ -53,7 +53,7 @@ import {
 //   ap2 -> mcp.ap2.datadoghq.com
 const DEFAULT_DOMAIN = 'mcp.datadoghq.com';
 
-const MCP_PATH = '/api/unstable/mcp-server/mcp';
+const MCP_PATH = '/v1/mcp';
 
 // Broad toolset selection, mirroring the widest Datadog connector grant. The
 // query param both selects which tools the server exposes and shapes the
@@ -163,8 +163,17 @@ const LOGIN_HINT =
 
 const AuthServerMetadataSchema = Type.Object({
   registration_endpoint: Type.String(),
+  authorization_endpoint: Type.String(),
+  token_endpoint: Type.String(),
+});
+
+// Datadog returns client identity only; endpoints come from metadata.
+const RegistrationResponseSchema = Type.Object({
+  client_id: Type.String({minLength: 1}),
+  redirect_uris: Type.Optional(Type.Array(Type.String())),
   authorization_endpoint: Type.Optional(Type.String()),
   token_endpoint: Type.Optional(Type.String()),
+  mcp_resource_uri: Type.Optional(Type.String()),
 });
 
 // Persisted dynamic client registration (subset we rely on).
@@ -172,7 +181,7 @@ const RegisteredClientSchema = Type.Object({
   client_id: Type.String({minLength: 1}),
   authorization_endpoint: Type.String(),
   token_endpoint: Type.String(),
-  mcp_resource_uri: Type.Optional(Type.String()),
+  mcp_resource_uri: Type.String(),
   redirect_uris: Type.Array(Type.String()),
 });
 type RegisteredClient = Static<typeof RegisteredClientSchema>;
@@ -310,8 +319,12 @@ async function discoverAuthServer(
   return data;
 }
 
-function clientUsable(client: RegisteredClient | undefined): boolean {
-  return !!client && client.redirect_uris.includes(callbackUrl());
+function clientUsable(
+  client: RegisteredClient | undefined,
+  domain: string,
+): client is RegisteredClient {
+  return !!client && client.redirect_uris.includes(callbackUrl()) &&
+    client.mcp_resource_uri === mcpResourceUri(domain);
 }
 
 async function ensureClient(domain: string): Promise<RegisteredClient> {
@@ -319,8 +332,8 @@ async function ensureClient(domain: string): Promise<RegisteredClient> {
     clientPath(domain),
     RegisteredClientSchema,
   );
-  if (clientUsable(cached)) {
-    return cached as RegisteredClient;
+  if (clientUsable(cached, domain)) {
+    return cached;
   }
 
   const meta = await discoverAuthServer(domain);
@@ -343,14 +356,22 @@ async function ensureClient(domain: string): Promise<RegisteredClient> {
     );
   }
   const data: unknown = await resp.json();
-  if (!Check(RegisteredClientSchema, data)) {
+  if (!Check(RegistrationResponseSchema, data)) {
     throw new Error(
       `Datadog client registration returned unexpected shape: ${
-        describeValidationFailure(RegisteredClientSchema, data)
+        describeValidationFailure(RegistrationResponseSchema, data)
       }`,
     );
   }
-  const client = data as RegisteredClient;
+  const registration = data as Static<typeof RegistrationResponseSchema>;
+  const client: RegisteredClient = {
+    client_id: registration.client_id,
+    authorization_endpoint: registration.authorization_endpoint ??
+      meta.authorization_endpoint,
+    token_endpoint: registration.token_endpoint ?? meta.token_endpoint,
+    mcp_resource_uri: registration.mcp_resource_uri ?? mcpResourceUri(domain),
+    redirect_uris: registration.redirect_uris ?? [callbackUrl()],
+  };
   await writeJsonFile(domain, clientPath(domain), client);
   return client;
 }
@@ -512,7 +533,7 @@ async function login(domain: string): Promise<StoredTokens> {
   const verifier = base64url(randomBytes(32));
   const challenge = base64url(createHash('sha256').update(verifier).digest());
   const state = randomBytes(16).toString('hex');
-  const resource = client.mcp_resource_uri ?? mcpResourceUri(domain);
+  const resource = client.mcp_resource_uri;
 
   const authUrl = new URL(client.authorization_endpoint);
   authUrl.searchParams.set('response_type', 'code');
@@ -577,14 +598,14 @@ async function refreshTokens(
       clientPath(domain),
       RegisteredClientSchema,
     );
-    if (!client) {
+    if (!clientUsable(client, domain)) {
       throw new NotAuthenticatedError(LOGIN_HINT);
     }
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: current.refreshToken,
       client_id: client.client_id,
-      resource: client.mcp_resource_uri ?? mcpResourceUri(domain),
+      resource: client.mcp_resource_uri,
     });
     let tokenResp: Static<typeof TokenResponseSchema>;
     try {
