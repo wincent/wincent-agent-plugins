@@ -25,17 +25,14 @@ Usually, you will include all changes in the working directory in the commit (th
 1. Run commands to see what can and should be included in the commit.
 2. Note that your user may have asked you to create or update "plan" files under `.agent-notes/`, a directory which may be ignored via the global `~/.config/git/ignore` file: these plan files should never be included in a commit as they are intended to be local-only aids to development.
 3. Create a commit message with:
-   - A subject of 72 characters or less in Conventional Commits format (eg. "docs: add migration notes" or "fix: avoid double-render in list component"). In repositories that make use of scopes, you can include a scope in parentheses (eg. "chore(frontend): update copyright year" or "feat(login): add support for magic links").
+   - A subject of 72 characters or less in Conventional Commits format. It MUST start with a type (see the table below for the full list), followed by a statement that begins with a verb (eg. "add", "remove", "rename" etc) and describes _what_ the commit does (eg. "docs: add migration notes" or "fix: avoid double-render in list component"). In repositories that make use of scopes, you can include a scope in parentheses (eg. "chore(frontend): update copyright year" or "feat(login): add support for magic links").
    - A blank line.
-   - A detailed description, wrapped to 72 characters, using basic Markdown syntax.
-   - At the bottom, include the full text of **all** prompts that were used while preparing the changes that led to the commit; **never** omit any prompts.
-   - If you were involved in the preparation of the changes, include a `Co-Authored-By:` trailer identifying the assistant. Derive both fields from your system prompt: use the model name and version as the author name (eg. "Claude Opus 4.7", "GPT-5.5", "Gemini 3.1 Pro") and the provider's standard `noreply` address as the email (eg. `noreply@anthropic.com`, `noreply@openai.com`, `noreply@google.com`). If either is unknown, fall back to `AI Assistant <noreply@example.com>`.
+   - A brief statement of the motivation for the changes, followed by a detailed but concise description of the changes themselves, and steps taken to verify correctness and efficacy. Wrap the body to 72 characters, using basic Markdown syntax.
+   - If you were involved in the preparation of the changes, include a `Co-Authored-By:` trailer identifying the assistant. Derive both fields from your system prompt: use the model name and version as the author name (eg. "Claude Opus 5", "GPT-5.5", "Gemini 3.1 Pro") and the provider's standard `noreply` address as the email (eg. `noreply@anthropic.com`, `noreply@openai.com`, `noreply@google.com`). If either is unknown, fall back to `AI Assistant <noreply@example.com>`.
 
 ## Best practices
 
-- Subjects MUST start with a Conventional Commits type (eg. "docs", "fix", "feat", "chore" etc; see the table below for a full list) followed by a statement beginning with a verb (eg. "add", "remove", "rename" etc). The subject describes _what_ the commit does.
-- The body should explain the motivation for the change, and why the solution was chosen.
-- Note alternatives which were considered but not implemented.
+- Readability is paramount. Write the body in loose accordance with [ASD-STE100](https://asd-ste100.org/) (Simplified Technical English): short sentences, active voice, one idea per sentence, plain and consistent vocabulary, and no unnecessary jargon. Follow it only "loosely" because ASD-STE100 exists to make procedural and maintenance instructions unambiguous, whereas a commit message is mostly not procedural (the exception being any QA steps you describe); take the clarity-optimizing spirit of the standard rather than applying its rules literally.
 - Include references to previous commits or other artifacts (documentation, PRs) that are relevant.
 
 ## Conventional Commits types
@@ -56,24 +53,16 @@ Usually, you will include all changes in the working directory in the commit (th
 ```
 refactor: remove unused `recurse` setting
 
-We were never exposing a user-accessible setting here. It is always `true`
-in practice, except in the benchmarks where we offered an override via the
+The `recurse` setting was never exposed to users. It is always `true` in
+practice, except in the benchmarks, where we could override it via the
 environment.
 
-If there is ever a call for this in the future, we can resurrect it, but
-for now, leaving it out presents us with an opportunity to simplify.
-It may even be a tiny bit faster (1.3% better CPU time, and 2.4%
-better wall time), with reasonable confidence, due to saving us some
+Remove the setting and the benchmark override. The tests and benchmarks
+still pass, and the benchmarks show a small improvement (1.3% better CPU
+time, 2.4% better wall time), most likely because we now do fewer
 conditional checks.
 
-Agent prompts used in preparing this commit:
-
-> Search the codebase and confirm that the `recurse` setting isn't used
-> anywhere outside of the benchmarks, where it is hardcoded to `true`.
-> Once you've confirmed that, remove all traces of the setting. Run the
-> benchmarks to see they still work, and the tests to see they still pass.
-
-Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ```
 
 Substitute your own model identity and vendor `noreply` address per the rule above (eg. `GPT-5.5 <noreply@openai.com>`, `Gemini 3.1 Pro <noreply@google.com>` etc).
