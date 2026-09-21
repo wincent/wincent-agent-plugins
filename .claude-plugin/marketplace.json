@@ -17,10 +17,6 @@
       "source": "./claude/meme"
     },
     {
-      "name": "session",
-      "source": "./claude/session"
-    },
-    {
       "name": "git",
       "source": "./claude/git"
     },

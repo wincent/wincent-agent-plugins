@@ -15,7 +15,6 @@ Plugins live under [`claude/`](./claude):
 - [jj](./claude/jj): Jujutsu version control skills.
 - [meme](./claude/meme): Generate meme images using popular templates via the imgflip API.
 - [pr](./claude/pr): GitHub pull request creation and review.
-- [session](./claude/session): Claude session management utilities (e.g. export a Claude session to a GitLab snippet).
 - [shannon](./claude/shannon): Neovim integration via RPC for annotated code review, walkthroughs, and navigation.
 
 ### Pi
@@ -35,7 +34,6 @@ Pi skills live under [`pi/skills`](./pi/skills/):
 - [datadog-mcp](./pi/skills/datadog-mcp) (Pi-only)
 - [google-workspace-mcp](./pi/skills/google-workspace-mcp) (Pi-only)
 - [git-commit](./pi/skills/git-commit)
-- [gitlab-snippet-create](./pi/skills/gitlab-snippet-create) (Pi-only)
 - [jj-commit](./pi/skills/jj-commit)
 - [jj-version-control](./pi/skills/jj-version-control)
 - [meme-create](./pi/skills/meme-create)
@@ -77,7 +75,6 @@ claude plugin install git
 claude plugin install jj
 claude plugin install meme
 claude plugin install pr
-claude plugin install session
 claude plugin install shannon
 ```
 
@@ -106,5 +103,4 @@ From the repository root:
 ```bash
 node --experimental-transform-types --test pi/extensions/tests/context-breakdown.test.mjs
 node --test pi/extensions/tests/total-cost.test.mjs
-python3 -m unittest discover -s pi/skills/gitlab-snippet-create/scripts
 ```
