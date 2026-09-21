@@ -79,6 +79,8 @@ Registers three slash commands:
 
 A companion `datadog-mcp` skill under `pi/skills/datadog-mcp/` teaches the agent the `list_tools`, `describe_tool`, and `call_tool` pattern. Mutating tools always require a confirmation prompt. The target site defaults to `mcp.datadoghq.com`, overridable via `DATADOG_MCP_DOMAIN`.
 
+The dynamic client registration metadata and OAuth tokens are stored as plaintext JSON under `$XDG_STATE_HOME/pi/datadog-mcp/` (default `~/.local/state/pi/datadog-mcp/`). An unset, empty, or relative `XDG_STATE_HOME` uses the default. This state is independent of `PI_CODING_AGENT_DIR`, keeping credentials outside configuration directories that may be version-controlled. Directories and files are restricted to modes `0700` and `0600` on POSIX systems. This is not an OS credential store.
+
 ### `google-workspace-mcp.ts`
 
 Talks to a configured Google Workspace MCP server that provides access to Google Drive, Sheets, Docs, and Slides.
@@ -91,7 +93,7 @@ Registers three slash commands:
 
 A companion `google-workspace-mcp` skill under `pi/skills/google-workspace-mcp/` teaches the agent the `list_tools`, `describe_tool`, and `call_tool` pattern. Mutating tools always require a confirmation prompt; only a local allowlist of known read operations bypasses the gate, so unknown server tools default to mutating. `GOOGLE_WORKSPACE_MCP_URL` is required. `GOOGLE_WORKSPACE_MCP_ACCOUNT_DOMAIN` optionally customizes account guidance, and the local OAuth callback port defaults to `19877` with an override available through `GOOGLE_WORKSPACE_MCP_CALLBACK_PORT`.
 
-The dynamic client registration metadata and OAuth tokens are stored as plaintext JSON under `$PI_CODING_AGENT_DIR/google-workspace-mcp/` (default `~/.pi/agent/google-workspace-mcp/`). Directories and files are restricted to modes `0700` and `0600` on POSIX systems. This is not an OS credential store. The FastMCP v2.13 DCR flow registers a public client with `token_endpoint_auth_method=none`; the secret-based methods in the server's discovery metadata do not describe this client-facing flow.
+The dynamic client registration metadata and OAuth tokens are stored as plaintext JSON under `$XDG_STATE_HOME/pi/google-workspace-mcp/` (default `~/.local/state/pi/google-workspace-mcp/`). An unset, empty, or relative `XDG_STATE_HOME` uses the default. This state is independent of `PI_CODING_AGENT_DIR`, keeping credentials outside configuration directories that may be version-controlled. Directories and files are restricted to modes `0700` and `0600` on POSIX systems. This is not an OS credential store. The FastMCP v2.13 DCR flow registers a public client with `token_endpoint_auth_method=none`; the secret-based methods in the server's discovery metadata do not describe this client-facing flow.
 
 ### `slack-mcp.ts`
 

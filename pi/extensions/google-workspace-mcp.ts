@@ -26,7 +26,7 @@ import {
   createServer,
 } from 'node:http';
 import {homedir} from 'node:os';
-import {join} from 'node:path';
+import {isAbsolute, join} from 'node:path';
 import {type Static, type TSchema, Type} from 'typebox';
 import {Check} from 'typebox/value';
 import {
@@ -84,13 +84,6 @@ function callbackPort(): number {
 
 function callbackUrl(): string {
   return `http://127.0.0.1:${callbackPort()}${CALLBACK_PATH}`;
-}
-
-function resolveAgentDir(): string {
-  const override = process.env.PI_CODING_AGENT_DIR;
-  return override && override.length > 0
-    ? override
-    : join(homedir(), '.pi', 'agent');
 }
 
 function protectedResourceMetadataUrl(resourceUrl: string): string {
@@ -303,7 +296,11 @@ const PRIVATE_DIR_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 
 function storeRootDir(): string {
-  return join(resolveAgentDir(), 'google-workspace-mcp');
+  const xdg = process.env.XDG_STATE_HOME;
+  const stateHome = xdg && isAbsolute(xdg)
+    ? xdg
+    : join(homedir(), '.local', 'state');
+  return join(stateHome, 'pi', 'google-workspace-mcp');
 }
 
 function endpointDir(): string {
