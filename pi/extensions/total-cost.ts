@@ -16,9 +16,10 @@
  *     restricts the table to Claude models). Filters and `no-model-breakdown`
  *     can be combined.
  *
- * Costs come from the `usage.cost.total` field stored on each assistant
- * message and the model from `message.model`. Months are bucketed by the
- * entry-level ISO timestamp (UTC).
+ * Costs come from `usage.cost.total` on assistant messages and standalone
+ * usage entries (including cache warming), attributed to their `model`.
+ * Usage entries contribute cost but not assistant-message counts. Months
+ * are bucketed by the entry-level ISO timestamp (UTC).
  */
 
 import type {
@@ -147,15 +148,16 @@ async function collectData(): Promise<RawData> {
         continue; // tolerate corrupt/partial trailing lines
       }
 
-      if (entry?.type !== 'message') {
+      const isUsage = entry?.type === 'usage';
+      if (!isUsage && entry?.type !== 'message') {
         continue;
       }
-      const message = entry.message;
-      if (!message || message.role !== 'assistant') {
+      const record = isUsage ? entry : entry.message;
+      if (!record || (!isUsage && record.role !== 'assistant')) {
         continue;
       }
 
-      const cost = message.usage?.cost?.total;
+      const cost = record.usage?.cost?.total;
       if (
         typeof cost !== 'number' || !Number.isFinite(cost) || cost <= 0
       ) {
@@ -163,13 +165,13 @@ async function collectData(): Promise<RawData> {
       }
 
       // Prefer entry-level ISO timestamp; fall back to message timestamp (unix ms).
-      const month = bucketKey(entry.timestamp) ?? bucketKey(message.timestamp);
+      const month = bucketKey(entry.timestamp) ?? bucketKey(record.timestamp);
       if (!month) {
         continue;
       }
 
-      const model = typeof message.model === 'string' && message.model.trim()
-        ? message.model
+      const model = typeof record.model === 'string' && record.model.trim()
+        ? record.model
         : UNKNOWN_MODEL;
 
       let byModel = months.get(month);
@@ -183,7 +185,7 @@ async function collectData(): Promise<RawData> {
         byModel.set(model, stats);
       }
       stats.cost += cost;
-      stats.messages += 1;
+      stats.messages += isUsage ? 0 : 1;
       stats.sessions.add(file);
     }
   }
@@ -217,7 +219,7 @@ function summarize(raw: RawData, filter: ModelFilter | null): Totals {
       modelTotals.set(model, (modelTotals.get(model) ?? 0) + stats.cost);
     }
 
-    if (messages === 0) {
+    if (modelCost.size === 0) {
       continue; // no models matched the filter this month
     }
 

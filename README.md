@@ -98,3 +98,13 @@ If you install the Claude marketplace, you can configure Pi to look for skills, 
   ]
 }
 ```
+
+## Tests
+
+From the repository root:
+
+```bash
+node --experimental-transform-types --test pi/extensions/tests/context-breakdown.test.mjs
+node --test pi/extensions/tests/total-cost.test.mjs
+python3 -m unittest discover -s pi/skills/gitlab-snippet-create/scripts
+```

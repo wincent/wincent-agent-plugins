@@ -140,9 +140,14 @@ def render_content_blocks(blocks):
 
 
 def render_message(msg):
-    """Render a single AgentMessage to Markdown."""
+    """Render a conversation message to Markdown, or None for system records."""
     role = msg.get("role", "unknown")
     content = msg.get("content", "")
+
+    if role == "system":
+        # Preserve conversation-only exports: persisted prompt sections and tool
+        # declarations may contain private instructions, not user-visible text.
+        return None
 
     if role == "user":
         if isinstance(content, str):
@@ -256,23 +261,28 @@ def render_entry(entry):
         summary = entry.get("summary", "")
         return f"---\n\n*Branch summary:*\n\n{summary}\n\n---"
 
-    # Skip: session, label, session_info, custom (non-message), etc.
+    # Skip: session, label, session_info, custom (non-message), usage, etc.
+    # Standalone usage contributes to totals, not the conversation.
     return None
 
 
 def compute_totals(entries):
-    """Sum up cost and token usage across all assistant messages on the branch."""
+    """Sum assistant-message and standalone usage records on the branch."""
     total_cost = 0.0
     total_input = 0
     total_output = 0
 
     for entry in entries:
-        if entry.get("type") != "message":
+        if entry.get("type") == "usage":
+            # Accept every kind, including future operations beyond cache_warm.
+            usage = entry.get("usage", {})
+        elif entry.get("type") == "message":
+            msg = entry.get("message", {})
+            if msg.get("role") != "assistant":
+                continue
+            usage = msg.get("usage", {})
+        else:
             continue
-        msg = entry.get("message", {})
-        if msg.get("role") != "assistant":
-            continue
-        usage = msg.get("usage", {})
         cost = usage.get("cost", {})
         total_cost += cost.get("total", 0)
         total_input += usage.get("input", 0)

@@ -42,6 +42,15 @@
  */
 
 import type {AgentMessage} from '@earendil-works/pi-agent-core';
+import type {SystemMessage, Tool} from '@earendil-works/pi-ai';
+import {
+  getCurrentSystemMessage,
+  getDeclaredTools,
+  getInitialSystemMessage,
+  getSystemMessageText,
+  hasToolRedefinitions,
+  renderSystemMessageUpdate,
+} from '@earendil-works/pi-ai';
 import type {
   BuildSystemPromptOptions,
   ExtensionAPI,
@@ -53,6 +62,7 @@ import type {
 import {
   CONFIG_DIR_NAME,
   DynamicBorder,
+  SettingsManager,
   calculateContextTokens,
   getAgentDir,
   sessionEntryToContextMessages,
@@ -87,18 +97,8 @@ const MAX_CHARS_PER_TOKEN = 8;
 // use a single pooled ratio for everything instead.
 const MIN_ANCHOR_SPREAD_TOKENS = 500;
 
-// Pi's own defaults, used when settings.json says nothing. Kept in sync with
-// DEFAULT_COMPACTION_SETTINGS in pi's core/compaction/compaction.ts.
-const DEFAULT_COMPACTION_ENABLED = true;
-const DEFAULT_RESERVE_TOKENS = 16384;
-
-// Wrapper text pi adds around the context-file block, each context file, and
-// each skill in the system prompt. The per-block constants are only a fallback
-// for when the block cannot be located in the real prompt string; any drift
-// lands in the residual "instructions" row rather than corrupting a total.
-const CONTEXT_BLOCK_WRAPPER =
-  '\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n' +
-  '</project_context>\n';
+// Wrapper text used only to distribute measured blocks across their items.
+// Missing blocks are never charged just because their resources are loaded.
 const PER_FILE_WRAPPER =
   '<project_instructions path="">\n\n</project_instructions>\n\n';
 const PER_SKILL_WRAPPER =
@@ -153,6 +153,7 @@ interface ConversationTally {
   shellChars: number;
   customChars: number;
   summaryChars: number;
+  systemUpdateChars: number;
   byTool: Map<string, {chars: number; count: number}>;
   items: Item[];
   /**
@@ -192,7 +193,18 @@ interface Analysis {
   system: SystemTally;
   tools: ToolTally;
   conversation: ConversationTally;
+  notes: string[];
 }
+
+interface PromptSnapshot {
+  /** Undefined means an observed run did not force its prompt. */
+  forcedPrompt: string | undefined;
+  prompt: string;
+  toolsKey: string;
+  options: BuildSystemPromptOptions;
+}
+
+type PromptSnapshots = WeakMap<AgentMessage, PromptSnapshot>;
 
 // ---------------------------------------------------------------------------
 // Estimation helpers
@@ -375,6 +387,7 @@ function lastAssistantUsage(
 function collectAnchors(
   messages: AgentMessage[],
   perMessage: number[],
+  comparable: (message: AgentMessage) => boolean,
 ): Anchor[] {
   const anchors: Anchor[] = [];
   let messageChars = 0;
@@ -382,7 +395,11 @@ function collectAnchors(
     if (message.role === 'assistant') {
       const assistant = message as Extract<AgentMessage, {role: 'assistant'}>;
       const usage = assistant.usage;
-      if (
+      if (!comparable(message)) {
+        // A model, prompt, tool loadout, or compaction boundary invalidates the
+        // constant-fixed-cost assumption. Never fit across an unknown turn.
+        anchors.length = 0;
+      } else if (
         usage && assistant.stopReason !== 'aborted' &&
         assistant.stopReason !== 'error'
       ) {
@@ -471,40 +488,37 @@ function calibrate(anchors: Anchor[], fixedChars: number): Density {
 }
 
 /**
- * Auto-compaction reserve, or 0 when auto-compaction is off. Pi resolves this
- * through its SettingsManager, which extensions cannot reach, so read the same
- * two files with the same precedence. Project settings only count when the
- * project is trusted, matching pi.
+ * Read settings through Pi's public resolver so model overrides, deep merging,
+ * validation, and project trust follow the same rules as auto-compaction.
+ * No setters are called, so the settings files are not modified.
  */
-function resolveReserveTokens(
-  cwd: string,
-  projectTrusted: boolean,
-): number {
-  interface CompactionShape {
-    compaction?: {enabled?: boolean; reserveTokens?: number};
+function resolveReserveTokens(ctx: ExtensionCommandContext): number {
+  const settings = SettingsManager.fromStorage({
+    withLock(scope, fn) {
+      // FileSettingsStorage locks even on reads. A read-only backend avoids
+      // creating lock directories or ever writing settings from this report.
+      const path = scope === 'global'
+        ? join(getAgentDir(), 'settings.json')
+        : join(ctx.cwd, CONFIG_DIR_NAME, 'settings.json');
+      let content: string | undefined;
+      try {
+        content = readFileSync(path, 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+      }
+      if (fn(content) !== undefined) {
+        throw new Error('Context report cannot write settings');
+      }
+    },
+  }, {projectTrusted: ctx.isProjectTrusted()});
+  const errors = settings.drainErrors();
+  if (errors.length > 0) {
+    throw errors[0].error;
   }
-
-  const read = (path: string): CompactionShape => {
-    try {
-      return JSON.parse(readFileSync(path, 'utf8')) as CompactionShape;
-    } catch {
-      return {};
-    }
-  };
-
-  const global = read(join(getAgentDir(), 'settings.json'));
-  const project = projectTrusted
-    ? read(join(cwd, CONFIG_DIR_NAME, 'settings.json'))
-    : {};
-  const enabled = project.compaction?.enabled ??
-    global.compaction?.enabled ??
-    DEFAULT_COMPACTION_ENABLED;
-  if (!enabled) {
-    return 0;
-  }
-  return project.compaction?.reserveTokens ??
-    global.compaction?.reserveTokens ??
-    DEFAULT_RESERVE_TOKENS;
+  const compaction = settings.getCompactionSettings(ctx.model);
+  return compaction.enabled ? compaction.reserveTokens : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -573,7 +587,7 @@ function analyzeSystemPrompt(
     const end = prompt.indexOf(CONTEXT_CLOSE_TAG);
     filesChars = start !== -1 && end > start
       ? end + CONTEXT_CLOSE_TAG.length - start
-      : sumOf(files) + CONTEXT_BLOCK_WRAPPER.length;
+      : 0;
   }
 
   let skillsChars = 0;
@@ -583,7 +597,7 @@ function analyzeSystemPrompt(
     const end = prompt.indexOf(SKILLS_CLOSE_TAG);
     skillsChars = start !== -1 && end > start
       ? end + SKILLS_CLOSE_TAG.length - start
-      : sumOf(skills) + SKILLS_PREAMBLE_MARKER.length;
+      : 0;
   }
 
   return {
@@ -591,8 +605,12 @@ function analyzeSystemPrompt(
     baseChars: Math.max(0, prompt.length - filesChars - skillsChars),
     filesChars,
     skillsChars,
-    files: distribute(files, filesChars).sort((a, b) => b.chars - a.chars),
-    skills: distribute(skills, skillsChars).sort((a, b) => b.chars - a.chars),
+    files: filesChars > 0
+      ? distribute(files, filesChars).sort((a, b) => b.chars - a.chars)
+      : [],
+    skills: skillsChars > 0
+      ? distribute(skills, skillsChars).sort((a, b) => b.chars - a.chars)
+      : [],
   };
 }
 
@@ -683,6 +701,7 @@ function analyzeConversation(
     shellChars: 0,
     customChars: 0,
     summaryChars: 0,
+    systemUpdateChars: 0,
     byTool: new Map(),
     items: [],
     perMessage: messages.map(() => 0),
@@ -711,6 +730,20 @@ function analyzeConversation(
     let label = `#${index + 1} ${message.role}`;
 
     switch (message.role) {
+      case 'system': {
+        // The leading prompt is counted in SystemTally, never a second time
+        // here. Only native mid-conversation text patches are conversation.
+        if (index === 0) {
+          return;
+        }
+        chars = renderSystemMessageUpdate(message).length;
+        if (chars === 0) {
+          return; // Tool declarations are counted once in ToolTally instead.
+        }
+        tally.systemUpdateChars += chars;
+        label += ' prompt update';
+        break;
+      }
       case 'user': {
         const user = message as Extract<AgentMessage, {role: 'user'}>;
         const {chars: c, images} = contentChars(user.content as ContentBlocks);
@@ -812,34 +845,228 @@ function analyzeConversation(
   return tally;
 }
 
-function analyze(pi: ExtensionAPI, ctx: ExtensionCommandContext): Analysis {
+function toolKey(tools: Tool[]): string {
+  return JSON.stringify(
+    tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    })).sort((a, b) => a.name.localeCompare(b.name)),
+  );
+}
+
+/** Built-in serializers that honor the mid-conversation system capability. */
+const MID_SYSTEM_APIS = new Set([
+  'anthropic-messages',
+  'openai-completions',
+  'openai-responses',
+  'openai-codex-responses',
+  'azure-openai-responses',
+  'mistral-conversations',
+]);
+
+function projectTranscript(
+  original: AgentMessage[],
+  ctx: ExtensionCommandContext,
+  registered: ToolInfo[],
+  active: string[],
+  snapshot: PromptSnapshot | undefined,
+): {
+  messages: AgentMessage[];
+  tools: ToolTally;
+  prompt: string;
+  notes: string[];
+} {
+  const notes: string[] = [];
+  const current = getCurrentSystemMessage(original);
+  const forced = snapshot?.forcedPrompt;
+  const model = ctx.model;
+  const compat = model?.compat;
+  const native = forced === undefined && model !== undefined &&
+    MID_SYSTEM_APIS.has(model.api) &&
+    compat !== undefined && 'supportsMidConvoSystemMessages' in compat &&
+    compat.supportsMidConvoSystemMessages === true;
+  let messages: AgentMessage[];
+  let sentTools: Tool[];
+
+  if (!current) {
+    // Old sessions have no persisted prompt/loadout. This is prospective,
+    // rather than a reconstruction of what an earlier request actually sent.
+    sentTools = registered.filter((tool) => active.includes(tool.name));
+    const head: SystemMessage = {
+      role: 'system',
+      content: snapshot?.prompt ?? ctx.getSystemPrompt(),
+      toolsAdded: sentTools,
+      timestamp: 0,
+    };
+    messages = [head, ...original];
+    notes.push(
+      'No transcript prompt checkpoint; using the current prompt and tools.',
+    );
+  } else if (forced !== undefined || !native) {
+    const head: SystemMessage = forced !== undefined
+      ? {
+        role: 'system',
+        content: forced,
+        toolsAdded: current.toolsAdded,
+        timestamp: current.timestamp,
+      }
+      : current;
+    messages = [
+      head,
+      ...original.filter((message) => message.role !== 'system'),
+    ];
+    sentTools = current.toolsAdded ?? [];
+    notes.push(
+      forced !== undefined
+        ? 'Observed forced prompt: historical system patches are collapsed, not counted again.'
+        : 'System patches are replayed into one leading prompt for this model.',
+    );
+  } else {
+    messages = original;
+    sentTools = current.toolsAdded ?? [];
+    const initial = getInitialSystemMessage(messages);
+    // Anthropic keeps removed tools declared for native tool-state history.
+    // Other built-in paths either add schemas once or fall back to current
+    // tools on removal/redefinition, so their schema total is the current set.
+    if (
+      model.api === 'anthropic-messages' &&
+      'supportsMidConvoToolChanges' in compat &&
+      compat.supportsMidConvoToolChanges === true &&
+      (initial?.toolsAdded?.length ?? 0) > 0 &&
+      !hasToolRedefinitions(messages)
+    ) {
+      sentTools = getDeclaredTools(messages);
+    }
+    notes.push(
+      'Native transcript projection: initial prompt plus later text patches; schemas counted once.',
+    );
+  }
+  if (!snapshot) {
+    notes.push(
+      'Historical forced prompts are not persisted; this transcript-based estimate may differ from the last request.',
+    );
+  }
+  const sentNames = new Set(sentTools.map((tool) => tool.name));
+  const all: ToolInfo[] = [
+    ...sentTools.map((tool): ToolInfo => ({
+      ...tool,
+      sourceInfo: registered.find((candidate) => candidate.name === tool.name)
+        ?.sourceInfo ?? {
+        source: 'transcript',
+        path: 'Transcript',
+        scope: 'temporary',
+        origin: 'top-level',
+      },
+    })),
+    ...registered.filter((tool) => !sentNames.has(tool.name)),
+  ];
+  const head = getInitialSystemMessage(messages);
+  return {
+    messages,
+    prompt: head ? getSystemMessageText(head) : '',
+    tools: analyzeTools(all, [...sentNames]),
+    notes,
+  };
+}
+
+function analyze(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  snapshots: PromptSnapshots,
+): Analysis {
   const usage = ctx.getContextUsage();
   const model = ctx.model;
   const entries = ctx.sessionManager.buildContextEntries();
-  const messages = entries.flatMap((entry) =>
+  const original = entries.flatMap((entry) =>
     sessionEntryToContextMessages(entry)
   );
-
-  const measured = lastAssistantUsage(messages);
+  // A compacted context may retain assistant messages from before its new
+  // checkpoint. Their usage describes a different prefix and cannot calibrate
+  // this one, even after a fresh response becomes available.
+  const branch = ctx.sessionManager.getBranch();
+  const boundary = branch.findLastIndex((entry) => entry.type === 'compaction');
+  const fresh = new Set(
+    branch.slice(boundary + 1).flatMap((entry) =>
+      entry.type === 'message' ? [entry.message] : []
+    ),
+  );
+  const last = lastAssistantUsage(original);
+  const lastMessage = last ? original[last.index] : undefined;
+  const hasMeasuredUsage = lastMessage !== undefined && fresh.has(lastMessage);
+  // Before the first usable response, Pi returns a conversation-only heuristic
+  // (zero for an empty session), not a measurement of prompt plus tools. Do not
+  // compare our full-context attribution against that incomplete baseline.
+  const reportedTokens = hasMeasuredUsage ? usage?.tokens ?? null : null;
+  const snapshot = hasMeasuredUsage ? snapshots.get(lastMessage) : undefined;
+  const projection = projectTranscript(
+    original,
+    ctx,
+    pi.getAllTools(),
+    pi.getActiveTools(),
+    snapshot,
+  );
+  const {messages, tools, notes} = projection;
+  // Pi deliberately reports null until the first response after compaction.
+  const measured = reportedTokens === null
+    ? undefined
+    : lastAssistantUsage(messages);
   const conversation = analyzeConversation(messages, ctx.cwd);
-  const reportedTokens = usage?.tokens ?? null;
-
-  // Pi builds its reported figure as "provider count at the last assistant
-  // turn" + "estimate for everything after it", so recover the second term by
-  // subtraction. Estimating it again here would round differently and the
-  // parts would stop adding up to the headline.
   const measuredTokens = measured?.tokens ?? 0;
-  const trailingTokens = reportedTokens !== null && measured
-    ? Math.max(0, reportedTokens - measuredTokens)
+  const trailingTokens = measured
+    ? Math.max(0, reportedTokens! - measuredTokens)
     : 0;
   const trailingCount = measured ? messages.length - 1 - measured.index : 0;
 
-  const system = analyzeSystemPrompt(
-    ctx.getSystemPrompt(),
-    ctx.getSystemPromptOptions(),
+  // Never attribute an old leading prompt to today's file/skill inventory.
+  const options = projection.prompt === snapshot?.prompt
+    ? snapshot.options
+    : projection.prompt === ctx.getSystemPrompt()
+    ? ctx.getSystemPromptOptions()
+    : undefined;
+  const system = analyzeSystemPrompt(projection.prompt, options);
+  if (!options && projection.prompt) {
+    notes.push(
+      'Historical file/skill metadata unavailable; their text is grouped under System prompt.',
+    );
+  }
+  const comparable = (message: AgentMessage): boolean => {
+    if (!snapshot || !fresh.has(message) || message.role !== 'assistant') {
+      return false;
+    }
+    const observed = snapshots.get(message);
+    return message.provider === model?.provider &&
+      message.model === model?.id &&
+      message.api === model?.api && observed !== undefined &&
+      observed.prompt === snapshot.prompt &&
+      observed.forcedPrompt === snapshot.forcedPrompt &&
+      observed.toolsKey === snapshot.toolsKey;
+  };
+  const noPendingSystemChange = !measured || messages.slice(measured.index + 1)
+    .every((message) => message.role !== 'system');
+  const schemaKey = toolKey(
+    projection.messages.length > 0
+      ? (getCurrentSystemMessage(projection.messages)?.toolsAdded ?? [])
+      : [],
   );
-  const tools = analyzeTools(pi.getAllTools(), pi.getActiveTools());
+  const density = measured && snapshot && noPendingSystemChange &&
+      schemaKey === snapshot.toolsKey
+    ? calibrate(
+      collectAnchors(messages, conversation.perMessage, comparable),
+      system.totalChars + tools.chars,
+    )
+    : UNCALIBRATED;
 
+  if (
+    lastMessage?.role === 'assistant' && (
+      lastMessage.model !== model?.id ||
+      lastMessage.provider !== model?.provider
+    )
+  ) {
+    notes.push(
+      'The last provider count belongs to a different model; current-model categories are estimates.',
+    );
+  }
   return {
     cwd: ctx.cwd,
     modelId: model ? `${model.provider}/${model.id}` : 'unknown',
@@ -849,14 +1076,12 @@ function analyze(pi: ExtensionAPI, ctx: ExtensionCommandContext): Analysis {
     measuredTokens,
     trailingTokens,
     trailingCount,
-    reserveTokens: resolveReserveTokens(ctx.cwd, ctx.isProjectTrusted()),
-    density: calibrate(
-      collectAnchors(messages, conversation.perMessage),
-      system.totalChars + tools.chars,
-    ),
+    reserveTokens: resolveReserveTokens(ctx),
+    density,
     system,
     tools,
     conversation,
+    notes,
   };
 }
 
@@ -1290,7 +1515,8 @@ function buildReport(
     conversation.toolResultChars +
     conversation.shellChars +
     conversation.customChars +
-    conversation.summaryChars;
+    conversation.summaryChars +
+    conversation.systemUpdateChars;
   // The fixed part of the prompt and the conversation tokenize at different
   // densities, so each is converted with its own calibrated rate.
   const {fixed, message} = analysis.density;
@@ -1459,8 +1685,8 @@ function buildReport(
     ratio: fixed,
     expanded: sections.has('tools'),
     legend: tools.inactiveCount > 0
-      ? '● sent to the model every turn   ' +
-        '○ registered but switched off, so free'
+      ? '● included in the projected request   ' +
+        '○ registered but absent from this projection'
       : undefined,
   });
 
@@ -1473,6 +1699,7 @@ function buildReport(
     {label: 'Shell (! commands)', chars: conversation.shellChars},
     {label: 'Extension messages', chars: conversation.customChars},
     {label: 'Compaction summaries', chars: conversation.summaryChars},
+    {label: 'System prompt updates', chars: conversation.systemUpdateChars},
   ]
     .filter((part) => part.chars > 0)
     .sort((a, b) => b.chars - a.chars);
@@ -1543,13 +1770,17 @@ function buildReport(
   }
 
   report.blank();
-  report.note(
-    'Each map cell is 1% of the window. The total is the provider count for',
-  );
-  report.note(
-    "the last assistant turn (including that response's output) plus an",
-  );
-  report.note('estimate for anything appended since.');
+  report.note('Each map cell is 1% of the window.');
+  if (analysis.reportedTokens === null) {
+    report.note('No provider count is available yet; the total is estimated.');
+  } else {
+    report.note(
+      "Pi's context estimate is the last assistant turn's provider count",
+    );
+    report.note(
+      '(including its output) plus an estimate for anything appended since.',
+    );
+  }
   if (analysis.density.calibrated) {
     report.note(
       `Category sizes are character counts divided by ${
@@ -1569,10 +1800,23 @@ function buildReport(
     );
   } else {
     report.note(
-      `No provider count yet, so categories fall back to ${DEFAULT_CHARS_PER_TOKEN} chars/token,`,
+      `No comparable observed turns; categories use ${DEFAULT_CHARS_PER_TOKEN} chars/token,`,
     );
     report.note(
       'which typically under-counts code and tool output by around half.',
+    );
+  }
+  for (const note of analysis.notes) {
+    report.note(note);
+  }
+  report.note(
+    'Provider framing, custom context/payload hooks, and schema conversion remain approximate.',
+  );
+  if (analysis.reportedTokens !== null && estimated > analysis.reportedTokens) {
+    report.warn(
+      `Attribution estimate exceeds Pi's context estimate (${
+        fmtTokens(analysis.reportedTokens)
+      } tokens).`,
     );
   }
   if (analysis.reserveTokens > 0) {
@@ -1774,6 +2018,33 @@ function parseArgs(args: string): ParsedArgs {
 }
 
 export default function (pi: ExtensionAPI) {
+  const snapshots: PromptSnapshots = new WeakMap();
+  let runOptions: BuildSystemPromptOptions | undefined;
+  pi.on('before_agent_start', (event) => {
+    // Keep the shared reference: later handlers (including model-info) may
+    // return a forced prompt after this handler has already run.
+    runOptions = event.systemPromptOptions;
+  });
+  pi.on('message_end', (event, ctx) => {
+    if (event.message.role !== 'assistant' || !runOptions) {
+      return;
+    }
+    const active = new Set(pi.getActiveTools());
+    snapshots.set(event.message, {
+      forcedPrompt: runOptions.forceSystemPrompt,
+      prompt: ctx.getSystemPrompt(),
+      toolsKey: toolKey(
+        pi.getAllTools().filter((tool) => active.has(tool.name)),
+      ),
+      options: {...runOptions, selectedTools: [...active]},
+    });
+  });
+  pi.on('agent_end', () => {
+    runOptions = undefined;
+  });
+  pi.on('session_start', () => {
+    runOptions = undefined;
+  });
   pi.registerCommand('context', {
     description:
       'Map current context-window usage by category, with per-file, ' +
@@ -1803,7 +2074,7 @@ export default function (pi: ExtensionAPI) {
 
       let analysis: Analysis;
       try {
-        analysis = analyze(pi, ctx);
+        analysis = analyze(pi, ctx, snapshots);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (ctx.hasUI) {
