@@ -12,15 +12,15 @@ shift
 
 args=(
     -s -X POST https://api.imgflip.com/caption_image
-    -d "template_id=$template_id"
-    -d "username=$IMGFLIP_USERNAME"
-    -d "password=$IMGFLIP_PASSWORD"
+    --data-urlencode "template_id=$template_id"
+    --data-urlencode "username=$IMGFLIP_USERNAME"
+    --data-urlencode "password=$IMGFLIP_PASSWORD"
 )
 
 i=0
 for text in "$@"; do
-    args+=(-d "boxes[$i][text]=$text")
-    ((i++))
+    args+=(--data-urlencode "boxes[$i][text]=$text")
+    ((++i))
 done
 
 curl "${args[@]}"
