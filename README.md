@@ -10,7 +10,7 @@ Agent[^agent] plugins, skills, and extensions from Greg Hurrell.
 
 Plugins live under [`claude/`](./claude):
 
-- [atlassian](./claude/atlassian): Jira and Confluence access via the Atlassian CLI (`acli`).
+- [atlassian](./claude/atlassian): Jira and Confluence Cloud access via a shared REST wrapper with nono phantom credentials.
 - [git](./claude/git): Git version control skills.
 - [jj](./claude/jj): Jujutsu version control skills.
 - [meme](./claude/meme): Generate meme images using popular templates via the imgflip API.

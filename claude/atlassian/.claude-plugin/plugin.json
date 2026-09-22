@@ -1,7 +1,7 @@
 {
   "name": "atlassian",
   "version": "1.0.0",
-  "description": "Access Atlassian data (Jira, Confluence) via the Atlassian CLI (`acli`)",
+  "description": "Access Jira and Confluence Cloud through a shared REST wrapper with nono phantom credentials",
   "author": {
     "name": "Greg Hurrell",
     "email": "greg@hurrell.net"
