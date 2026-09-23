@@ -59,7 +59,7 @@ curl -sSL https://raw.githubusercontent.com/earendil-works/pi/main/packages/codi
 
 The human-readable URL is <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/CHANGELOG.md>.
 
-Extract the entries for every version strictly greater than `CURRENT` and less than or equal to `LATEST`. Pay particular attention to:
+Extract the entries for every version strictly greater than `CURRENT` and less than or equal to `LATEST`. If `COOLDOWN_LATEST < CURRENT`, also extract `COOLDOWN_LATEST < version <= CURRENT` and analyze those releases in reverse: a downgrade removes their APIs, features, dependency versions, and fixes. Check the exact target version's exports and dependencies rather than assuming that a generic downgrade example applies to this span. Pay particular attention to:
 
 - Sections or bullets labeled **Breaking**, **BREAKING CHANGE**, **Migration**, **Removed**, or **Deprecated**.
 - Changes to extension APIs, event names, `ExtensionContext` or `pi.*` method signatures, tool registration, skill loading, prompt template loading or interpolation, or session format.
@@ -73,40 +73,30 @@ The goal of this step is to discover every extension, skill, and prompt template
 
 ### Step 4a: Always read `settings.json` first
 
-Before enumerating anything, read `~/.pi/agent/settings.json` if it exists. Three top-level keys matter:
+Before enumerating anything, read `~/.pi/agent/settings.json` if it exists, or the settings under `PI_CODING_AGENT_DIR` when overridden. Also inspect applicable trusted project settings at `.pi/settings.json` in the current working directory. The `extensions`, `skills`, and `prompts` arrays accept files or directories; `packages` can contribute all three resource types. Tilde-expand `~` against `$HOME` and resolve relative entries against the directory containing their settings file.
 
-- `"extensions"`: an array of directories pi loads extensions from. Each entry is a directory; pi loads every `*.ts` file directly inside it, plus any subdirectory containing an `index.ts`, such as `subagent/` packages. Tilde-expand `~` against `$HOME`.
-- `"skills"`: an array of directories pi loads skills from. Each entry is a directory; pi loads direct `.md` files in it and `*/SKILL.md` from immediate subdirectories. Tilde-expand `~` against `$HOME`.
-- `"prompts"`: an array of files or directories pi loads prompt templates from. For directory entries, pi discovers `*.md` files directly inside the directory and does not recurse. Tilde-expand `~` against `$HOME`.
+Configured resource paths are mandatory inventory inputs, but they are **additive**, not replacements for auto-discovered defaults. Even a present or empty array does not by itself disable discovery. Inventory the union of enabled configured entries, auto-discovered resources, package resources, and explicit CLI resources. Honor resource filters, exclusions, project trust, and any known `--no-*` discovery flags using the installed Pi version's documented rules. Do not silently omit a configured root or an enabled default root.
 
-If `settings.json` defines any of these arrays, treat the defined array as authoritative for that resource type and use it in place of any hard-coded defaults below. Do not silently fall back to defaults if a key is present but lists different paths; the user has explicitly opted into a different set of roots.
+The usual auto-discovered roots are:
 
-If `settings.json` is missing or does not set one of the keys, fall back to pi's built-in defaults for the missing key:
+- Extensions: `~/.pi/agent/extensions` and trusted `.pi/extensions` in the current working directory.
+- Skills: `~/.pi/agent/skills`, `~/.agents/skills`, trusted `.pi/skills` in the current working directory, and trusted `.agents/skills` in cwd and ancestors up to the Git root (or filesystem root outside a repository).
+- Prompts: `~/.pi/agent/prompts` and trusted `.pi/prompts` in the current working directory.
 
-- Default extension roots: `~/.pi/agent/extensions`, and `.pi/extensions` in the current working directory and ancestors up to the repo root.
-- Default skill roots: `~/.pi/agent/skills`, `~/.agents/skills`, and `.pi/skills` or `.agents/skills` in cwd and ancestors.
-- Default prompt roots: `~/.pi/agent/prompts`, and `.pi/prompts` in the current working directory.
+Apply `PI_CODING_AGENT_DIR` to the global Pi roots above. Ordinary `.pi` resource directories are cwd-local; do not apply the ancestor-walking rule for `.agents/skills` to them. Inspect package manifests and filters, explicit `-e`/`--extension`, `--skill`, and `--prompt-template` inputs when known, and any resource-discovery hooks in loaded extension source. Mark unverifiable dynamic or CLI resources as uncertain rather than claiming completeness. Do not install packages or execute unfamiliar extension code merely to inventory it.
 
-List the roots you ended up with explicitly in your scratch reasoning so it is obvious which extensions, skills, and prompts are in scope.
+List every root or explicit file you ended up with, its source, and any empty, missing, disabled, or untrusted locations explicitly in your scratch reasoning so it is obvious which extensions, skills, and prompts are in scope.
 
-### Step 4b: Enumerate every item under every configured root
+### Step 4b: Enumerate every item from every enabled source
 
-For each extension root, list:
+Follow the installed Pi version's loader rules, not just filename guesses:
 
-- All `*.ts` files directly inside the root.
-- All immediate subdirectories that contain an `index.ts`; these are packaged extensions, for example `subagent/index.ts`.
+- **Extensions:** include explicit files, direct `*.ts` and `*.js` entries, and immediate extension subdirectories exposing `index.ts`, `index.js`, or entrypoints declared by their package manifest. Do not treat every helper or test file below an extension directory as a separate extension; inspect imported implementation files during the compatibility review.
+- **Skills:** include explicit files and recursively discovered `SKILL.md` directories, including symlinked skills. Root Markdown discovery differs by location: Pi/configured roots can expose direct skill `.md` files, while `.agents/skills` ignores root Markdown other than `SKILL.md` and can discover skill Markdown in grouping folders. Validate frontmatter and record discovery warnings; check installed loader behavior for ambiguous layouts.
+- **Prompts:** include explicit files and direct `*.md` files in each directory. Prompt directory discovery is non-recursive unless nested locations are explicitly configured or selected by a package manifest.
+- **Packages:** honor `pi.extensions`, `pi.skills`, and `pi.prompts` manifest entries, patterns, and configured filters. Without a manifest, inspect the conventional resource directories. Record configured but unavailable packages instead of installing them during the audit.
 
-For each skill root, list:
-
-- All `*.md` files directly inside the root.
-- All immediate subdirectories containing a `SKILL.md`.
-
-For each prompt entry, list:
-
-- If the entry is a file, that file.
-- If the entry is a directory, all `*.md` files directly inside that directory.
-
-Resolve symlinks where helpful, but if two roots point at the same physical file or directory, analyze the underlying file only once and note that both names map to it.
+Resolve symlinks to deduplicate physical sources, retaining their configured names and aliases in the report. Do not rename a Pi skill after the directory its symlink resolves to. Record both names when multiple roots map to the same underlying file.
 
 ### Step 4c: Record name and purpose for each discovered item
 
@@ -114,13 +104,13 @@ For every extension, skill, and prompt template you found, read the file header,
 
 ### Step 4d: Sanity-check coverage before continuing
 
-Before moving on, ask yourself: have I enumerated every entry in `settings.json`'s `extensions`, `skills`, and `prompts` arrays, plus defaults for any missing arrays? If the answer is anything other than yes, go back and finish. Do not start Step 5 until the inventory is complete.
+Before moving on, ask yourself: have I accounted for every configured resource entry, enabled auto-discovered default, applicable trusted project resource, package resource, and known CLI or dynamic resource? Have I recorded missing, excluded, untrusted, or unverifiable sources rather than silently dropping them? If the answer is anything other than yes, go back and finish. Do not start Step 5 with an unexplained gap in coverage.
 
 ## Step 5: Cross-reference against breaking changes
 
-For every breaking change identified in Step 3, check each extension, skill, and prompt template discovered in Step 4 for usage of the affected API, flag, or convention. The search must span every configured root, not just default `~/.pi/agent/...` paths. Concretely:
+For every breaking change identified in Step 3, check each extension, skill, and prompt template discovered in Step 4 for usage of the affected API, flag, or convention. The search must span every inventoried source, including configured roots, enabled defaults, and package resources, not just default `~/.pi/agent/...` paths. Concretely:
 
-- For API renames or removals: use `rg` for the old symbol across all configured extension roots simultaneously.
+- For API renames or removals: use `rg` for the old symbol across all inventoried extension roots simultaneously, following relevant symlinks and including hidden source directories when necessary.
 - For event name changes: search for the old event name across all extension roots.
 - For skill, prompt, config, or frontmatter changes: inspect the relevant files directly.
 - For prompt interpolation changes: inspect every prompt template for affected variables such as positional arguments, all-arguments placeholders, and argument slice placeholders.

@@ -110,7 +110,7 @@ A companion `slack-mcp` skill under `pi/skills/slack-mcp/` teaches the agent how
 
 Adds a `/context` slash command, similar to the one from Claude Code, that shows how the current context window is being used. This is a counterpart to the built-in `/session`, which reports _cumulative_ session billing rather than current context composition, and to the footer, which reports context usage as a single opaque percentage.
 
-The _total_ (from `ctx.getContextUsage()`) is authoritative, coming from the provider's own token count for the last assistant turn. The _categories_ are estimated from character counts; any discrepancy is reported in the "Unaccounted" category.
+The _total_ (from `ctx.getContextUsage()`) is authoritative when a usable assistant response exists after the latest compaction or context edit. Until then, the report estimates the total and does not calibrate categories against stale provider usage. The _categories_ are estimated from character counts; any discrepancy is reported in the "Unaccounted" category.
 
 ### `total-cost.ts`
 

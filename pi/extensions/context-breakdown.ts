@@ -65,7 +65,6 @@ import {
   SettingsManager,
   calculateContextTokens,
   getAgentDir,
-  sessionEntryToContextMessages,
 } from '@earendil-works/pi-coding-agent';
 import type {Component, TUI} from '@earendil-works/pi-tui';
 import {
@@ -977,15 +976,16 @@ function analyze(
 ): Analysis {
   const usage = ctx.getContextUsage();
   const model = ctx.model;
-  const entries = ctx.sessionManager.buildContextEntries();
-  const original = entries.flatMap((entry) =>
-    sessionEntryToContextMessages(entry)
-  );
-  // A compacted context may retain assistant messages from before its new
-  // checkpoint. Their usage describes a different prefix and cannot calibrate
-  // this one, even after a fresh response becomes available.
+  // Use Pi's canonical projection: raw context entries still contain omitted
+  // or replaced messages and may retain superseded compaction checkpoints.
+  const original = ctx.sessionManager.buildSessionProjection().messages;
+  // Edits and compaction invalidate usage for the old prefix. Only responses
+  // after the latest boundary can establish a baseline or calibrate this one,
+  // even when an earlier assistant message is still present in the projection.
   const branch = ctx.sessionManager.getBranch();
-  const boundary = branch.findLastIndex((entry) => entry.type === 'compaction');
+  const boundary = branch.findLastIndex((entry) =>
+    entry.type === 'compaction' || entry.type === 'context_edit'
+  );
   const fresh = new Set(
     branch.slice(boundary + 1).flatMap((entry) =>
       entry.type === 'message' ? [entry.message] : []
@@ -1007,7 +1007,7 @@ function analyze(
     snapshot,
   );
   const {messages, tools, notes} = projection;
-  // Pi deliberately reports null until the first response after compaction.
+  // Until a fresh response, compaction reports null and edits use a heuristic.
   const measured = reportedTokens === null
     ? undefined
     : lastAssistantUsage(messages);
