@@ -1,0 +1,11 @@
+#!/bin/sh
+
+set -eu
+
+cd "$(dirname "$0")/.."
+
+status=0
+node --experimental-transform-types --test pi/extensions/tests/*.test.mjs || status=1
+node pi/extensions/subagent/tests/run.mjs || status=1
+node --test claude/atlassian/tests/*.test.mjs || status=1
+exit "$status"

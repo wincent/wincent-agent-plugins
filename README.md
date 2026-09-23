@@ -98,9 +98,8 @@ If you install the Claude marketplace, you can configure Pi to look for skills, 
 
 ## Tests
 
-From the repository root:
+Run all extension, subagent, and Atlassian tests from the repository root:
 
 ```bash
-node --experimental-transform-types --test pi/extensions/tests/context-breakdown.test.mjs
-node --test pi/extensions/tests/total-cost.test.mjs
+bin/test
 ```
