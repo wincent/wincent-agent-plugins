@@ -1,39 +1,43 @@
 /**
- * Run with: node --test pi/extensions/tests/total-cost.test.mjs
- * Uses only temporary sessions and stubs Pi's UI imports, not its accounting.
+ * Requires globally installed Pi (no provider requests).
+ * Run: node --experimental-transform-types --test pi/extensions/tests/total-cost.test.mjs
+ * Uses temporary sessions and Pi's real rendering and width helpers.
  */
 import {strict as assert} from 'node:assert';
+import {execFileSync} from 'node:child_process';
 import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {registerHooks} from 'node:module';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
 
-// This repository has type stubs, not runtime Pi dependencies. The command's
-// non-interactive path must not instantiate any of these UI components.
-const uiStub =
-  'class UnusedUI { constructor() { throw new Error("Unexpected UI"); } }';
-const imports = new Map([[
+import {pathToFileURL} from 'node:url';
+
+const piDir = process.env.PI_TEST_PACKAGE_DIR ?? join(
+  execFileSync('npm', ['root', '-g'], {encoding: 'utf8'}).trim(),
   '@earendil-works/pi-coding-agent',
-  `${uiStub} export { UnusedUI as DynamicBorder };`,
-], [
-  '@earendil-works/pi-tui',
-  `${uiStub} export { UnusedUI as Container, UnusedUI as Text, UnusedUI as matchesKey };`,
-]]);
+);
+const imports = new Map([
+  ['@earendil-works/pi-coding-agent', piDir],
+  ['@earendil-works/pi-tui', join(piDir, 'node_modules/@earendil-works/pi-tui')],
+]);
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
-    const source = imports.get(specifier);
-    return source === undefined
+    const dir = imports.get(specifier);
+    return dir === undefined
       ? nextResolve(specifier, context)
       : {
-        url: `data:text/javascript,${encodeURIComponent(source)}`,
+        url: pathToFileURL(join(dir, 'dist/index.js')).href,
         shortCircuit: true,
       };
   },
 });
 let extension;
+let visibleWidth;
+let stripTerminalSequences;
 try {
   ({default: extension} = await import('../total-cost.ts'));
+  ({visibleWidth, stripTerminalSequences} = await import('@earendil-works/pi-tui'));
 } finally {
   hooks.deregister();
 }
@@ -50,7 +54,7 @@ function assistant(model, cost, timestamp) {
   };
 }
 
-async function report(t, files, args = '') {
+async function report(t, files, args = '', context = {hasUI: false}) {
   const dir = await mkdtemp(join(tmpdir(), 'total-cost-test-'));
   const previousDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = dir;
@@ -74,7 +78,7 @@ async function report(t, files, args = '') {
     const output = [];
     t.mock.method(console, 'log', (line) => output.push(line));
     t.mock.method(console, 'error', (line) => assert.fail(line));
-    await handler(args, {hasUI: false});
+    await handler(args, context);
     return output.join('\n');
   } finally {
     if (previousDir === undefined) {
@@ -173,4 +177,160 @@ test('unmatched filters still report no matching models', async (t) => {
   const output = await report(t, mixedFiles, 'missing');
   assert.match(output, /No models matching missing found/);
   assert.deepEqual(rows(output), []);
+});
+
+const wideFiles = [[
+  assistant('alpha-model-long-name', 3, '2026-09-21'),
+  assistant('beta-model-long-name', 2, '2026-09-21'),
+  assistant('gamma-model-long-name', 1, '2026-09-21'),
+]];
+
+async function inspectUI(t, files, args, inspect) {
+  let renders = 0;
+  let closes = 0;
+  let color = 32;
+  await report(t, files, args, {
+    hasUI: true,
+    ui: {
+      notify() {},
+      async custom(factory) {
+        const component = factory(
+          {requestRender: () => renders++},
+          {
+            fg: (_name, text) => `\x1b[${color}m${text}\x1b[39m`,
+            bold: (text) => `\x1b[1m${text}\x1b[22m`,
+          },
+          {},
+          () => closes++,
+        );
+        await inspect({
+          component,
+          render(width) {
+            const lines = component.render(width);
+            for (const line of lines) {
+              assert.ok(visibleWidth(line) <= width, `Line exceeds ${width}: ${line}`);
+            }
+            return lines.map(stripTerminalSequences);
+          },
+          get renders() { return renders; },
+          get closes() { return closes; },
+          changeTheme() { color = 35; component.invalidate(); },
+        });
+      },
+    },
+  });
+}
+
+const keys = {left: '\x1b[D', right: '\x1b[C', home: '\x1b[H', end: '\x1b[F'};
+const tableRows = (lines) => lines.filter((line) => /^\s*(Month\s|2026-\d\d\s|Total\s+\$)/.test(line));
+
+test('scrolls by column with Month/Cost frozen, including headers and totals', async (t) => {
+  await inspectUI(t, wideFiles, '', (ui) => {
+    const initial = ui.render(46);
+    const firstRows = tableRows(initial);
+    assert.equal(firstRows.length, 3);
+    assert.match(firstRows[0], /alpha-model-long-name/);
+    assert.match(initial.join('\n'), /Left\/Right: scroll/);
+    const frozenWidth = firstRows[0].indexOf('alpha');
+    const frozen = firstRows.map((line) => line.slice(0, frozenWidth));
+
+    ui.component.handleInput(keys.right);
+    assert.equal(ui.renders, 1);
+    const nextRows = tableRows(ui.render(46));
+    assert.deepEqual(nextRows.map((line) => line.slice(0, frozenWidth)), frozen);
+    assert.match(nextRows[0], /beta-model-long-name/);
+    assert.match(nextRows[1].slice(frozenWidth), /\$2\.00/);
+    assert.match(nextRows[2].slice(frozenWidth), /\$2\.00/);
+
+    ui.component.handleInput(keys.left);
+    assert.deepEqual(ui.render(46), initial);
+    ui.component.handleInput(keys.end);
+    const endRows = tableRows(ui.render(46));
+    assert.deepEqual(endRows.map((line) => line.slice(0, frozenWidth)), frozen);
+    assert.match(endRows[0], /Messages\s+Sessions/);
+    assert.match(endRows[1], /3\s+1\s*$/);
+    const renders = ui.renders;
+    ui.component.handleInput(keys.right);
+    assert.equal(ui.renders, renders);
+    ui.component.handleInput(keys.home);
+    assert.deepEqual(ui.render(46), initial);
+    ui.component.handleInput(keys.left);
+    ui.component.handleInput('x');
+    ui.component.handleInput('\r');
+    assert.equal(ui.closes, 1);
+  });
+});
+
+test('clamps scrolling on resize and hides navigation when the table fits', async (t) => {
+  await inspectUI(t, wideFiles, '', (ui) => {
+    ui.render(46);
+    ui.component.handleInput(keys.end);
+    const wide = ui.render(160);
+    assert.doesNotMatch(wide.join('\n'), /Left\/Right: scroll/);
+    assert.match(tableRows(wide)[0], /alpha-model-long-name.*gamma-model-long-name.*Sessions/);
+    const renders = ui.renders;
+    ui.component.handleInput(keys.right);
+    assert.equal(ui.renders, renders);
+    assert.match(tableRows(ui.render(46))[0], /alpha-model-long-name/);
+    for (const width of [0, 1, 2, 10, 17, 18, 20]) {
+      ui.render(width);
+      ui.component.handleInput(keys.right);
+    }
+    assert.match(ui.render(10).join('\n'), /Widen/);
+  });
+});
+
+test('pages within oversized columns without skipping their contents', async (t) => {
+  const name = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  await inspectUI(t, [[assistant(name, 1, '2026-09-21')]], '', (ui) => {
+    const initial = tableRows(ui.render(34))[0];
+    const start = initial.indexOf('ABC');
+    let seen = initial.slice(start).trimEnd();
+    for (let step = 0; step < 3; step++) {
+      ui.component.handleInput(keys.right);
+      seen += tableRows(ui.render(34))[0].slice(start).trimEnd();
+    }
+    assert.ok(seen.startsWith(name), seen);
+    ui.component.handleInput(keys.home);
+    assert.equal(tableRows(ui.render(34))[0], initial);
+  });
+});
+
+test('preserves ANSI styling, handles wide characters, and refreshes the theme', async (t) => {
+  await inspectUI(t, [[
+    assistant('模型模型模型模型模型模型模型模型模型模型', 3, '2026-09-21'),
+    assistant('emoji-🚀-e\u0301-model', 1, '2026-09-21'),
+  ]], '', (ui) => {
+    for (const width of [19, 20, 21, 33, 48, 100]) {
+      ui.render(width);
+      ui.component.handleInput(keys.right);
+      ui.render(width);
+      ui.component.handleInput(keys.end);
+      ui.render(width);
+      ui.component.handleInput(keys.home);
+    }
+    assert.ok(ui.component.render(48).some((line) => line.includes('\x1b[32m')));
+    ui.changeTheme();
+    const updated = ui.component.render(48).join('\n');
+    assert.ok(updated.includes('\x1b[35m'));
+    assert.ok(!updated.includes('\x1b[32m'));
+  });
+});
+
+test('keeps filters, totals-only output, empty results, and Escape working', async (t) => {
+  await inspectUI(t, wideFiles, 'beta no-model-breakdown', (ui) => {
+    const lines = ui.render(100);
+    assert.match(lines.join('\n'), /Filtered to models matching: beta/);
+    assert.match(tableRows(lines)[1], /2026-09\s+\$2.00\s+1\s+1/);
+    assert.doesNotMatch(tableRows(lines)[0], /model/);
+    assert.doesNotMatch(lines.join('\n'), /Left\/Right/);
+    ui.component.handleInput('\x1b');
+    assert.equal(ui.closes, 1);
+  });
+  await inspectUI(t, wideFiles, 'missing', (ui) => {
+    const lines = ui.render(100);
+    assert.match(lines.join('\n'), /No models matching missing found/);
+    assert.equal(tableRows(lines).length, 0);
+    assert.doesNotMatch(lines.join('\n'), /Left\/Right/);
+  });
 });

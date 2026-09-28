@@ -5,7 +5,9 @@
  * `$PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`) and shows a
  * per-month breakdown of cumulative LLM cost, message count, and number of
  * distinct sessions that contributed. By default the cost is also broken down
- * per model, with one extra column per model.
+ * per model, with one extra column per model. In the TUI, Month and Cost stay
+ * fixed while Left/Right scroll the remaining columns; Home/End jump to either
+ * end.
  *
  * Optional arguments:
  *   - `no-model-breakdown` suppresses the per-model columns and shows totals
@@ -27,7 +29,13 @@ import type {
   ExtensionCommandContext,
 } from '@earendil-works/pi-coding-agent';
 import {DynamicBorder} from '@earendil-works/pi-coding-agent';
-import {Container, Text, matchesKey} from '@earendil-works/pi-tui';
+import {
+  Container,
+  Text,
+  matchesKey,
+  sliceByColumn,
+  visibleWidth,
+} from '@earendil-works/pi-tui';
 import {readFile, readdir, stat} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
@@ -275,7 +283,7 @@ interface TableModel {
 const COL_GAP = '  ';
 
 function pad(s: string, width: number, align: Align): string {
-  const fill = ' '.repeat(Math.max(0, width - s.length));
+  const fill = ' '.repeat(Math.max(0, width - visibleWidth(s)));
   return align === 'left' ? s + fill : fill + s;
 }
 
@@ -329,11 +337,11 @@ function buildTableModel(totals: Totals, showModels: boolean): TableModel {
 
 function columnWidths(model: TableModel): number[] {
   return model.columns.map((col, i) => {
-    let width = col.header.length;
+    let width = visibleWidth(col.header);
     for (const row of model.rows) {
-      width = Math.max(width, row[i].length);
+      width = Math.max(width, visibleWidth(row[i]));
     }
-    return Math.max(width, model.totalRow[i].length);
+    return Math.max(width, visibleWidth(model.totalRow[i]));
   });
 }
 
@@ -398,6 +406,91 @@ function renderPlainTable(model: TableModel): string[] {
   ];
 }
 
+class CostTableViewport {
+  private offset = 0;
+  private viewportWidth = 0;
+  private maxOffset = 0;
+  private readonly widths: number[];
+  private readonly frozenWidth: number;
+  private readonly scrollingWidth: number;
+  private readonly columnStarts: number[];
+
+  constructor(private readonly model: TableModel) {
+    this.widths = columnWidths(model);
+    this.frozenWidth = tableWidth(this.widths.slice(0, 2)) + COL_GAP.length;
+    this.scrollingWidth = tableWidth(this.widths.slice(2));
+    let start = 0;
+    this.columnStarts = this.widths.slice(2).map((width) => {
+      const result = start;
+      start += width + COL_GAP.length;
+      return result;
+    });
+  }
+
+  render(width: number, theme: any): string[] {
+    this.viewportWidth = Math.max(0, width - this.frozenWidth);
+    this.maxOffset = Math.max(0, this.scrollingWidth - this.viewportWidth);
+    this.offset = Math.min(this.offset, this.maxOffset);
+
+    return renderThemedTable(this.model, theme).map((line) => {
+      if (this.viewportWidth === 0) {
+        return sliceByColumn(line, 0, width, true);
+      }
+      const frozen = sliceByColumn(line, 0, this.frozenWidth, true);
+      const scrolling = sliceByColumn(
+        line,
+        this.frozenWidth + this.offset,
+        this.viewportWidth,
+        true,
+      );
+      return frozen + scrolling;
+    });
+  }
+
+  get hint(): string {
+    if (this.viewportWidth === 0) {
+      return 'Widen the terminal to see the remaining columns.';
+    }
+    if (this.maxOffset === 0) {
+      return '';
+    }
+    return `Left/Right: scroll | Home/End: jump | ${this.offset + 1}-${
+      Math.min(this.scrollingWidth, this.offset + this.viewportWidth)
+    } of ${this.scrollingWidth}`;
+  }
+
+  handleInput(data: string): boolean {
+    if (this.viewportWidth === 0 || this.maxOffset === 0) {
+      return false;
+    }
+    const previous = this.offset;
+    if (matchesKey(data, 'home')) {
+      this.offset = 0;
+    } else if (matchesKey(data, 'end')) {
+      this.offset = this.maxOffset;
+    } else if (matchesKey(data, 'right')) {
+      const next = this.columnStarts.find((start) => start > this.offset) ??
+        this.maxOffset;
+      // Page within columns wider than the viewport so no cells are skipped.
+      this.offset = Math.min(
+        next,
+        this.offset + this.viewportWidth,
+        this.maxOffset,
+      );
+    } else if (matchesKey(data, 'left')) {
+      const previousColumn = this.columnStarts.findLast((start) =>
+        start < this.offset
+      ) ?? 0;
+      this.offset = Math.max(
+        previousColumn,
+        this.offset - this.viewportWidth,
+        0,
+      );
+    }
+    return this.offset !== previous;
+  }
+}
+
 function filterNote(filterTokens: string[]): string {
   return `Filtered to models matching: ${filterTokens.join(', ')}`;
 }
@@ -413,6 +506,8 @@ function buildLines(
   theme: any,
   showModels: boolean,
   filterTokens: string[],
+  tableLines: string[],
+  scrollHint: string,
 ): string[] {
   const lines: string[] = [];
 
@@ -433,7 +528,10 @@ function buildLines(
     lines.push(theme.fg('muted', filterNote(filterTokens)));
     lines.push('');
   }
-  lines.push(...renderThemedTable(buildTableModel(totals, showModels), theme));
+  lines.push(...tableLines);
+  if (scrollHint) {
+    lines.push(theme.fg('dim', scrollHint));
+  }
   lines.push('');
   if (showModels && totals.models.length > 0) {
     lines.push(
@@ -482,27 +580,45 @@ async function showTotals(
     return;
   }
 
-  await ctx.ui.custom((_tui, theme, _kb, done) => {
-    const container = new Container();
-    const border = new DynamicBorder((s: string) => theme.fg('accent', s));
-    container.addChild(border);
-    container.addChild(
-      new Text(theme.fg('accent', theme.bold('Total Cost by Month')), 1, 1),
-    );
-    for (const line of buildLines(totals, theme, showModels, filterTokens)) {
-      container.addChild(new Text(line, 1, 0));
-    }
-    container.addChild(
-      new Text(theme.fg('dim', 'Press Enter or Esc to close'), 1, 1),
-    );
-    container.addChild(border);
-
+  await ctx.ui.custom((tui, theme, _kb, done) => {
+    const table = new CostTableViewport(buildTableModel(totals, showModels));
     return {
-      render: (width: number) => container.render(width),
-      invalidate: () => container.invalidate(),
+      render: (width: number) => {
+        if (width <= 0) {
+          return [];
+        }
+        const padding = Math.min(1, Math.floor((width - 1) / 2));
+        const tableLines = table.render(width - padding * 2, theme);
+        const container = new Container();
+        const border = new DynamicBorder((s: string) => theme.fg('accent', s));
+        container.addChild(border);
+        container.addChild(
+          new Text(theme.fg('accent', theme.bold('Total Cost by Month')), 1, 1),
+        );
+        for (
+          const line of buildLines(
+            totals,
+            theme,
+            showModels,
+            filterTokens,
+            tableLines,
+            table.hint,
+          )
+        ) {
+          container.addChild(new Text(line, 1, 0));
+        }
+        container.addChild(
+          new Text(theme.fg('dim', 'Press Enter or Esc to close'), 1, 1),
+        );
+        container.addChild(border);
+        return container.render(width);
+      },
+      invalidate: () => {},
       handleInput: (data: string) => {
         if (matchesKey(data, 'enter') || matchesKey(data, 'escape')) {
           done(undefined);
+        } else if (table.handleInput(data)) {
+          tui.requestRender();
         }
       },
     };
