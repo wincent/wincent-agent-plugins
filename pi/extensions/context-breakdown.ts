@@ -171,6 +171,13 @@ interface SystemTally {
   skills: Item[];
 }
 
+// Transcript declarations are not registered tools: they have no exposure or
+// execution metadata. Keep only the fields this report actually consumes.
+type ContextTool = Pick<
+  ToolInfo,
+  'name' | 'description' | 'parameters' | 'sourceInfo'
+>;
+
 interface ToolTally {
   chars: number;
   items: Item[];
@@ -614,7 +621,7 @@ function analyzeSystemPrompt(
 }
 
 /** Human label for where a tool came from, used to group the detail list. */
-function toolGroup(tool: ToolInfo): string {
+function toolGroup(tool: ContextTool): string {
   const source = tool.sourceInfo?.source;
   if (!source || source === 'builtin') {
     return 'Built-in';
@@ -640,7 +647,7 @@ function toolGroup(tool: ToolInfo): string {
  * are estimated from the JSON size of what gets serialized for the provider:
  * name, description, and parameter schema.
  */
-function analyzeTools(all: ToolInfo[], active: string[]): ToolTally {
+function analyzeTools(all: ContextTool[], active: string[]): ToolTally {
   const activeSet = new Set(active);
   const items: Item[] = [];
   let chars = 0;
@@ -947,8 +954,8 @@ function projectTranscript(
     );
   }
   const sentNames = new Set(sentTools.map((tool) => tool.name));
-  const all: ToolInfo[] = [
-    ...sentTools.map((tool): ToolInfo => ({
+  const all: ContextTool[] = [
+    ...sentTools.map((tool): ContextTool => ({
       ...tool,
       sourceInfo: registered.find((candidate) => candidate.name === tool.name)
         ?.sourceInfo ?? {

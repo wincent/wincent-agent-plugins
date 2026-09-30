@@ -384,6 +384,25 @@ test('native Anthropic retains removed tool declarations exactly once', async (t
   assert.match(text, /Transcript/);
 });
 
+test('transcript tool descriptions do not require live registration metadata', async (t) => {
+  const declared = tool('read', 'Description actually sent to the provider');
+  const f = await fixture(t, {
+    messages: [system('Initial', {toolsAdded: [declared]})],
+    tools: [{
+      ...tool('read', 'Different registration description '.repeat(100)),
+      exposure: 'deferred',
+    }],
+    active: [],
+  });
+  const {text, error} = await f.run();
+  assert.equal(error, '');
+  assert.ok(text.includes(
+    `Tool definitions: ${Math.ceil(JSON.stringify(declared).length / 4)} tokens`,
+  ), text);
+  assert.match(text, /Tool definitions.*1 tool/);
+  await f.assertReadOnly();
+});
+
 test('usage records do not become context messages', async (t) => {
   const branch = entries([system('Initial')]);
   branch.push({

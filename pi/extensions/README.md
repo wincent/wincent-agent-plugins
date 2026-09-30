@@ -130,4 +130,6 @@ It accepts two optional arguments:
 - `no-model-breakdown` suppresses the per-model columns and shows totals only, for a compact view on narrow terminals.
 - any other word is treated as a model-name filter: only models whose name contains one of the given substrings are counted, and the cost, message, and session columns reflect just those models. For example `/total-cost claude` restricts the table to Claude models, and `/total-cost gpt gemini` keeps both families. Filters and `no-model-breakdown` can be combined (e.g. `/total-cost claude no-model-breakdown`).
 
+Costs include assistant messages, standalone usage entries (such as cache warming), and tool-result usage (including classifiers and nested tool calls). Tool results can pool multiple models, so their costs appear in a separate `tools` column rather than being attributed to a model. `/total-cost tools` selects that bucket; model-name filters exclude it unless `tools` is also requested. Only assistant messages increment the message count, and nested usage is counted once from the parent tool result.
+
 Renders as a TUI modal when running interactively, or plain text on stdout in non-interactive mode.

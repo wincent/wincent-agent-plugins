@@ -54,6 +54,20 @@ function assistant(model, cost, timestamp) {
   };
 }
 
+function toolResult(cost, timestamp, extra = {}) {
+  return {
+    type: 'message',
+    timestamp,
+    message: {
+      role: 'toolResult',
+      toolName: 'codemode',
+      toolCallId: 'parent',
+      usage: {cost: {total: cost}},
+      ...extra,
+    },
+  };
+}
+
 async function report(t, files, args = '', context = {hasUI: false}) {
   const dir = await mkdtemp(join(tmpdir(), 'total-cost-test-'));
   const previousDir = process.env.PI_CODING_AGENT_DIR;
@@ -171,6 +185,61 @@ test('ignores malformed and unrelated records, retaining old assistant costs', a
       '1',
     ]],
   );
+});
+
+test('counts aggregated tool usage once in a separate bucket', async (t) => {
+  const output = await report(t, [[
+    assistant('gpt', 3, '2026-09-21'),
+    usage('gpt', 1, '2026-09-21'),
+    toolResult(2, '2026-09-21', {
+      nestedCalls: [
+        {toolCallId: 'parent/1', usage: {cost: {total: 0.75}}},
+        {toolCallId: 'parent/2', usage: {cost: {total: 1.25}}},
+      ],
+      details: {usage: {cost: {total: 2}}},
+    }),
+  ]]);
+  assert.match(output, /Month\s+Cost\s+gpt\s+tools\s+Messages\s+Sessions/);
+  assert.deepEqual(rows(output), [
+    ['2026-09', '$6.00', '$4.00', '$2.00', '1', '1'],
+    ['Total', '$6.00', '$4.00', '$2.00', '1', '1'],
+  ]);
+});
+
+test('tool-only sessions count even failed calls without adding messages', async (t) => {
+  const output = await report(t, [[
+    toolResult(2, undefined, {
+      timestamp: Date.UTC(2026, 8, 1),
+      isError: true,
+    }),
+  ], [
+    toolResult(1, '2026-09-01T00:30:00+02:00'),
+    toolResult(undefined, '2026-09-01'),
+    toolResult(-1, '2026-09-01'),
+    toolResult('2', '2026-09-01'),
+    toolResult(0, '2026-09-01'),
+    toolResult(10, 'invalid'),
+  ]], 'no-model-breakdown');
+  assert.deepEqual(rows(output), [
+    ['2026-09', '$2.00', '0', '1'],
+    ['2026-08', '$1.00', '0', '1'],
+    ['Total', '$3.00', '0', '2'],
+  ]);
+});
+
+test('model filters do not attribute pooled tool usage to a model', async (t) => {
+  const files = [[
+    assistant('gpt', 3, '2026-09-21'),
+    toolResult(2, '2026-09-21', {model: 'gpt'}),
+  ]];
+  assert.deepEqual(rows(await report(t, files, 'gpt')), [
+    ['2026-09', '$3.00', '$3.00', '1', '1'],
+    ['Total', '$3.00', '$3.00', '1', '1'],
+  ]);
+  assert.deepEqual(rows(await report(t, files, 'TOOLS')), [
+    ['2026-09', '$2.00', '$2.00', '0', '1'],
+    ['Total', '$2.00', '$2.00', '0', '1'],
+  ]);
 });
 
 test('unmatched filters still report no matching models', async (t) => {

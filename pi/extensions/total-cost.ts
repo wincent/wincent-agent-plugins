@@ -20,8 +20,10 @@
  *
  * Costs come from `usage.cost.total` on assistant messages and standalone
  * usage entries (including cache warming), attributed to their `model`.
- * Usage entries contribute cost but not assistant-message counts. Months
- * are bucketed by the entry-level ISO timestamp (UTC).
+ * Tool-result usage (including classifiers and aggregated nested calls) is
+ * counted once in a separate `tools` bucket, without model attribution.
+ * Only assistant messages contribute to message counts. Months are bucketed
+ * by the entry-level ISO timestamp (UTC).
  */
 
 import type {
@@ -41,6 +43,7 @@ import {homedir} from 'node:os';
 import {join} from 'node:path';
 
 const UNKNOWN_MODEL = 'unknown';
+const TOOL_USAGE_MODEL = 'tools';
 
 const NO_MODEL_BREAKDOWN_FLAG = 'no-model-breakdown';
 
@@ -161,10 +164,14 @@ async function collectData(): Promise<RawData> {
         continue;
       }
       const record = isUsage ? entry : entry.message;
-      if (!record || (!isUsage && record.role !== 'assistant')) {
+      const isAssistant = !isUsage && record?.role === 'assistant';
+      const isToolResult = !isUsage && record?.role === 'toolResult';
+      if (!record || (!isUsage && !isAssistant && !isToolResult)) {
         continue;
       }
 
+      // Pi rolls nested-call usage into the parent tool result. Do not also
+      // traverse nestedCalls or tool-specific details: that would count twice.
       const cost = record.usage?.cost?.total;
       if (
         typeof cost !== 'number' || !Number.isFinite(cost) || cost <= 0
@@ -178,7 +185,11 @@ async function collectData(): Promise<RawData> {
         continue;
       }
 
-      const model = typeof record.model === 'string' && record.model.trim()
+      // A tool result may pool several models, so do not attribute its cost
+      // to the surrounding assistant or a model named in tool-specific data.
+      const model = isToolResult
+        ? TOOL_USAGE_MODEL
+        : typeof record.model === 'string' && record.model.trim()
         ? record.model
         : UNKNOWN_MODEL;
 
@@ -193,7 +204,7 @@ async function collectData(): Promise<RawData> {
         byModel.set(model, stats);
       }
       stats.cost += cost;
-      stats.messages += isUsage ? 0 : 1;
+      stats.messages += isAssistant ? 1 : 0;
       stats.sessions.add(file);
     }
   }
