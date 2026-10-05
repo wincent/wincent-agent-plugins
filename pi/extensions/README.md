@@ -15,9 +15,9 @@ See the [pi extensions documentation](https://github.com/earendil-works/pi/blob/
 
 ## Type-checking
 
-A `tsconfig.json` sits alongside the extensions so that `tsc` can resolve the platform packages (`@earendil-works/pi-*`, `typebox`, `@types/node`). The matching `.d.ts` stubs live under `node_modules/`, populated on demand by `bin/install-types` (which copies them out of the globally-installed pi). We assume Pi is globally installed; Pi extensions will use the globally-installed versions of their dependencies[^jiti].
+A `tsconfig.json` sits alongside the extensions so that `tsc` can resolve the platform packages (`@earendil-works/pi-*`, `typebox`, `@types/node`). The matching `.d.ts` stubs live under `node_modules/`, populated on demand by `bin/install-types` (which copies them out of the dotfiles-managed Pi under `~/n/pi`). Extensions use the running Pi's platform dependencies[^jiti]; the script handles both nested and hoisted package layouts.
 
-[^jiti]: Pi's loader (see `dist/core/extensions/loader.js` in the global install) loads extensions with jiti, passing a map that rewrites the specifiers to absolute paths before Node's module resolution kicks in. This means that it will always use the globally installed dependencies and won't try to load anything from the local `node_modules` directory.
+[^jiti]: Pi's loader (see `dist/core/extensions/loader.js` in the Pi installation) loads extensions with jiti, passing a map that rewrites platform package specifiers to absolute paths before Node's module resolution kicks in. Those imports use Pi's runtime dependencies rather than the local type-only `node_modules` directory.
 
 The stub tree is _not_ committed: each pi release would otherwise produce a thousand-file regeneration diff that buries everything else in the history, and the bulk of the tree (`@types/node`, `typebox`) is third-party content that has no business living in this repo. The `node_modules/` directory itself is tracked, but only to anchor a `.gitignore` that ignores everything underneath it; the stubs themselves are produced locally as needed.
 
