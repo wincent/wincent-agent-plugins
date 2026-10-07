@@ -26,6 +26,7 @@ export interface SpawnArgs {
   parentId: string;
   cwd: string;
   agentName: string;
+  model?: {provider: string; id: string};
   toolsWhitelist: string[];
   disallowedTools?: string[];
   systemPromptPath: string;
@@ -194,7 +195,7 @@ function buildTmuxArgs(args: SpawnArgs, wrapperPath: string): string[] {
   }
 }
 
-function renderWrapper(args: SpawnArgs): string {
+export function renderWrapper(args: SpawnArgs): string {
   // The wrapper sets env vars, then execs pi reading the task text from a
   // file. We escape values via single-quote-bash-quoting (`'` -> `'\''`).
   const exports: string[] = [
@@ -209,6 +210,15 @@ function renderWrapper(args: SpawnArgs): string {
     shellQuote(args.systemPromptPath),
     '--no-session',
   ];
+  // Use the main agent's active model rather than the child cwd's defaults.
+  if (args.model) {
+    piArgs.push(
+      '--provider',
+      shellQuote(args.model.provider),
+      '--model',
+      shellQuote(args.model.id),
+    );
+  }
   // Pi's --tools is an allowlist that covers built-in, extension, AND
   // custom tools. The bus tools registered by this extension on the sub
   // side (report, progress, ask) must always be available, so we splice

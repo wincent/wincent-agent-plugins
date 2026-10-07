@@ -35,6 +35,10 @@ When loaded in sub mode (env vars set by the spawner), the extension registers t
 
 It also emits lifecycle events on `pi.events`: `subagent:spawned`, `subagent:connected`, `subagent:progress`, `subagent:report`, `subagent:asked`, `subagent:answered`, `subagent:steered`, `subagent:done`, `subagent:failed`. The namespace is singular to coexist with `@tintinweb/pi-subagents`' plural `subagents:*` namespace.
 
+## Model selection
+
+Each subagent inherits the main agent's active provider and model at dispatch time, passed explicitly via `--provider` and `--model`. Changing the main agent's model affects subsequent spawns, not already-running subagents. If the main context has no model, the child uses Pi's normal model selection. Thinking level is not inherited.
+
 ## Default agents
 
 The extension ships six agent personalities under `agents/`. They are discovered from `~/.pi/agent/agents/` (user) and `<repo>/.pi/agents/` (project) once symlinked.

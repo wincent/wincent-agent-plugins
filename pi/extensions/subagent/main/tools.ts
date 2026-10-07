@@ -164,7 +164,7 @@ export function registerMainTools(options: MainToolsOptions): void {
       'default placement/worktree behaviour come from an .md file under',
       '~/.pi/agent/agents/ or <repo>/.pi/agents/. Use synchronously (default)',
       'or with background: true to fire-and-forget. Reports from the subagent',
-      'arrive structured.',
+      "arrive structured. Subagents inherit the main agent's current provider and model.",
     ].join(' '),
     parameters: SubagentParams,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -289,6 +289,11 @@ async function runSubagentTool(
   onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
   ctx: ExtensionContext,
 ): Promise<AgentToolResult<SubagentDetails>> {
+  // Snapshot at dispatch, before asynchronous setup or a model switch.
+  const model = ctx.model
+    ? {provider: ctx.model.provider, id: ctx.model.id}
+    : undefined;
+
   try {
     await ensureInTmux();
   } catch (err) {
@@ -374,6 +379,7 @@ async function runSubagentTool(
       parentId,
       cwd: effectiveCwd,
       agentName: agent.name,
+      model,
       toolsWhitelist: agent.tools,
       disallowedTools: agent.disallowedTools,
       systemPromptPath: systemPromptPath(taskId),
