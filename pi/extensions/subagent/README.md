@@ -39,6 +39,10 @@ It also emits lifecycle events on `pi.events`: `subagent:spawned`, `subagent:con
 
 Each subagent inherits the main agent's active provider and model at dispatch time, passed explicitly via `--provider` and `--model`. Changing the main agent's model affects subsequent spawns, not already-running subagents. If the main context has no model, the child uses Pi's normal model selection. Thinking level is not inherited.
 
+## Launcher
+
+Subagents exec `pi` by default. If `PI_SUBAGENT_LAUNCHER` is set in the main agent's environment, its value is used instead; it may be a path or a command with arguments. Launcher wrappers (a sandboxed or credential-proxying `pi`) set it to their own absolute path so that children re-enter the same launcher, and so that each child acquires its own sandbox or proxy lease rather than inheriting the parent's credentials.
+
 ## Default agents
 
 The extension ships six agent personalities under `agents/`. They are discovered from `~/.pi/agent/agents/` (user) and `<repo>/.pi/agents/` (project) once symlinked.

@@ -204,6 +204,10 @@ export function renderWrapper(args: SpawnArgs): string {
     `export PI_SUBAGENT_PARENT_ID=${shellQuote(args.parentId)}`,
   ];
 
+  // Let a sandbox/proxy launcher stand in for the bare `pi` binary. May be a
+  // path or a command with arguments; unset means `pi`.
+  const launcher = process.env.PI_SUBAGENT_LAUNCHER || 'pi';
+
   const piArgs: string[] = [
     '"$(cat ' + shellQuote(join(args.taskDir, TASK_FILENAME)) + ')"',
     '--append-system-prompt',
@@ -240,7 +244,7 @@ export function renderWrapper(args: SpawnArgs): string {
     'set -e',
     ...exports,
     `cd ${shellQuote(args.cwd)}`,
-    'exec pi ' + piArgs.join(' '),
+    `exec ${launcher} ` + piArgs.join(' '),
     '',
   ].join('\n');
 }

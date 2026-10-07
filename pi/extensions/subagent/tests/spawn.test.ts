@@ -8,12 +8,25 @@ import {test} from 'node:test';
 import {type SpawnArgs, renderWrapper} from '../main/spawn.js';
 
 /** Run the real wrapper against a fake pi executable, without tmux or an LLM. */
-function capturePiArgs(model?: SpawnArgs['model']): string[] {
+function capturePiArgs(
+  model?: SpawnArgs['model'],
+  launcher?: string,
+): string[] {
   const dir = mkdtempSync(join(tmpdir(), 'subagent-spawn-'));
+  const previous = process.env.PI_SUBAGENT_LAUNCHER;
   try {
-    writeFileSync(join(dir, 'pi'), '#!/bin/sh\nprintf \'%s\\0\' "$@"\n', {
-      mode: 0o700,
-    });
+    // Write only the binary the wrapper is expected to exec, so a test fails
+    // loudly if the launcher is ignored rather than silently falling back.
+    writeFileSync(
+      join(dir, launcher ?? 'pi'),
+      '#!/bin/sh\nprintf \'%s\\0\' "$@"\n',
+      {mode: 0o700},
+    );
+    if (launcher) {
+      process.env.PI_SUBAGENT_LAUNCHER = launcher;
+    } else {
+      delete process.env.PI_SUBAGENT_LAUNCHER;
+    }
     writeFileSync(join(dir, 'task.txt'), 'Inspect the code');
     const args: SpawnArgs = {
       taskId: 'task_test',
@@ -35,6 +48,11 @@ function capturePiArgs(model?: SpawnArgs['model']): string[] {
     });
     return stdout.split('\0').slice(0, -1);
   } finally {
+    if (previous === undefined) {
+      delete process.env.PI_SUBAGENT_LAUNCHER;
+    } else {
+      process.env.PI_SUBAGENT_LAUNCHER = previous;
+    }
     rmSync(dir, {recursive: true, force: true});
   }
 }
@@ -71,4 +89,9 @@ test('wrapper leaves model selection to pi when the main context has no model', 
   const args = capturePiArgs();
   assert.ok(!args.includes('--provider'));
   assert.ok(!args.includes('--model'));
+});
+
+test('wrapper execs the launcher named by PI_SUBAGENT_LAUNCHER', () => {
+  const args = capturePiArgs(undefined, 'pi-naked');
+  assert.equal(args[0], 'Inspect the code');
 });
