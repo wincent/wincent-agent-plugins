@@ -1,53 +1,52 @@
 ---
-description: Check for pi updates, review changelog and local resources, then offer a safe upgrade.
+description: Check for pi updates, review local resources, then prepare a reviewed lockfile update and provisioning handoff.
 argument-hint: "[instructions]"
 ---
 
 # Update pi
 
-You are helping the user understand what upgrading pi (`@earendil-works/pi-coding-agent`) will entail: what version they are on, what version is available, what breaking changes are in between, and whether any of their locally installed extensions, skills, or prompt templates will need adjustment to remain compatible. Then offer to run the upgrade for them and, if they accept, run it.
+You are helping the user understand what upgrading pi (`@earendil-works/pi-coding-agent`) will entail: what version they are on, what version is pinned in their dotfiles, what version is available, what breaking changes are in between, and whether any of their locally installed extensions, skills, or prompt templates will need adjustment to remain compatible. Then offer to prepare a lockfile update for review and hand off provisioning to the user outside the agent sandbox. Never use a global npm upgrade or `pi update` for this runtime.
 
 User request: $ARGUMENTS
 
-## Step 1: Determine the current installed version
+## Step 1: Determine the installed version and the dotfiles pin
 
-Try these in order until one yields a version string:
+Read `~/code/wincent/aspects/node/support/pi/README.md`, `install`, `package.json`, and `package-lock.json` first. These define the managed installation and update procedure; if they are unavailable or contradict this prompt, stop and ask rather than falling back to a global install.
 
-1. `pi --version`
-2. `npm list -g --depth=0 @earendil-works/pi-coding-agent 2>/dev/null`
-3. Read `package.json` under `$(npm root -g)/@earendil-works/pi-coding-agent/`.
+The source manifest and reviewed lockfile live under `~/code/wincent/aspects/node/support/pi`. The executable dependency tree lives outside the checkout at `~/n/pi`, and `~/n/bin/pi` links to its executable. Existing launchers, settings, and sessions remain unchanged. An old global npm package can still be present, so `npm list -g` and `npm root -g` are not authoritative for this runtime.
 
-Record this as `CURRENT`.
+Record:
 
-## Step 2: Determine the latest released version and detect any install cooldown
+- `PINNED`: the exact `@earendil-works/pi-coding-agent` dependency version in the source manifest. Check that the lockfile's root dependency and package entry agree with it.
+- `CURRENT`: the version reported by `~/n/pi/node_modules/.bin/pi --version`. If execution is unavailable, read `~/n/pi/node_modules/@earendil-works/pi-coding-agent/package.json` and mark the version as unverified by execution.
+- The result of `pi --version` and the command/link resolution, to verify that the normal launcher reaches the managed runtime rather than a leftover global installation.
+
+If the managed runtime is missing or command resolution disagrees with it, report the migration or PATH issue and ask before preparing an upgrade. Do not silently substitute the old global package's version. If `CURRENT != PINNED`, explain the pending provisioning or drift separately from available releases. Never automatically lower either the installed version or the source pin.
+
+## Step 2: Determine the latest released version and cooldown-eligible target
 
 Run:
 
 ```bash
 npm view @earendil-works/pi-coding-agent version
-```
-
-Record this as `LATEST`, the absolute latest published version.
-
-This user has npm's `min-release-age` set to **7 days**. Treat this as a hard-coded fact and set `COOLDOWN = 7 days`. Do **not** try to detect it at runtime:
-
-- `npm config get min-release-age` currently returns `null` because of an npm bug, and `npm config list` also fails to surface it.
-- Do **not** read `~/.npmrc`: it contains auth tokens that must not leak into session context.
-
-Now compute the version that a plain `npm install -g @earendil-works/pi-coding-agent` would actually install today. Fetch publish timestamps:
-
-```bash
 npm view @earendil-works/pi-coding-agent time --json
 ```
 
-This returns a JSON object mapping version strings to ISO publish times, plus bookkeeping keys `created` and `modified` that you should ignore. Let `CUTOFF = now - 7 days`. Set `COOLDOWN_LATEST` to the highest semver version whose publish time is less than or equal to `CUTOFF`. Stable versions should win over pre-releases unless the user explicitly asked for pre-releases.
+Record the registry's latest version as `LATEST`. The timestamps object maps versions to ISO publish times; ignore its `created` and `modified` keys.
 
-Classify the situation using `CURRENT`, `COOLDOWN_LATEST`, and `LATEST`:
+This user's locked-install policy requires **7 days** of release age. Set `COOLDOWN = 7 days` and pass `--min-release-age=7` explicitly when generating the lock. Do not try to detect the value with `npm config`: it has failed to surface this setting reliably. Do **not** read `~/.npmrc`, which contains auth tokens. Do not offer a cooldown override or relax the policy on resolution failure.
 
-1. **Up to date**: `CURRENT == LATEST`. Tell the user and stop unless they explicitly want to see recent changes anyway.
-2. **No cooldown, or cooldown already cleared**: `COOLDOWN_LATEST == LATEST`. Single-block report using Step 6 Scenario A.
-3. **Cooldown blocks part of the upgrade**: `CURRENT <= COOLDOWN_LATEST < LATEST`. Two-block report using Step 6 Scenario B.
-4. **Silent downgrade hazard**: `COOLDOWN_LATEST < CURRENT`. A plain `npm install -g @earendil-works/pi-coding-agent` will **downgrade** the user from `CURRENT` to `COOLDOWN_LATEST`, because npm resolves to the newest version the cooldown allows without comparing against what is already installed. Two-block report with a prominent warning in Block 1 using Step 6 Scenario C. This is a real footgun: the installed package's runtime dependencies can shrink on downgrade, which can break existing extensions that relied on newer transitive deps, for example an extension importing `typebox` 1.x when the downgraded pi only ships `@sinclair/typebox` 0.34.x.
+Let `CUTOFF = now - 7 days`. Set `COOLDOWN_LATEST` to the highest stable semver version whose publish time is less than or equal to `CUTOFF`, or record that none exists. Exclude pre-releases unless the user explicitly requested them, and apply the same age requirement to any requested release. Use semver ordering, not lexical ordering.
+
+`COOLDOWN_LATEST` is only a candidate for lock generation, not a promise that resolution will succeed: transitive dependencies must also satisfy the policy. A published shrinkwrap may constrain the dependency tree, so inspect it and the generated lock rather than assuming every transitive version was freshly age-filtered. Provisioning uses `npm ci` to replay approved versions; it is **not** a fresh age check of every locked dependency.
+
+Classify the situation using `CURRENT`, `PINNED`, `COOLDOWN_LATEST`, and `LATEST`:
+
+1. **Up to date**: `CURRENT == PINNED == LATEST`. Tell the user and stop unless they explicitly want to see recent changes anyway. Version equality alone does not prove dependency-tree equality.
+2. **Eligible upgrade**: `COOLDOWN_LATEST > CURRENT` and `COOLDOWN_LATEST >= PINNED`. Offer that explicit target. If newer releases are cooling down, report their changes separately as preview-only.
+3. **No eligible upgrade**: no eligible release exists, or `COOLDOWN_LATEST <= CURRENT`, or `COOLDOWN_LATEST < PINNED`. Keep the existing runtime and pin; do not downgrade or regenerate the lock merely to stay put. Report any newer releases and their eligibility dates as preview-only.
+
+If `PINNED > CURRENT`, distinguish provisioning an already-reviewed pin from generating a new lock. Verify its review status with the user; do not infer approval from the mere presence of a lockfile. If `PINNED < CURRENT`, call out that provisioning the existing manifest would downgrade the runtime and ask how to reconcile it. Resolve such discrepancies before making changes.
 
 ## Step 3: Fetch the changelog
 
@@ -59,7 +58,7 @@ curl -sSL https://raw.githubusercontent.com/earendil-works/pi/main/packages/codi
 
 The human-readable URL is <https://github.com/earendil-works/pi/blob/main/packages/coding-agent/CHANGELOG.md>.
 
-Extract the entries for every version strictly greater than `CURRENT` and less than or equal to `LATEST`. If `COOLDOWN_LATEST < CURRENT`, also extract `COOLDOWN_LATEST < version <= CURRENT` and analyze those releases in reverse: a downgrade removes their APIs, features, dependency versions, and fixes. Check the exact target version's exports and dependencies rather than assuming that a generic downgrade example applies to this span. Pay particular attention to:
+Extract the entries for every version strictly greater than `CURRENT` and less than or equal to `LATEST`, also covering any explicitly requested target or pending `PINNED` version beyond that range. Separate changes available in the eligible target from preview-only changes still inside the cooldown. Check the exact target version's exports and dependencies, including changes to host-provided transitive packages used by extensions. Pay particular attention to:
 
 - Sections or bullets labeled **Breaking**, **BREAKING CHANGE**, **Migration**, **Removed**, or **Deprecated**.
 - Changes to extension APIs, event names, `ExtensionContext` or `pi.*` method signatures, tool registration, skill loading, prompt template loading or interpolation, or session format.
@@ -123,86 +122,73 @@ Produce a per-item verdict, with one row per item enumerated in Step 4. Do not o
 
 When presenting the table in Step 6, organize rows by source root so the user can see at a glance that every root was covered.
 
-## Step 6: Present findings and offer to run the upgrade
-
-Choose one of the following scenarios based on Step 2's classification, present the findings, and end with an explicit prompt asking the user which of the available actions to take. Always include a **don't update** option. Do not start any install until the user has chosen.
-
-The options offered depend on the scenario:
-
-- **Scenario A**: two options: cooldown-respecting update with the plain command, or skip.
-- **Scenarios B and C**: three options: cooldown-respecting update, cooldown-override update to `LATEST`, or skip. In Scenario C, mark the cooldown-respecting option as a **downgrade** and recommend against it; if `COOLDOWN_LATEST < CURRENT`, prefer a no-op pin to `CURRENT` instead of a downgrade.
-
-When the user chooses to update, proceed to Step 7. When they decline, stop after acknowledging.
-
-### Scenario A: no cooldown, single block
+## Step 6: Present findings and offer to prepare the update
 
 Structure the report as:
 
-1. **Version summary**: `CURRENT` to `LATEST`, including how many versions that spans.
-2. **Breaking changes**: bullet list, most impactful first.
-3. **Other notable changes**: features, fixes, deprecations.
-4. **Impact on your extensions, skills, and prompt templates**: the per-item verdicts from Step 5.
-5. **Recommended action**: if nothing needs updating, offer the upgrade command. If updates are needed, list them and ask the user whether to apply the fixes now before running the upgrade, or to proceed without them.
+1. **Version summary**: installed `CURRENT`, dotfiles `PINNED`, eligible `COOLDOWN_LATEST` (if any), and registry `LATEST`, with publish dates and any pending provisioning or drift.
+2. **Eligible upgrade**: changes from `CURRENT` to the eligible target, with breaking changes first, followed by notable features, fixes, and deprecations. If no eligible upgrade exists, say that keeping the current runtime and pin requires no command.
+3. **Cooldown preview**: if newer releases are still cooling down, summarize their additional changes and eligibility dates separately. These are not install options under this policy.
+4. **Impact on your extensions, skills, and prompt templates**: the per-item verdicts from Step 5, grouped by source root. Distinguish eligible-target compatibility from preview-only compatibility where they differ.
+5. **Recommended action**: offer to prepare the exact eligible version's manifest and lockfile for review, or **don't update**. List any compatibility fixes and ask whether to apply them as part of the preparation. For an already-reviewed pending pin, offer a provisioning handoff without regenerating the lock instead.
 
-The upgrade command is:
+Show the lock-generation command from Step 7 with the literal target version. Make clear that this only prepares source files; it does not upgrade the running Pi. Require explicit approval before changing the manifest, lockfile, or local resources. Provisioning is a separate action after review, outside the agent sandbox. Never offer `npm install -g`, `pi update`, an unpinned target, or a cooldown override as an alternative.
 
-```bash
-npm install -g @earendil-works/pi-coding-agent
-```
+## Step 7: Prepare and review the manifest and lockfile
 
-### Scenarios B and C: cooldown active, two blocks
+Only proceed after the user explicitly chooses preparation in Step 6. Echo the exact target and approved compatibility fixes. Inspect the dotfiles repository instructions, worktree status, and existing manifest/lock changes first; do not overwrite unrelated or unreviewed work. If an existing pending lock is the intended target, review it rather than regenerating it unnecessarily.
 
-When `min-release-age` is in effect, a plain `npm install -g @earendil-works/pi-coding-agent` will resolve only to versions at least `COOLDOWN` old. Present the findings as two blocks so the user can make an informed choice between respecting their cooldown and overriding it for this install.
-
-Open the report with a short **Cooldown notice** stating the configured `min-release-age` value and naming both targets, `COOLDOWN_LATEST` and `LATEST`, with their publish dates. Then:
-
-**Block 1: respect the cooldown, `CURRENT` to `COOLDOWN_LATEST`**
-
-1. Version summary for that span.
-2. Breaking changes in the span, or none.
-3. Other notable changes in the span.
-4. Impact on extensions, skills, and prompt templates restricted to changes in the span.
-5. Command: if `COOLDOWN_LATEST > CURRENT`, `npm install -g @earendil-works/pi-coding-agent`; if `COOLDOWN_LATEST == CURRENT`, say this is a no-op under the current cooldown and omit the command; if `COOLDOWN_LATEST < CURRENT`, lead with a prominent warning that running the plain command will downgrade the user from `CURRENT` to `COOLDOWN_LATEST`, may break already-working extensions whose transitive deps came from the newer pi, and recommend against running it. Either suggest pinning with `npm install -g @earendil-works/pi-coding-agent@<CURRENT>` to stay put, or skipping Block 1 entirely and going straight to Block 2.
-
-**Block 2: override the cooldown, `CURRENT` to `LATEST`**
-
-1. Version summary for that span.
-2. Breaking changes in the span, or none.
-3. Other notable changes in the span.
-4. Impact on extensions, skills, and prompt templates across the full span. Where a change is already covered in Block 1, note that; focus the block on the additional changes only Block 2 brings in.
-5. Command:
+From the source manifest directory, run the documented lock-only command with `<eligible-version>` replaced by the approved literal version:
 
 ```bash
-npm install -g @earendil-works/pi-coding-agent@<LATEST> --min-release-age=0
+cd ~/code/wincent/aspects/node/support/pi
+npm install --package-lock-only --save-exact --ignore-scripts --min-release-age=7 \
+  @earendil-works/pi-coding-agent@<eligible-version>
 ```
 
-Include the explicit `@<LATEST>` pin so the resolver cannot choose anything older, and use `--min-release-age=0` as a one-shot override that leaves the user's global cooldown policy intact. `NPM_CONFIG_MIN_RELEASE_AGE=0 npm install -g @earendil-works/pi-coding-agent@latest` is an equivalent alternative and fine to mention.
+Capture stdout and stderr. On failure, report it and inspect any partial file changes; do not relax the cooldown, enable lifecycle scripts, switch to a global install, or delete the lock to force resolution. Ask how to proceed.
 
-## Step 7: Run the chosen upgrade command
+Review and summarize the complete manifest and lock diff before recommending provisioning:
 
-Only run this step once the user has explicitly chosen one of the update options offered in Step 6. Echo back which option you are about to execute before running anything, so there is no ambiguity.
+- Confirm the exact Pi pin agrees across the manifest, lockfile root dependency, and locked Pi package entry.
+- Review added, removed, and changed transitive versions, integrity hashes, resolved origins, install-script declarations, and security advisories. Flag unexpected origins, missing integrity, or unexplained dependency churn; state any checks that could not be completed.
+- Check release ages for new or changed registry versions, including versions constrained by published shrinkwraps. Do not treat `npm ci --min-release-age=7` as proof that the lock satisfies the cooldown. If newly selected dependencies are too young or cannot be verified, stop and report the blocker rather than recommending provisioning.
+- Preserve cross-platform optional dependency entries for macOS and Linux. Do not prune the lock to the current host's platform or install executable dependencies inside the dotfiles checkout.
+- Revisit affected extension verdicts if the resolved dependency tree differs from the assumptions in Step 5. Apply only the compatibility fixes the user approved.
 
-Use the command corresponding to the user's choice:
+Present the diff summary and unresolved concerns for user review. Do not auto-commit, provision, or claim that Pi has been upgraded. Ask the user to approve the reviewed lock before moving to the provisioning handoff.
 
-- Cooldown-respecting for Scenarios A and B: `npm install -g @earendil-works/pi-coding-agent`
-- Cooldown-override for Scenarios B and C: `npm install -g @earendil-works/pi-coding-agent@<LATEST> --min-release-age=0`, with `<LATEST>` replaced by the literal version string from Step 2.
+## Step 8: Hand off provisioning and verification
 
-Run the command via `bash`, capturing both stdout and stderr, and surface the result to the user. If the install fails with a non-zero exit or no `pi` binary on the resulting PATH, report the failure. If the install succeeds, report the new version to the user.
+After the user approves the reviewed lock, provide these commands to run from the dotfiles repo root **outside the agent sandbox**:
 
-After a successful upgrade, remind the user to run the `bin/install-types` helper script in each repository where they keep pi extensions, so the bundled pi extension API type definitions are regenerated to match the newly installed version. At the time of writing, those repositories are:
+```bash
+cd ~/code/wincent
+aspects/node/support/pi/install
+```
+
+If Node itself needs provisioning, use `./install node` instead. Do not execute provisioning from the agent sandbox or try to bypass its read-only `~/n` grant.
+
+Explain the helper's behavior: it stages a copy of the manifest and lock in a temporary sibling directory, runs `npm ci --ignore-scripts --omit=dev --include=optional --min-release-age=7`, checks the pinned version, then replaces `~/n/pi` and updates `~/n/bin/pi`. Failed installation leaves the old runtime intact, but successful replacement retains no release history. Old global npm packages remain on disk; do not uninstall them as part of this workflow.
+
+The helper skips installation when the installed Pi version matches the pin, even if the lock changed. For an intentional same-version lock update, explain that the user must move `~/n/pi` aside before provisioning and keep that copy until the replacement works. Treat this as a separate, explicit manual action, not automatic cleanup or a normal upgrade step. If that installation fails, the user must restore the saved copy.
+
+After provisioning, ask the user to verify the managed executable's version and normal command resolution, then start a fresh Pi through the usual sandbox/proxy launcher to check extension loading. Until verified, report preparation or provisioning as pending, not a successful runtime upgrade.
+
+Remind the user to manually run the `bin/install-types` helper in each repository where they keep Pi extensions:
 
 - `wincent` (public dotfiles)
 - `wincent` (private/corporate dotfiles)
 - `wincent-agent-plugins` (public)
 
-Present this as a manual follow-up step for the user to perform in each repo; do not attempt to run `bin/install-types` yourself, since the repos live in different locations and may not all be checked out on this machine.
+The helpers must read types from the managed `~/n/pi` runtime and support both nested and hoisted dependencies, not assume a global npm layout. Flag any helper still using the old layout for an approved compatibility fix. Do not run the helpers automatically; the repositories may not all be checked out on this machine.
+
+Test on macOS and in a base VM before broad rollout. Base VM builds provision the same lock and check the pinned version before image promotion. Existing project VMs do not update through cloning or code injection: rebuild the base image and recreate project VMs, or explicitly provision the Node aspect in an existing guest. Install separately on each OS; never copy macOS `node_modules` into Linux.
 
 ## Notes
 
-- Run the install command in Step 7 only after the user has explicitly chosen one of the update options offered in Step 6. Never auto-run an install just because the user invoked this prompt.
-- If the changelog cannot be fetched because of offline mode or rate limiting, say so and fall back to `npm view @earendil-works/pi-coding-agent` for whatever release notes are embedded in the package metadata.
+- Invoking this prompt authorizes an audit, not manifest changes, lock generation, provisioning, or commits. Keep preparation approval and post-review provisioning approval separate.
+- If registry metadata or the changelog cannot be fetched, state what could not be verified. Package metadata may supplement missing release notes, but do not guess release ages or claim a complete compatibility review.
 - Pre-release or beta versions such as `-next` or `-rc` should be mentioned but not recommended unless the user asked for them explicitly.
 - If `CURRENT` is many versions behind, warn the user that the impact assessment is best-effort and that a staged upgrade or careful manual review may be wiser than a single jump.
-- `min-release-age` in npm 11+ makes `npm install` resolve to the newest version older than the cooldown, and npm does not protect against downgrades: if every version newer than `CURRENT` is inside the cooldown window, a plain install will silently move the user to a lower version. Always check Step 2's classification before recommending the plain command.
-- The cooldown is hard-coded to 7 days for this user because `npm config get min-release-age` returns `null` because of a bug and reading `~/.npmrc` would leak auth tokens. If the user later says their cooldown has changed, update the `COOLDOWN = 7 days` line in Step 2 rather than adding runtime detection.
-- When a breaking change landed inside the cooldown window, extensions authored against the newer API may work on `LATEST` but not on `COOLDOWN_LATEST`, or vice versa on downgrade. Call this out in the per-block impact analysis.
+- If the user changes the cooldown policy, reconcile this prompt with the dotfiles provisioning documentation and helper rather than adding runtime detection or a one-shot bypass.
