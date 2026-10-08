@@ -61,7 +61,7 @@ Because the block is regenerated every turn, `/model` and `/thinking` changes ar
 
 ### `ocr/`
 
-Adds an `ocr` tool for local scanned PDFs and PNG/JPEG images, plus `/ocr-status`. Sends only a placeholder credential through the existing nono proxy; the extension never reads the real Mistral key. Each upload requires confirmation, defaults to the first PDF page or a single image, and returns private JSON/Markdown/provenance artifacts rather than document text. Requires `curl` and a host-side Mistral OCR credential route; images use the same route as PDFs. See [`ocr/README.md`](ocr/README.md) for setup, limits, security boundaries, and tests. A companion Pi-only `ocr` skill covers document handling and transcription fidelity.
+Adds an `ocr` tool for local scanned PDFs and PNG/JPEG images, plus `/ocr-status` and `/ocr-approval`. Sends only a placeholder credential through the existing nono proxy; the extension never reads the real Mistral key. The first OCR call asks for approval, which is retained for the rest of the session without further prompts. `/ocr-approval session` approves ahead of first use, and `/ocr-approval revoke` clears approval so the next call asks again. Each call defaults to the first PDF page or a single image and returns private JSON/Markdown/provenance artifacts rather than document text. Requires `curl` and a host-side Mistral OCR credential route; images use the same route as PDFs. See [`ocr/README.md`](ocr/README.md) for setup, limits, security boundaries, and tests. A companion Pi-only `ocr` skill covers document handling and transcription fidelity.
 
 ### `subagent/`
 

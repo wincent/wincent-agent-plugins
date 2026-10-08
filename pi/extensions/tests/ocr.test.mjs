@@ -44,13 +44,31 @@ function setEnv(t, name, value) {
 
 function registered() {
   let tool;
-  let status;
+  const commands = new Map();
+  const events = new Map();
   extension({
     registerTool(value) { tool = value; },
-    registerCommand(name, value) { assert.equal(name, 'ocr-status'); status = value; },
+    registerCommand(name, value) { commands.set(name, value); },
+    on(name, handler) { events.set(name, handler); },
   });
   assert.equal(tool.name, 'ocr');
-  return {tool, status};
+  return {tool, status: commands.get('ocr-status'), approval: commands.get('ocr-approval'), events};
+}
+
+function approvalContext(cwd, confirm = async () => true) {
+  const notifications = [];
+  const statuses = new Map();
+  return {
+    hasUI: true,
+    cwd,
+    notifications,
+    statuses,
+    ui: {
+      confirm,
+      notify(message) { notifications.push(message); },
+      setStatus(key, value) { statuses.set(key, value); },
+    },
+  };
 }
 
 const proxy = 'http://x:fictional-proxy-password@127.0.0.1:18099';
@@ -223,6 +241,7 @@ process.stdin.on('data', chunk => config += chunk);
 process.stdin.on('end', () => {
   const path = JSON.parse(config.match(/^data-binary = (.+)$/m)[1]).slice(1);
   fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({config, args: process.argv.slice(2), env: process.env, path, request: JSON.parse(fs.readFileSync(path))}));
+  fs.appendFileSync(${JSON.stringify(capture + '.calls')}, '1\\n');
   ${behavior}
 });
 `, {mode: 0o700});
@@ -315,17 +334,221 @@ test('extension refuses headless calls and declined uploads before any HTTP requ
   await assert.rejects(() => readFile(fixture.capture), {code: 'ENOENT'});
 });
 
+test('first use grants sticky session approval, skips subsequent PDF/image prompts, and can be revoked', async (t) => {
+  const fixture = await fakeCurl(t, `process.stdout.write(${JSON.stringify(imageResponse + '\n200')});`);
+  await writeFile(join(fixture.dir, 'input.pdf'), pdf);
+  await writeFile(join(fixture.dir, 'scan.png'), png);
+  const {tool, approval, status} = registered();
+  let confirmations = 0;
+  const ctx = approvalContext(fixture.dir, async (title, message) => {
+    confirmations++;
+    assert.match(title, /Allow OCR uploads for this session/);
+    assert.match(message, /any supported local PDF, PNG, or JPEG/);
+    assert.match(message, /ENTIRE file/);
+    assert.match(message, /embedded metadata and unselected PDF pages/);
+    assert.match(message, /incurs API charges/);
+    assert.match(message, /no session spending cap/);
+    assert.match(message, /not saved or shared with subagents/);
+    assert.match(message, /automatic retries/);
+    assert.match(message, /First upload:/);
+    assert.match(message, /File: .*input\.pdf/);
+    return true;
+  });
+  await tool.execute('first-use', {path: 'input.pdf'}, undefined, undefined, ctx);
+  assert.equal(ctx.statuses.get('ocr-approval'), 'OCR: allowed for session');
+  ctx.ui.confirm = async () => assert.fail('session approval must skip upload prompts');
+  await approval.handler('session', ctx);
+  await status.handler('', ctx);
+  assert.match(ctx.notifications.at(-1), /allowed for this session/);
+  for (const path of ['input.pdf', 'scan.png']) {
+    const result = await tool.execute('session-approved', {path}, undefined, undefined, ctx);
+    assert.equal(result.structuredContent.pages_processed, 1);
+  }
+  assert.equal(confirmations, 1);
+  await assert.rejects(() => tool.execute('headless', {path: 'input.pdf'}, undefined, undefined, {...ctx, hasUI: false}), /without a UI/);
+  await assert.rejects(() => tool.execute('invalid-pages', {path: 'input.pdf', pages: Array.from({length: 26}, (_, i) => i)}, undefined, undefined, ctx), /Select 1-25/);
+  await assert.rejects(() => tool.execute('invalid-image-pages', {path: 'scan.png', pages: [1]}, undefined, undefined, ctx), /Images are a single page/);
+  await assert.rejects(() => tool.execute('cancelled', {path: 'input.pdf'}, AbortSignal.abort(), undefined, ctx), {name: 'AbortError'});
+  const captureBeforeRevoke = await readFile(fixture.capture, 'utf8');
+  await approval.handler('revoke', ctx);
+  assert.equal(ctx.statuses.get('ocr-approval'), undefined);
+  await status.handler('', ctx);
+  assert.match(ctx.notifications.at(-1), /next upload will ask for session approval/);
+  ctx.ui.confirm = async () => { confirmations++; return false; };
+  await assert.rejects(() => tool.execute('revoked', {path: 'input.pdf'}, undefined, undefined, ctx), /not approved/);
+  assert.equal(confirmations, 2);
+  assert.equal(await readFile(fixture.capture, 'utf8'), captureBeforeRevoke);
+  ctx.ui.confirm = async () => { confirmations++; return true; };
+  await tool.execute('reapproved', {path: 'input.pdf'}, undefined, undefined, ctx);
+  ctx.ui.confirm = async () => assert.fail('renewed approval must also be sticky');
+  await tool.execute('still-approved', {path: 'scan.png'}, undefined, undefined, ctx);
+  assert.equal(confirmations, 3);
+});
+
+test('declined session approval, status queries, invalid arguments, and headless opt-in never grant approval', async (t) => {
+  const fixture = await fakeCurl(t, `process.stdout.write('should not execute');`);
+  await writeFile(join(fixture.dir, 'input.pdf'), pdf);
+  const {tool, approval} = registered();
+  let confirmations = 0;
+  const ctx = approvalContext(fixture.dir, async () => { confirmations++; return false; });
+  await approval.handler('', ctx);
+  assert.match(ctx.notifications.at(-1), /next upload will ask for session approval/);
+  await approval.handler('always', ctx);
+  assert.match(ctx.notifications.at(-1), /Usage:/);
+  assert.equal(confirmations, 0);
+  const output = [];
+  t.mock.method(console, 'log', message => output.push(message));
+  await approval.handler('session', {...ctx, hasUI: false});
+  assert.match(output.at(-1), /requires an interactive confirmation/);
+  assert.equal(confirmations, 0);
+  await approval.handler('session', ctx);
+  assert.match(ctx.notifications.at(-1), /next upload will ask for session approval/);
+  await assert.rejects(() => tool.execute('declined-session', {path: 'input.pdf'}, undefined, undefined, ctx), /not approved/);
+  assert.equal(confirmations, 2);
+  assert.equal(ctx.statuses.get('ocr-approval'), undefined);
+  await assert.rejects(() => readFile(fixture.capture), {code: 'ENOENT'});
+});
+
+test('session lifecycle resets approval and fresh extension instances never inherit it', async (t) => {
+  const fixture = await fakeCurl(t, `process.stdout.write('should not execute');`);
+  await writeFile(join(fixture.dir, 'input.pdf'), pdf);
+  const {tool, approval, events} = registered();
+  const ctx = approvalContext(fixture.dir);
+  for (const event of [
+    ...['startup', 'reload', 'new', 'resume', 'fork'].map(reason => ({type: 'session_start', reason})),
+    ...['quit', 'reload', 'new', 'resume', 'fork'].map(reason => ({type: 'session_shutdown', reason})),
+  ]) {
+    ctx.ui.confirm = async () => true;
+    await approval.handler('session', ctx);
+    assert.equal(ctx.statuses.get('ocr-approval'), 'OCR: allowed for session');
+    await events.get(event.type)(event, ctx);
+    assert.equal(ctx.statuses.get('ocr-approval'), undefined);
+    ctx.ui.confirm = async () => false;
+    await assert.rejects(() => tool.execute(event.reason, {path: 'input.pdf'}, undefined, undefined, ctx), /not approved/);
+  }
+  ctx.ui.confirm = async () => true;
+  await approval.handler('session', ctx);
+  ctx.ui.confirm = async () => false;
+  const fresh = registered();
+  await assert.rejects(() => fresh.tool.execute('fresh', {path: 'input.pdf'}, undefined, undefined, ctx), /not approved/);
+  await assert.rejects(() => readFile(fixture.capture), {code: 'ENOENT'});
+});
+
+test('late session confirmation cannot undo revocation or lifecycle resets', async (t) => {
+  const fixture = await fakeCurl(t, `process.stdout.write('should not execute');`);
+  const {approval, events} = registered();
+  for (const action of ['revoke', 'session_start', 'session_shutdown']) {
+    let resolveConfirmation;
+    const ctx = approvalContext(fixture.dir, () => new Promise(resolve => { resolveConfirmation = resolve; }));
+    const pending = approval.handler('session', ctx);
+    assert.equal(typeof resolveConfirmation, 'function');
+    if (action === 'revoke') await approval.handler('revoke', ctx);
+    else await events.get(action)({type: action, reason: 'reload'}, ctx);
+    resolveConfirmation(true);
+    await pending;
+    assert.match(ctx.notifications.at(-1), /next upload will ask for session approval/);
+    assert.equal(ctx.statuses.get('ocr-approval'), undefined);
+  }
+  await assert.rejects(() => readFile(fixture.capture), {code: 'ENOENT'});
+});
+
+test('a first-use confirmation resolved after cancellation or revocation never grants approval', async (t) => {
+  const fixture = await fakeCurl(t, `process.stdout.write('should not execute');`);
+  await writeFile(join(fixture.dir, 'input.pdf'), pdf);
+  for (const action of ['cancel', 'revoke', 'session_start']) {
+    const {tool, approval, events} = registered();
+    const controller = new AbortController();
+    let entered;
+    let resolveConfirmation;
+    const confirming = new Promise(resolve => { entered = resolve; });
+    const ctx = approvalContext(fixture.dir, () => {
+      entered();
+      return new Promise(resolve => { resolveConfirmation = resolve; });
+    });
+    const pending = tool.execute('pending-first-use', {path: 'input.pdf'}, controller.signal, undefined, ctx);
+    const rejected = assert.rejects(pending, /not approved/);
+    await confirming;
+    if (action === 'cancel') controller.abort();
+    else if (action === 'revoke') await approval.handler('revoke', ctx);
+    else await events.get('session_start')({type: 'session_start', reason: 'new'}, ctx);
+    resolveConfirmation(true);
+    await rejected;
+    await approval.handler('', ctx);
+    assert.match(ctx.notifications.at(-1), /next upload will ask for session approval/);
+    assert.equal(ctx.statuses.get('ocr-approval'), undefined);
+    ctx.ui.confirm = async () => false;
+    await assert.rejects(() => tool.execute('after-reset', {path: 'input.pdf'}, undefined, undefined, ctx), /not approved/);
+  }
+  await assert.rejects(() => readFile(fixture.capture), {code: 'ENOENT'});
+});
+
+test('overlapping commands and first-use OCR cannot open a second approval dialog', async (t) => {
+  const fixture = await fakeCurl(t, `process.stdout.write(${JSON.stringify(imageResponse + '\n200')});`);
+  await writeFile(join(fixture.dir, 'input.pdf'), pdf);
+  for (const [first, second] of [['command', 'tool'], ['tool', 'command'], ['command', 'command']]) {
+    const {tool, approval} = registered();
+    let entered;
+    let resolveConfirmation;
+    let confirmations = 0;
+    const confirming = new Promise(resolve => { entered = resolve; });
+    const ctx = approvalContext(fixture.dir, () => {
+      confirmations++;
+      entered();
+      return new Promise(resolve => { resolveConfirmation = resolve; });
+    });
+    const invoke = kind => kind === 'command'
+      ? approval.handler('session', ctx)
+      : tool.execute('first-use', {path: 'input.pdf'}, undefined, undefined, ctx);
+    const pending = invoke(first);
+    await confirming;
+    await assert.rejects(() => invoke(second), /approval is already pending/);
+    assert.equal(confirmations, 1);
+    resolveConfirmation(true);
+    await pending;
+    assert.equal(ctx.statuses.get('ocr-approval'), 'OCR: allowed for session');
+    ctx.ui.confirm = async () => assert.fail('existing approval must be retained');
+    await tool.execute('after-overlap', {path: 'input.pdf'}, undefined, undefined, ctx);
+  }
+});
+
+test('a rejected confirmation promise releases the approval guard without granting approval', async (t) => {
+  const fixture = await fakeCurl(t, `process.stdout.write('should not execute');`);
+  await writeFile(join(fixture.dir, 'input.pdf'), pdf);
+  const {tool, approval} = registered();
+  const ctx = approvalContext(fixture.dir, async () => { throw new Error('UI unavailable'); });
+  await assert.rejects(() => approval.handler('session', ctx), /UI unavailable/);
+  await approval.handler('', ctx);
+  assert.match(ctx.notifications.at(-1), /next upload will ask for session approval/);
+  ctx.ui.confirm = async () => false;
+  await assert.rejects(() => tool.execute('next-call', {path: 'input.pdf'}, undefined, undefined, ctx), /not approved/);
+  await assert.rejects(() => readFile(fixture.capture), {code: 'ENOENT'});
+});
+
+test('first-use approval survives transport failure without automatically retrying', async (t) => {
+  const fixture = await fakeCurl(t, `process.stdout.write('secret upstream details\\n429');`);
+  await writeFile(join(fixture.dir, 'input.pdf'), pdf);
+  const {tool, approval} = registered();
+  let confirmations = 0;
+  const ctx = approvalContext(fixture.dir, async () => { confirmations++; return true; });
+  await assert.rejects(() => tool.execute('failure', {path: 'input.pdf'}, undefined, undefined, ctx), /HTTP 429.*Do not automatically retry/);
+  assert.equal(confirmations, 1);
+  await approval.handler('', ctx);
+  assert.match(ctx.notifications.at(-1), /allowed for this session/);
+  assert.equal(await readFile(fixture.capture + '.calls', 'utf8'), '1\n');
+  assert.equal((await readdir(fixture.dir)).some(name => name.startsWith('ocr-')), false);
+});
+
 test('extension uploads exactly the approved snapshot, returns artifacts not OCR text, and limits concurrency', async (t) => {
   const fixture = await fakeCurl(t, `process.stdout.write(${JSON.stringify(response + '\n200')});`);
   await writeFile(join(fixture.dir, 'input.pdf'), pdf);
   const {tool} = registered();
   let confirmations = 0;
-  const ctx = {hasUI: true, cwd: fixture.dir, ui: {confirm: async () => {
+  const ctx = approvalContext(fixture.dir, async () => {
     confirmations++;
     await assert.rejects(() => tool.execute('concurrent', {path: 'input.pdf'}, undefined, undefined, ctx), /Another OCR call/);
     await writeFile(join(fixture.dir, 'input.pdf'), '%PDF-1.4\nchanged during approval');
     return true;
-  }}};
+  });
   const result = await tool.execute('approved', {path: 'input.pdf', pages: [4, 0]}, undefined, undefined, ctx);
   assert.equal(confirmations, 1);
   assert.equal(result.structuredContent.pages_processed, 2);
@@ -345,16 +568,16 @@ for (const [type, bytes] of images) {
     const source = await loadDocument(fixture.dir, 'scan.pdf');
     const {tool} = registered();
     let confirmations = 0;
-    const ctx = {hasUI: true, cwd: fixture.dir, ui: {confirm: async (title, message) => {
+    const ctx = approvalContext(fixture.dir, async (title, message) => {
       confirmations++;
-      assert.match(title, type === 'image/png' ? /PNG image/ : /JPEG image/);
-      assert.match(message, /ENTIRE .* image/);
+      assert.match(title, /Allow OCR uploads for this session/);
+      assert.match(message, type === 'image/png' ? /Upload: ENTIRE PNG image/ : /Upload: ENTIRE JPEG image/);
       assert.match(message, /embedded metadata/);
       assert.match(message, /one page \(index 0\)/);
-      assert.doesNotMatch(message, /ENTIRE PDF|unselected pages/);
+      assert.doesNotMatch(message, /Upload: ENTIRE PDF/);
       await writeFile(join(fixture.dir, 'scan.pdf'), pdf);
       return true;
-    }}};
+    });
     const params = {path: 'scan.pdf', ...(type === 'image/jpeg' ? {pages: [0]} : {})};
     const result = await tool.execute('image', params, undefined, undefined, ctx);
     assert.equal(confirmations, 1);
