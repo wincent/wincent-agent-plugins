@@ -56,6 +56,16 @@ function registered() {
 const proxy = 'http://x:fictional-proxy-password@127.0.0.1:18099';
 const config = {proxy, ca: '/tmp/fixture.crt', model: 'mistral-ocr-latest'};
 const pdf = Buffer.from('%PDF-1.4\nfictional PDF for transport tests\n%%EOF');
+// These fixtures exercise signature sniffing, not image decoding (which is
+// deliberately left to Mistral). No actual OCR provider is called.
+const png = Buffer.from('89504e470d0a1a0a0000000049454e44ae426082', 'hex');
+const jpeg = Buffer.from('ffd8ffe000104a46494600010100000100010000ffd9', 'hex');
+const images = [['image/png', png], ['image/jpeg', jpeg]];
+const imageResponse = JSON.stringify({
+  model: 'mistral-ocr-fixture',
+  pages: [{index: 0, markdown: 'Untrusted image transcription'}],
+  usage_info: {pages_processed: 1},
+});
 const response = JSON.stringify({
   model: 'mistral-ocr-fixture',
   pages: [{index: 4, markdown: '# Untrusted text'}, {index: 0, markdown: 'Hello'}],
@@ -88,6 +98,16 @@ test('first page default, sorted indices, bounded selections, no duplicates', ()
   }
 });
 
+test('images are one page and reject PDF page selections', () => {
+  for (const [type] of images) {
+    assert.deepEqual(pageIndices(undefined, type), [0]);
+    assert.deepEqual(pageIndices([0], type), [0]);
+    for (const pages of [[1], [0, 1], [4, 0]]) {
+      assert.throws(() => pageIndices(pages, type), /Images are a single page/);
+    }
+  }
+});
+
 test('loads an immutable bounded PDF snapshot through a normal symlink', async (t) => {
   const dir = await fixture(t);
   await writeFile(join(dir, 'input.pdf'), pdf);
@@ -95,6 +115,7 @@ test('loads an immutable bounded PDF snapshot through a normal symlink', async (
   const document = await loadDocument(dir, 'link.pdf');
   await writeFile(join(dir, 'input.pdf'), '%PDF-1.7\nchanged');
   assert.deepEqual(document.bytes, pdf);
+  assert.equal(document.mediaType, 'application/pdf');
   assert.match(document.path, /input\.pdf$/);
   assert.match(document.sha256, /^[a-f0-9]{64}$/);
   await assert.rejects(() => loadDocument(dir, 'missing.pdf'), /Cannot read/);
@@ -104,6 +125,25 @@ test('loads an immutable bounded PDF snapshot through a normal symlink', async (
   await assert.rejects(() => loadDocument(dir, 'bad.pdf'), /Cannot read/);
   await writeFile(join(dir, 'large.pdf'), Buffer.alloc(MAX_INPUT_BYTES + 1));
   await assert.rejects(() => loadDocument(dir, 'large.pdf'), /at most 20 MiB/);
+});
+
+test('detects PNG and JPEG by bytes, not extensions, and rejects unsupported signatures', async (t) => {
+  const dir = await fixture(t);
+  for (const [type, bytes] of images) {
+    await writeFile(join(dir, 'misleading.pdf'), bytes);
+    const document = await loadDocument(dir, 'misleading.pdf');
+    assert.equal(document.mediaType, type);
+    assert.deepEqual(document.bytes, bytes);
+    assert.match(document.sha256, /^[a-f0-9]{64}$/);
+  }
+  await writeFile(join(dir, 'misleading.png'), pdf);
+  assert.equal((await loadDocument(dir, 'misleading.png')).mediaType, 'application/pdf');
+  for (const bytes of [Buffer.from('GIF89a'), Buffer.from('RIFF0000WEBP'), Buffer.from('<svg/>'), png.subarray(0, 7), jpeg.subarray(0, 2), Buffer.from('not an image')]) {
+    await writeFile(join(dir, 'spoofed.png'), bytes);
+    await assert.rejects(() => loadDocument(dir, 'spoofed.png'), /Cannot read a regular PDF, PNG, or JPEG/);
+  }
+  await writeFile(join(dir, 'oversized.png'), Buffer.concat([png, Buffer.alloc(MAX_INPUT_BYTES)]));
+  await assert.rejects(() => loadDocument(dir, 'oversized.png'), /at most 20 MiB/);
 });
 
 test('curl config fixes destination, forces proxy, validates TLS, and contains only a phantom', () => {
@@ -150,6 +190,8 @@ test('saves private archival JSON, page-marked Markdown, and provenance without 
   assert.equal(await readFile(result.markdown_artifact, 'utf8'), '<!-- PDF page 1; zero-based index 0 -->\n\nHello\n\n<!-- PDF page 5; zero-based index 4 -->\n\n# Untrusted text\n');
   const manifest = JSON.parse(await readFile(result.manifest_artifact, 'utf8'));
   assert.equal(manifest.source_sha256, document.sha256);
+  assert.equal(manifest.source_media_type, 'application/pdf');
+  assert.ok(result.warnings.some(warning => warning.includes('entire source PDF')));
   assert.equal(manifest.entire_document_transmitted, true);
   assert.equal(manifest.requested_model, config.model);
   assert.equal(manifest.returned_model, 'mistral-ocr-fixture');
@@ -163,7 +205,7 @@ test('saves private archival JSON, page-marked Markdown, and provenance without 
 test('archives an HTTP-200 response before schema validation so paid results are recoverable', async (t) => {
   const dir = await fixture(t);
   const raw = '{"model":"future-model","pages":[]}';
-  await assert.rejects(() => saveArtifacts(dir, {path: 'input.pdf', bytes: pdf, sha256: 'fixture'}, [0], config.model, raw), /validation or writing failed/);
+  await assert.rejects(() => saveArtifacts(dir, {path: 'input.pdf', bytes: pdf, sha256: 'fixture', mediaType: 'application/pdf'}, [0], config.model, raw), /validation or writing failed/);
   assert.equal(await readFile(join(dir, 'response.json'), 'utf8'), raw);
 });
 
@@ -193,7 +235,7 @@ process.stdin.on('end', () => {
   setEnv(t, 'https_proxy', undefined);
   setEnv(t, 'CURL_CA_BUNDLE', ca);
   setEnv(t, 'MISTRAL_OCR_MODEL', undefined);
-  return {dir, config: {...config, ca}, capture, document: {path: 'fixture.pdf', bytes: pdf, sha256: 'fixture'}};
+  return {dir, config: {...config, ca}, capture, document: {path: 'fixture.pdf', bytes: pdf, sha256: 'fixture', mediaType: 'application/pdf'}};
 }
 
 test('transport passes payload privately, discards errors, and cleans the request spool', async (t) => {
@@ -293,6 +335,72 @@ test('extension uploads exactly the approved snapshot, returns artifacts not OCR
   const capture = JSON.parse(await readFile(fixture.capture, 'utf8'));
   assert.equal(capture.request.document.document_url, `data:application/pdf;base64,${pdf.toString('base64')}`);
   assert.equal(await readFile(result.structuredContent.json_artifact, 'utf8'), response);
+});
+
+for (const [type, bytes] of images) {
+  test(`extension uploads an approved ${type} snapshot and saves image-specific provenance`, async (t) => {
+    const fixture = await fakeCurl(t, `process.stdout.write(${JSON.stringify(imageResponse + '\n200')});`);
+    // A misleading suffix cannot change the request type or approval wording.
+    await writeFile(join(fixture.dir, 'scan.pdf'), bytes);
+    const source = await loadDocument(fixture.dir, 'scan.pdf');
+    const {tool} = registered();
+    let confirmations = 0;
+    const ctx = {hasUI: true, cwd: fixture.dir, ui: {confirm: async (title, message) => {
+      confirmations++;
+      assert.match(title, type === 'image/png' ? /PNG image/ : /JPEG image/);
+      assert.match(message, /ENTIRE .* image/);
+      assert.match(message, /embedded metadata/);
+      assert.match(message, /one page \(index 0\)/);
+      assert.doesNotMatch(message, /ENTIRE PDF|unselected pages/);
+      await writeFile(join(fixture.dir, 'scan.pdf'), pdf);
+      return true;
+    }}};
+    const params = {path: 'scan.pdf', ...(type === 'image/jpeg' ? {pages: [0]} : {})};
+    const result = await tool.execute('image', params, undefined, undefined, ctx);
+    assert.equal(confirmations, 1);
+    const capture = JSON.parse(await readFile(fixture.capture, 'utf8'));
+    assert.deepEqual(capture.request.document, {type: 'image_url', image_url: `data:${type};base64,${bytes.toString('base64')}`});
+    assert.equal(Object.hasOwn(capture.request, 'pages'), false);
+    assert.equal(capture.request.include_image_base64, false);
+    assert.equal(capture.env.MISTRAL_API_KEY, undefined);
+    await assert.rejects(() => readFile(capture.path), {code: 'ENOENT'});
+    assert.equal(result.structuredContent.pages_processed, 1);
+    assert.deepEqual(result.structuredContent.page_indices, [0]);
+    assert.equal(await readFile(result.structuredContent.json_artifact, 'utf8'), imageResponse);
+    assert.equal(await readFile(result.structuredContent.markdown_artifact, 'utf8'), '<!-- Image 1; zero-based index 0 -->\n\nUntrusted image transcription\n');
+    const manifest = JSON.parse(await readFile(result.structuredContent.manifest_artifact, 'utf8'));
+    assert.equal(manifest.source_media_type, type);
+    assert.equal(manifest.source_sha256, source.sha256);
+    assert.equal(manifest.source_bytes, bytes.length);
+    assert.equal(manifest.entire_document_transmitted, true);
+    assert.deepEqual(manifest.requested_page_indices, [0]);
+    assert.ok(result.structuredContent.warnings.some(warning => warning.includes('entire source image')));
+    assert.ok(result.structuredContent.warnings.every(warning => !warning.includes('PDF')));
+    assert.doesNotMatch(result.content[0].text, /Untrusted image transcription/);
+  });
+}
+
+test('invalid image page selections fail before confirmation or any upload', async (t) => {
+  const fixture = await fakeCurl(t, `process.stdout.write('should not execute');`);
+  await writeFile(join(fixture.dir, 'scan.png'), png);
+  const {tool} = registered();
+  const ctx = {hasUI: true, cwd: fixture.dir, ui: {confirm: async () => assert.fail('must not prompt')}};
+  for (const pages of [[1], [0, 1]]) {
+    await assert.rejects(() => tool.execute('invalid-image', {path: 'scan.png', pages}, undefined, undefined, ctx), /Images are a single page/);
+  }
+  const document = await loadDocument(fixture.dir, 'scan.png');
+  await assert.rejects(() => requestOcr(document, [1], fixture.config), /Images are a single page/);
+  await assert.rejects(() => readFile(fixture.capture), {code: 'ENOENT'});
+  assert.equal((await readdir(fixture.dir)).some(name => name.startsWith('ocr-')), false);
+});
+
+test('declining an image upload makes no HTTP request', async (t) => {
+  const fixture = await fakeCurl(t, `process.stdout.write('should not execute');`);
+  await writeFile(join(fixture.dir, 'scan.jpg'), jpeg);
+  const {tool} = registered();
+  const ctx = {hasUI: true, cwd: fixture.dir, ui: {confirm: async () => false}};
+  await assert.rejects(() => tool.execute('declined-image', {path: 'scan.jpg'}, undefined, undefined, ctx), /not approved/);
+  await assert.rejects(() => readFile(fixture.capture), {code: 'ENOENT'});
 });
 
 test('cancellation dismisses pending confirmation and releases the per-session guard', async (t) => {
