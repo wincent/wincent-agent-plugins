@@ -59,6 +59,10 @@ This gives the agent a reliable way to identify itself at runtime, which matters
 
 Because the block is regenerated every turn, `/model` and `/thinking` changes are reflected live without restarting Pi.
 
+### `ocr/`
+
+Adds an `ocr` tool for local scanned PDFs, plus `/ocr-status`. Sends only a placeholder credential through the existing nono proxy; the extension never reads the real Mistral key. Each upload requires confirmation, defaults to the first page, and returns private JSON/Markdown/provenance artifacts rather than document text. Requires `curl` and an opt-in host-side Mistral credential route. See [`ocr/README.md`](ocr/README.md) for setup, limits, security boundaries, and tests. A companion Pi-only `ocr` skill covers document handling and transcription fidelity.
+
 ### `subagent/`
 
 Delegates focused tasks to specialized subagents that run as their own Pi processes inside tmux panes, communicating with the main agent over a typed Unix domain socket bus (never via `tmux capture-pane` or `send-keys`). Ships six default agent personalities (`scout`, `linter`, `tester`, `reviewer`, `formatter`, `worker`); more can be added by dropping files into `~/.pi/agent/agents/`.

@@ -1,0 +1,15 @@
+{
+  "credentials": {
+    "mistral_ocr": {
+      "upstream": "https://api.mistral.ai",
+      "credential_key": "op://CLI/mistral-api-key/credential",
+      "inject_header": "Authorization",
+      "credential_format": "Bearer {}",
+      "env_var": "MISTRAL_API_KEY",
+      "endpoint_policy": {
+        "default": {"decision": "deny"},
+        "allow": [{"method": "POST", "path": "/v1/ocr"}]
+      }
+    }
+  }
+}
