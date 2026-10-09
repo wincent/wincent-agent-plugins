@@ -83,7 +83,7 @@ export default function (pi: ExtensionAPI) {
       }
       sessionApproved = true;
       approvalRevision++;
-      ctx.ui.setStatus('ocr-approval', 'OCR: allowed for session');
+      ctx.ui.setStatus('ocr-approval', ctx.ui.theme.fg('dim', 'OCR ✔'));
       return true;
     } finally {
       approvalPending = false;
@@ -95,7 +95,7 @@ export default function (pi: ExtensionAPI) {
     resetApproval(ctx);
     sessionApproved = takeSubagentState('ocr') === true;
     if (sessionApproved && ctx.hasUI) {
-      ctx.ui.setStatus('ocr-approval', 'OCR: allowed for session');
+      ctx.ui.setStatus('ocr-approval', ctx.ui.theme.fg('dim', 'OCR ✔'));
     }
   });
   pi.on('session_shutdown', (_event, ctx) => resetApproval(ctx));

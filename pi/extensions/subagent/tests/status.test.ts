@@ -31,6 +31,11 @@ test('status widget follows lifecycle events and unsubscribes on shutdown', () =
   const ctx = {
     hasUI: true,
     ui: {
+      theme: {
+        fg(color: string, text: string) {
+          return `<${color}>${text}</${color}>`;
+        },
+      },
       setWidget(_key: string, lines: string[] | undefined) {
         widgets.push(lines);
       },
@@ -48,11 +53,16 @@ test('status widget follows lifecycle events and unsubscribes on shutdown', () =
   hooks.get('session_start')!({}, ctx);
   emit('spawned', {taskId: 'one', agent: 'scout'});
   emit('progress', {taskId: 'one', text: 'reading\nfiles'});
-  assert.equal(statuses.at(-1), 'Subagents: 1 active');
+  assert.equal(statuses.at(-1), '<dim>Subagents: 🟢 (1)</dim>');
   assert.deepEqual(widgets.at(-1), ['scout: reading files']);
   emit('finalizing', {taskId: 'one'});
   assert.deepEqual(widgets.at(-1), ['scout: finalizing outputs and cleanup']);
+  emit('spawned', {taskId: 'two', agent: 'tester'});
+  assert.equal(statuses.at(-1), '<dim>Subagents: 🟢 (2)</dim>');
+  emit('failed', {taskId: 'two'});
+  assert.equal(statuses.at(-1), '<dim>Subagents: 🟢 (1)</dim>');
   emit('done', {taskId: 'one'});
+  assert.equal(statuses.at(-1), undefined);
   assert.equal(widgets.at(-1), undefined);
   hooks.get('session_shutdown')!({}, ctx);
   assert.ok([...handlers.values()].every((set) => set.size === 0));

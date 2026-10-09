@@ -70,6 +70,7 @@ function approvalContext(cwd, confirm = async () => true) {
     notifications,
     statuses,
     ui: {
+      theme: {fg(color, text) { return `<${color}>${text}</${color}>`; }},
       confirm,
       notify(message) { notifications.push(message); },
       setStatus(key, value) { statuses.set(key, value); },
@@ -363,7 +364,7 @@ test('first use grants sticky session approval, skips subsequent PDF/image promp
     return true;
   });
   await tool.execute('first-use', {path: 'input.pdf'}, undefined, undefined, ctx);
-  assert.equal(ctx.statuses.get('ocr-approval'), 'OCR: allowed for session');
+  assert.equal(ctx.statuses.get('ocr-approval'), '<dim>OCR ✔</dim>');
   ctx.ui.confirm = async () => assert.fail('session approval must skip upload prompts');
   await approval.handler('session', ctx);
   await status.handler('', ctx);
@@ -432,6 +433,17 @@ test('controller approval is inherited once by new headless children, without li
   assert.equal(await readFile(fixture.capture + '.calls', 'utf8'), '1\n1\n');
 });
 
+test('inherited approval displays a dim, compact footer when a UI is present', async (t) => {
+  setEnv(t, 'PI_SUBAGENT_TASK_ID', 'test-child');
+  setEnv(t, SUBAGENT_STATE_ENV, JSON.stringify({ocr: true}));
+  const child = registered();
+  const ctx = approvalContext(process.cwd());
+  await child.events.get('session_start')({reason: 'startup'}, ctx);
+  assert.equal(ctx.statuses.get('ocr-approval'), '<dim>OCR ✔</dim>');
+  await child.events.get('session_shutdown')({reason: 'quit'}, ctx);
+  assert.equal(ctx.statuses.get('ocr-approval'), undefined);
+});
+
 test('missing, malformed, and non-boolean inherited OCR approvals fail closed', async (t) => {
   const fixture = await fakeCurl(t, `process.stdout.write('should not execute');`);
   setEnv(t, 'PI_SUBAGENT_TASK_ID', 'test-child');
@@ -482,7 +494,7 @@ test('session lifecycle resets approval and fresh extension instances never inhe
   ]) {
     ctx.ui.confirm = async () => true;
     await approval.handler('session', ctx);
-    assert.equal(ctx.statuses.get('ocr-approval'), 'OCR: allowed for session');
+    assert.equal(ctx.statuses.get('ocr-approval'), '<dim>OCR ✔</dim>');
     await events.get(event.type)(event, ctx);
     assert.equal(ctx.statuses.get('ocr-approval'), undefined);
     ctx.ui.confirm = async () => false;
@@ -567,7 +579,7 @@ test('overlapping commands and first-use OCR cannot open a second approval dialo
     assert.equal(confirmations, 1);
     resolveConfirmation(true);
     await pending;
-    assert.equal(ctx.statuses.get('ocr-approval'), 'OCR: allowed for session');
+    assert.equal(ctx.statuses.get('ocr-approval'), '<dim>OCR ✔</dim>');
     ctx.ui.confirm = async () => assert.fail('existing approval must be retained');
     await tool.execute('after-overlap', {path: 'input.pdf'}, undefined, undefined, ctx);
   }

@@ -13,7 +13,9 @@ export function installStatus(pi: ExtensionAPI): void {
     }
     ctx.ui.setStatus(
       'subagent',
-      tasks.size ? `Subagents: ${tasks.size} active` : undefined,
+      tasks.size
+        ? ctx.ui.theme.fg('dim', `Subagents: 🟢 (${tasks.size})`)
+        : undefined,
     );
     const lines = [...tasks.values()].slice(0, 6).map(({agent, text}) =>
       `${agent}: ${text}`
