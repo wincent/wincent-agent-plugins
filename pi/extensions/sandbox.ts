@@ -8,7 +8,9 @@ export default function (pi: ExtensionAPI) {
     // This is a launcher hint, not verification of sandbox enforcement.
     ctx.ui.setStatus(
       'sandbox',
-      process.env.NONO_CAP_FILE
+      process.env.SB_SANDBOX
+        ? ctx.ui.theme.fg('dim', 'VM ✔')
+        : process.env.NONO_CAP_FILE
         ? ctx.ui.theme.fg('dim', 'Sandbox ✔')
         : undefined,
     );
