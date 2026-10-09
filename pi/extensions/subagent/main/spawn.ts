@@ -6,6 +6,7 @@ import {join} from 'node:path';
 export interface SpawnArgs {
   taskId: string;
   taskDir: string;
+  socketPath: string;
   task: string;
   parentId: string;
   cwd: string;
@@ -184,6 +185,7 @@ export function renderWrapper(args: SpawnArgs): string {
   const exports = [
     `export PI_SUBAGENT_TASK_ID=${shellQuote(args.taskId)}`,
     `export PI_SUBAGENT_BUS_DIR=${shellQuote(args.taskDir)}`,
+    `export PI_SUBAGENT_SOCKET_PATH=${shellQuote(args.socketPath)}`,
     `export PI_SUBAGENT_PARENT_ID=${shellQuote(args.parentId)}`,
   ];
   // This is trusted launcher configuration, not model-supplied shell text.

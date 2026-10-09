@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {test} from 'node:test';
 import {fileURLToPath} from 'node:url';
 
@@ -30,6 +30,7 @@ function argsFor(dir: string, task = 'Inspect the code'): SpawnArgs {
   return {
     taskId: 'task_test',
     taskDir: dir,
+    socketPath: join(dir, 's'),
     task,
     parentId: 'pi-main-test',
     cwd: dir,
@@ -221,7 +222,10 @@ test(
       }
       task.process.signal('SIGKILL'); // no-op after observing exit
       await task.bus.close();
-      assert.ok(!existsSync(join(dir, 'main.sock')));
+      const {socketPath} = JSON.parse(
+        readFileSync(join(dir, 'socket-env.json'), 'utf8'),
+      );
+      assert.ok(!existsSync(dirname(socketPath)));
     });
   },
 );
@@ -362,7 +366,10 @@ for (const mode of ['exit-early', 'no-connect', 'aborted']) {
         }),
       );
       clearTimeout(timer);
-      assert.ok(!existsSync(join(dir, 'main.sock')));
+      const {socketPath} = JSON.parse(
+        readFileSync(join(dir, 'socket-env.json'), 'utf8'),
+      );
+      assert.ok(!existsSync(dirname(socketPath)));
       assert.ok(
         existsSync(join(dir, 'pid')),
         readFileSync(join(dir, 'stderr.log'), 'utf8'),

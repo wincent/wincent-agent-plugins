@@ -45,7 +45,21 @@ Generic extension state and approval delegation are not implemented yet. In part
 
 Subagents exec `pi -p` by default, with stdin closed and stdout/stderr redirected to private task logs. If `PI_SUBAGENT_LAUNCHER` is set in the main agent's environment, its value is used instead; it may be a path or a trusted command with arguments. A configured launcher failure never falls back to bare `pi`.
 
-Sandbox/proxy wrappers should set this to their own launcher so each child acquires its own lease. They must permit the task-specific bus connection and task files. Removing tmux eliminates the need for a tmux socket grant, but does not itself validate a nono profile or change its filesystem/network permissions. Required v0 configurations are unsandboxed parent/child and sandboxed parent/child; real nono validation is still pending.
+Sandbox/proxy wrappers should set this to their own launcher so each child acquires its own lease. They must permit the task-specific bus connection, task files, and execution of the launcher inside the parent sandbox. Removing tmux eliminates the need for a tmux socket grant, but does not itself validate a nono profile or change its filesystem/network permissions. Required v0 configurations are unsandboxed parent/child and sandboxed parent/child; full nono parent/child validation remains pending.
+
+### Socket placement
+
+Set `PI_SUBAGENT_SOCKET_ROOT` to an existing, absolute, user-owned private directory (0700). The launcher must create it before sandbox startup and authorize socket bind/connect beneath it. Dotfiles commit `5a97ebeb0017` supplies `$TMPDIR/pi-sockets` and nono's `filesystem.unix_socket_subtree_bind` grant. The extension allocates a unique private `p-XXXXXX` directory there and uses `s` as the socket filename. An explicitly configured invalid, inaccessible, or overlong root fails without falling back elsewhere.
+
+Without that variable, unsandboxed and Linux launches allocate private per-task directories directly under the OS temporary directory. Paths are checked in UTF-8 bytes before bind/connect: at most 103 bytes on macOS (and conservatively on other POSIX systems), or 107 on Linux, reserving space for the terminating NUL. Choose a shorter permitted root if even this path is too long; artifact paths do not need shortening.
+
+`PI_SUBAGENT_SOCKET_PATH` carries the exact allocated path to the child. The child does not derive it from its root or state directory, and rejects missing or invalid bootstrap paths before submitting a model request. `PI_SUBAGENT_BUS_DIR` still names the retained artifact directory. Closing the controller's transport removes its socket directory; launch failures also clean up that allocation. Cleanup is nonrecursive, verifies the allocated directory's identity, and never removes the shared root. Unexpected contents or cleanup failures are reported rather than removed recursively. Abrupt controller death such as SIGKILL can leave an orphaned socket directory; disk history does not authorize sweeping other allocations.
+
+### Wrapper smoke test
+
+Run `node pi/extensions/subagent/tests/sandbox-smoke.mjs /absolute/path/to/bin/pi` explicitly. It uses an isolated temporary Pi configuration and a deterministic provider, with no paid model calls. Both controller and child use the real wrapper; the test checks progress/clarification/report delivery, process-group exit, socket cleanup, and retained results. Logs and task artifacts are kept for diagnosis. It does not alter sandbox permissions or substitute a launcher after failure.
+
+The initial macOS run with the socket-root policy passed allocation/binding and launch-failure cleanup, then the sandbox denied execution of the configured `bin/pi` child launcher (exit 126, `Operation not permitted`). This is a separate policy/launcher-access blocker, not a socket-path failure. Child connection and full sandboxed task completion remain unverified.
 
 Children exit after their task settles. Cancellation sends a bus message, then escalates to SIGTERM/SIGKILL for the child process group if needed. Completion waits for process exit before finalizing worktrees. Controlling-session shutdown cancels remaining children.
 
@@ -84,7 +98,6 @@ Per-task state lives at `${XDG_STATE_HOME:-~/.local/state}/pi/subagent/<task_id>
 
 - `meta.json`: task metadata (status, pids, inherited model/thinking, exit code/signal, started/ended timestamps)
 - `result.json`: full final result, written atomically with mode `0600` after finalization; retained across sessions
-- `main.sock`: Unix domain socket the main side listens on (cleaned up on close)
 - `bus.jsonl`: append-only audit log of every envelope in both directions
 - `system-prompt.md`: the rendered system prompt the subagent was given
 - `task.txt` / `run.sh`: wrapper artifacts written by the spawner

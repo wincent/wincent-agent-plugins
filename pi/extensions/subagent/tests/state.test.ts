@@ -20,7 +20,6 @@ import {
   metaPath,
   readMeta,
   reapStaleEntries,
-  socketPath,
   stateRoot,
   systemPromptPath,
   taskDir,
@@ -56,7 +55,6 @@ test('ensureTaskDir creates the per-task directory with mode 0700', async () => 
   await withTempStateRoot(async () => {
     const dir = ensureTaskDir('task_alpha');
     assert.ok(existsSync(dir));
-    assert.equal(socketPath('task_alpha'), join(dir, 'main.sock'));
     assert.equal(auditLogPath('task_alpha'), join(dir, 'bus.jsonl'));
     assert.equal(metaPath('task_alpha'), join(dir, 'meta.json'));
     assert.equal(systemPromptPath('task_alpha'), join(dir, 'system-prompt.md'));

@@ -1,5 +1,5 @@
 import {strict as assert} from 'node:assert';
-import {execFileSync, spawn} from 'node:child_process';
+import {execFileSync, spawn, spawnSync} from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -51,6 +51,7 @@ function setup() {
   const keys = [
     'PI_CODING_AGENT_DIR',
     'PI_SUBAGENT_LAUNCHER',
+    'PI_SUBAGENT_SOCKET_ROOT',
     'XDG_STATE_HOME',
     'TMUX',
   ];
@@ -142,6 +143,8 @@ for (
         model: model.id,
         thinking: 'high',
         hasUI: false,
+        socketPath: launched.socketPath,
+        busDir: dir,
       });
       const done = received.filter((env) => env.type === 'done');
       if (scenario === 'disconnect') {
@@ -179,6 +182,82 @@ for (
     }
   });
 }
+
+test(
+  'child bootstrap rejects missing or invalid socket paths before model requests',
+  {timeout: 30_000},
+  () => {
+    const {dir, cleanup} = setup();
+    try {
+      for (
+        const socketPath of [undefined, '', 'relative', '/' + 'x'.repeat(120)]
+      ) {
+        const env: NodeJS.ProcessEnv = {
+          ...process.env,
+          PI_SUBAGENT_TASK_ID: 'test_invalid_socket',
+          PI_SUBAGENT_BUS_DIR: dir,
+        };
+        if (socketPath === undefined) {
+          delete env.PI_SUBAGENT_SOCKET_PATH;
+        } else {
+          env.PI_SUBAGENT_SOCKET_PATH = socketPath;
+        }
+        const run = spawnSync(process.execPath, [
+          ...cliArgs,
+          '--no-session',
+          '--provider',
+          model.provider,
+          '--model',
+          model.id,
+          '-p',
+          'ask',
+        ], {cwd: dir, env, encoding: 'utf8', timeout: 5000});
+        assert.equal(run.status, 1, run.stderr);
+        assert.match(
+          run.stderr,
+          /PI_SUBAGENT_SOCKET_PATH|Subagent socket path/,
+        );
+        assert.ok(
+          !existsSync(join(dir, 'requests.jsonl')),
+          'Invalid bootstrap must not submit the prompt',
+        );
+      }
+    } finally {
+      cleanup();
+    }
+  },
+);
+
+test('real controller keeps long state paths separate from socket allocation', {
+  timeout: 30_000,
+}, async () => {
+  const {dir, cleanup} = setup();
+  const socketRoot = join(dir, 'sockets');
+  mkdirSync(socketRoot, {mode: 0o700});
+  process.env.PI_SUBAGENT_SOCKET_ROOT = socketRoot;
+  process.env.XDG_STATE_HOME = join(dir, 'long-state-' + 'x'.repeat(120));
+  try {
+    await runController(dir, 'ask');
+    const result = JSON.parse(
+      toolTexts(
+        readFileSync(join(dir, 'requests.jsonl'), 'utf8'),
+        'subagent',
+      )[0],
+    );
+    assert.equal(result.status, 'ok');
+    assert.ok(result.taskDir.startsWith(process.env.XDG_STATE_HOME));
+    const observed = JSON.parse(
+      readFileSync(join(result.taskDir, 'observed.json'), 'utf8'),
+    );
+    assert.equal(observed.busDir, result.taskDir);
+    assert.ok(observed.socketPath.startsWith(socketRoot + '/'));
+    assert.ok(existsSync(result.resultPath));
+    assert.ok(existsSync(join(result.taskDir, 'bus.jsonl')));
+    assert.deepEqual(readdirSync(socketRoot), []);
+  } finally {
+    cleanup();
+  }
+});
 
 for (
   const scenario of [

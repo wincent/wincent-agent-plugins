@@ -16,7 +16,10 @@ import {registerSubTools} from './sub/tools.js';
 export default function subagentExtension(pi: ExtensionAPI): void {
   const taskId = process.env.PI_SUBAGENT_TASK_ID;
   const busDir = process.env.PI_SUBAGENT_BUS_DIR;
-  if (!taskId && !busDir) {
+  const socketPath = process.env.PI_SUBAGENT_SOCKET_PATH;
+  if (
+    taskId === undefined && busDir === undefined && socketPath === undefined
+  ) {
     pi.on('session_start', () => {
       reapStaleEntries();
     });
@@ -24,15 +27,20 @@ export default function subagentExtension(pi: ExtensionAPI): void {
     installStatus(pi);
     return;
   }
-  if (!taskId || !busDir) {
-    throw new Error(
-      'subagent extension: PI_SUBAGENT_TASK_ID and PI_SUBAGENT_BUS_DIR must both be set, or neither',
+  if (!taskId || !busDir || !socketPath) {
+    process.stderr.write(
+      'subagent extension: PI_SUBAGENT_TASK_ID, PI_SUBAGENT_BUS_DIR, and PI_SUBAGENT_SOCKET_PATH must all be set, or all be absent\n',
     );
+    process.exit(1);
   }
-  installSubMode(pi, busDir);
+  installSubMode(pi, busDir, socketPath);
 }
 
-function installSubMode(pi: ExtensionAPI, busDir: string): void {
+function installSubMode(
+  pi: ExtensionAPI,
+  busDir: string,
+  socketPath: string,
+): void {
   let bus: Bus | undefined;
   let storedCtx: ExtensionContext | undefined;
   let doneSent = false;
@@ -68,7 +76,7 @@ function installSubMode(pi: ExtensionAPI, busDir: string): void {
   pi.on('session_start', async (_event, ctx) => {
     storedCtx = ctx;
     try {
-      const transport = await connectToPeer(`${busDir}/main.sock`, {
+      const transport = await connectToPeer(socketPath, {
         timeoutMs: CONNECT_TIMEOUT_MS,
       });
       bus = new Bus(transport, new AuditLog(`${busDir}/bus.jsonl`), 'sub');

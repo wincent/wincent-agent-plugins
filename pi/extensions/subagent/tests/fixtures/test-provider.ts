@@ -36,6 +36,8 @@ export default function (pi: ExtensionAPI): void {
           model: ctx.model?.id,
           thinking: pi.getThinkingLevel(),
           hasUI: ctx.hasUI,
+          socketPath: process.env.PI_SUBAGENT_SOCKET_PATH,
+          busDir: process.env.PI_SUBAGENT_BUS_DIR,
         }),
       );
     }

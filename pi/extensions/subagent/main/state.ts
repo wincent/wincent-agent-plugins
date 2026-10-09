@@ -6,7 +6,6 @@
  *   ${XDG_STATE_HOME:-~/.local/state}/pi/subagent/<task_id>/
  *     meta.json           # status metadata
  *     result.json         # final model-visible result, retained after completion
- *     main.sock           # UDS bind point (removed on close)
  *     bus.jsonl           # append-only audit log
  *     system-prompt.md    # rendered system prompt for the subagent
  *     worktree            # symlink to the actual worktree, when used
@@ -75,10 +74,6 @@ export function taskDir(taskId: string): string {
     throw new Error('Invalid subagent task ID');
   }
   return join(stateRoot(), taskId);
-}
-
-export function socketPath(taskId: string): string {
-  return join(taskDir(taskId), 'main.sock');
 }
 
 export function auditLogPath(taskId: string): string {

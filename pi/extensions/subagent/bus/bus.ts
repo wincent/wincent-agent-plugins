@@ -171,8 +171,11 @@ export class Bus {
       }
       this.pending.clear();
       this.closing = (async () => {
-        await this.transport.close();
-        await this.auditLog.flush();
+        try {
+          await this.transport.close();
+        } finally {
+          await this.auditLog.flush();
+        }
       })();
     }
     return this.closing;

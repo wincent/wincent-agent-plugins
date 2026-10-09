@@ -112,7 +112,7 @@ Call `subagent_status` without arguments to list this controller's active tasks 
 
 Call `subagent_status` with `task_id` to retrieve the full result, including `finalReport.data`, after completion or a session restart. For older tasks without `result.json`, it recovers reports from `bus.jsonl` when available and explains missing artifacts. Do not search the parent session transcript to recover report data.
 
-The controlling UI shows a compact progress widget; there is no interactive child pane. Task artifacts remain after completion unless explicitly pruned.
+The controlling UI shows a compact progress widget; there is no interactive child pane. Task artifacts remain after completion unless explicitly pruned. Sockets are separate: `PI_SUBAGENT_SOCKET_ROOT` selects a launcher-prepared private directory, and `PI_SUBAGENT_SOCKET_PATH` passes the exact short per-task socket path to the child. `PI_SUBAGENT_BUS_DIR` still points to retained artifacts. An explicitly configured socket root never falls back elsewhere; sandbox launchers must authorize both that socket subtree and execution of the child wrapper.
 
 Extension approvals, including OCR approval, are not inherited yet. A headless tool requiring local UI approval may fail; do not interpret a parent grant or an LLM answer to `ask` as child authorization.
 

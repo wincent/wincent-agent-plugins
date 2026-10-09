@@ -3,6 +3,10 @@ import {writeFileSync} from 'node:fs';
 import {createConnection} from 'node:net';
 
 const mode = process.argv.at(-1);
+writeFileSync(`${process.env.PI_SUBAGENT_BUS_DIR}/socket-env.json`, JSON.stringify({
+  busDir: process.env.PI_SUBAGENT_BUS_DIR,
+  socketPath: process.env.PI_SUBAGENT_SOCKET_PATH,
+}));
 if (mode === 'exit-early') {
   process.stderr.write('launcher failure\n');
   process.exit(23);
@@ -10,7 +14,7 @@ if (mode === 'exit-early') {
 if (mode === 'no-connect') {
   setInterval(() => {}, 1_000);
 } else {
-  const socket = createConnection(`${process.env.PI_SUBAGENT_BUS_DIR}/main.sock`);
+  const socket = createConnection(process.env.PI_SUBAGENT_SOCKET_PATH);
   let id = 0;
   const send = (type, payload) => socket.write(JSON.stringify({
     v: 1, id: `fake_${++id}`, ts: new Date().toISOString(), from: 'sub', type, payload,

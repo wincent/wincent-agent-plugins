@@ -1,7 +1,7 @@
 /**
  * Unix domain socket transport for the subagent bus.
  *
- * The main side creates a `net.Server` and listens on `<busDir>/main.sock`.
+ * The main side creates a `net.Server` and listens on the allocated socket path.
  * The subagent side connects to that path. Either end can send envelopes at
  * any time. Each envelope is one line of JSON terminated by `\n`.
  *
@@ -21,6 +21,7 @@ import {
 
 import type {Envelope} from './envelope.js';
 import {parseEnvelope} from './envelope.js';
+import {validateSocketPath} from './socket-path.js';
 
 export type EnvelopeHandler = (env: Envelope) => void;
 export type CloseHandler = (err?: Error) => void;
@@ -108,6 +109,7 @@ export function listenForPeer(
   options: {timeoutMs: number; signal?: AbortSignal},
 ): Promise<Transport> {
   return new Promise<Transport>((resolve, reject) => {
+    validateSocketPath(socketPath);
     const handlers = new Set<EnvelopeHandler>();
     const closeHandlers = new Set<CloseHandler>();
     const parseErrorHandlers = new Set<ParseErrorHandler>();
@@ -118,6 +120,15 @@ export function listenForPeer(
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     let flushBuffer: () => void = () => {};
     let ownsSocketFile = false;
+    let serverClosing: Promise<void> | undefined;
+    const closeServer = () =>
+      serverClosing ??= new Promise<void>((done) => {
+        if (server) {
+          server.close(() => done());
+        } else {
+          done();
+        }
+      });
     const onAbort = () => {
       finishWithError(new Error('aborted while waiting for subagent'));
     };
@@ -129,8 +140,10 @@ export function listenForPeer(
       ownsSocketFile = false;
       try {
         await unlink(socketPath);
-      } catch {
-        // The socket file may already be gone; that's fine.
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
       }
     };
 
@@ -146,11 +159,17 @@ export function listenForPeer(
       if (socket) {
         socket.destroy();
       }
-      if (server) {
-        server.close();
-      }
-      void cleanupSocketFile();
-      reject(err);
+      void closeServer().then(cleanupSocketFile).then(
+        () => reject(err),
+        (error) =>
+          reject(
+            new Error(
+              `${err.message}; socket cleanup failed: ${
+                (error as Error).message
+              }`,
+            ),
+          ),
+      );
     };
 
     timeoutHandle = setTimeout(() => {
@@ -203,10 +222,8 @@ export function listenForPeer(
       conn.on('end', onTerminated);
       conn.on('close', onTerminated);
 
-      if (server) {
-        // Only accept one peer; reject any further connection attempts.
-        server.close();
-      }
+      // Stop accepting peers now; await server closure when this transport closes.
+      void closeServer();
 
       resolved = true;
       resolve(buildTransport({
@@ -221,6 +238,7 @@ export function listenForPeer(
         parseErrorHandlers,
         close: async () => {
           await closeSocket(conn);
+          await closeServer();
           await cleanupSocketFile();
         },
       }));
@@ -230,19 +248,21 @@ export function listenForPeer(
       finishWithError(err);
     });
 
-    server.listen(socketPath, () => {
-      ownsSocketFile = true;
-      if (resolved) {
-        server?.close();
-        void cleanupSocketFile();
-        return;
-      }
-      try {
-        chmodSync(socketPath, 0o600);
-      } catch (error) {
-        finishWithError(error as Error);
-      }
-    });
+    try {
+      server.listen(socketPath, () => {
+        ownsSocketFile = true;
+        if (resolved) {
+          return;
+        }
+        try {
+          chmodSync(socketPath, 0o600);
+        } catch (error) {
+          finishWithError(error as Error);
+        }
+      });
+    } catch (error) {
+      finishWithError(error as Error);
+    }
   });
 }
 
@@ -264,6 +284,7 @@ export function connectToPeer(
   const deadline = Date.now() + options.timeoutMs;
 
   return new Promise<Transport>((resolve, reject) => {
+    validateSocketPath(socketPath);
     const handlers = new Set<EnvelopeHandler>();
     const closeHandlers = new Set<CloseHandler>();
     const parseErrorHandlers = new Set<ParseErrorHandler>();
