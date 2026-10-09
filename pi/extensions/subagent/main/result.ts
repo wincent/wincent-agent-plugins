@@ -37,6 +37,8 @@ export interface SubagentDetails {
     status: 'ok' | 'failed' | 'aborted' | 'crashed';
     exitCode?: number | null;
     signal?: NodeJS.Signals | null;
+    processExited?: boolean | null;
+    processGroupExited?: boolean | null;
   };
   worktree: {
     enabled: boolean;
@@ -44,7 +46,12 @@ export interface SubagentDetails {
     repoRoot?: string;
     retentionVerified?: boolean;
     verification?: Verification[];
-    hasChanges?: boolean;
+    hasCommittedChanges?: boolean | null;
+    hadUncommittedChanges?: boolean | null;
+    cleanup?: {
+      directoryRemoved: boolean | null;
+      registrationRemoved: boolean | null;
+    };
     warnings?: string[];
     error?: string;
     branch?: string;
@@ -171,6 +178,32 @@ export function resultText(details: SubagentDetails): string {
   return `${header}\n\n${notice}\n\nResult preview:\n${
     JSON.stringify(body, null, 2).slice(0, MAX_RESULT_CHARS)
   }`;
+}
+
+export function completionText(details: SubagentDetails): string {
+  const result = describeResult(details);
+  const headline = result.resultDescription.length > 480
+    ? `${result.resultDescription.slice(0, 480)}...`
+    : result.resultDescription;
+  if (!details.resultPath) {
+    // Without a saved snapshot, do not discard authoritative finalization details.
+    return `${headline}\n\n${resultText(details)}`;
+  }
+  return `${headline}\n${
+    JSON.stringify({
+      taskId: details.taskId,
+      status: details.status,
+      taskOutcome: result.taskOutcome,
+      finalized: result.finalized,
+      resultPath: details.resultPath,
+      retainedBranch: details.worktree.retentionVerified
+        ? details.worktree.branch
+        : undefined,
+      preservedPath: details.worktree.preservedPath,
+    })
+  }\nFull report: subagent_status({task_id: ${
+    JSON.stringify(details.taskId)
+  }}). If the finalized result was already retrieved, no further action is needed.`;
 }
 
 export function taskResult(

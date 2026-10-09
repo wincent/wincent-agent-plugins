@@ -109,11 +109,22 @@ export function describeResult(details: SubagentDetails): ResultDescription {
   }
   const harness: Verification[] = details.execution ?
     [{
-      check: 'Reconciled child completion and process-group exit',
-      result: details.execution.status === 'ok' ? 'passed' : 'failed',
+      check: 'Child process exit observed',
+      result: details.execution.processExited === true
+        ? 'passed'
+        : details.execution.processExited === false
+        ? 'failed'
+        : 'not_run',
       details: `status=${details.execution.status}, exitCode=${
         details.execution.exitCode ?? 'unknown'
       }, signal=${details.execution.signal ?? 'none'}`,
+    }, {
+      check: 'Owned process group exited',
+      result: details.execution.processGroupExited === true
+        ? 'passed'
+        : details.execution.processGroupExited === false
+        ? 'failed'
+        : 'not_run',
     }] :
     [];
   harness.push(...verificationEntries(details.worktree.verification));

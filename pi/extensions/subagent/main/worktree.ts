@@ -2,7 +2,7 @@
 import {execFile} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {existsSync} from 'node:fs';
-import {mkdir} from 'node:fs/promises';
+import {lstat, mkdir, realpath} from 'node:fs/promises';
 import {join} from 'node:path';
 import {promisify} from 'node:util';
 
@@ -18,8 +18,15 @@ export interface WorktreePlan {
   baseCommit: string;
 }
 
+export interface WorktreeCleanup {
+  directoryRemoved: boolean | null;
+  registrationRemoved: boolean | null;
+}
+
 export interface WorktreeOutcome {
-  hasChanges: boolean;
+  hasCommittedChanges: boolean | null;
+  hadUncommittedChanges: boolean | null;
+  cleanup: WorktreeCleanup;
   branch?: string;
   preservedPath?: string;
   commits: CommitInfo[];
@@ -72,7 +79,7 @@ export async function prepareWorktree(
   } catch (error) {
     throw new Error(`git worktree add failed: ${(error as Error).message}`);
   }
-  return {path, branch, repoRoot, baseCommit};
+  return {path: await realpath(path), branch, repoRoot, baseCommit};
 }
 
 async function commitsSinceBase(
@@ -111,6 +118,35 @@ function reportsAgree(reported: CommitInfo[], actual: CommitInfo[]): boolean {
     && resolved.length === actual.length;
 }
 
+async function observeCleanup(plan: WorktreePlan): Promise<WorktreeCleanup> {
+  const cleanup: WorktreeCleanup = {
+    directoryRemoved: null,
+    registrationRemoved: null,
+  };
+  try {
+    await lstat(plan.path);
+    cleanup.directoryRemoved = false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      cleanup.directoryRemoved = true;
+    }
+  }
+  try {
+    const entries = await git(plan.repoRoot, [
+      'worktree',
+      'list',
+      '--porcelain',
+      '-z',
+    ]);
+    cleanup.registrationRemoved = !entries.split('\0').includes(
+      `worktree ${plan.path}`,
+    );
+  } catch {
+    // A failed query is not proof that Git removed its registration.
+  }
+  return cleanup;
+}
+
 /** Never remove a worktree until its committed output has a retained ref. */
 export async function finalizeWorktree(
   plan: WorktreePlan,
@@ -123,10 +159,13 @@ export async function finalizeWorktree(
 ): Promise<WorktreeOutcome> {
   const verification: Verification[] = [];
   const result: WorktreeOutcome = {
-    hasChanges: false,
+    hasCommittedChanges: null,
+    hadUncommittedChanges: null,
+    cleanup: {directoryRemoved: null, registrationRemoved: null},
     commits: [],
     verification,
   };
+  let removalAttempted = false;
   try {
     if (!existsSync(plan.path)) {
       throw new Error(
@@ -135,8 +174,9 @@ export async function finalizeWorktree(
     }
     let head = await git(plan.path, ['rev-parse', '--verify', 'HEAD^{commit}']);
     const dirty = (await git(plan.path, ['status', '--porcelain'])).length > 0;
-    result.hasChanges = dirty || head !== plan.baseCommit;
+    result.hadUncommittedChanges = dirty;
     result.commits = await commitsSinceBase(plan, head);
+    result.hasCommittedChanges = result.commits.length > 0;
     verification.push({
       check: 'Enumerate worker commits',
       result: 'passed',
@@ -183,6 +223,7 @@ export async function finalizeWorktree(
       ].filter(Boolean).join('; ');
     }
     if (dirty && !result.error && options.allowCommit !== false) {
+      result.hasCommittedChanges = null;
       await git(plan.path, ['add', '-A']);
       await git(plan.path, [
         'commit',
@@ -191,6 +232,7 @@ export async function finalizeWorktree(
       ]);
       head = await git(plan.path, ['rev-parse', '--verify', 'HEAD^{commit}']);
       result.commits = await commitsSinceBase(plan, head);
+      result.hasCommittedChanges = result.commits.length > 0;
     } else if (dirty && options.allowCommit === false) {
       result.warnings = [
         'Task was not reported completed; uncommitted changes were left untouched.',
@@ -232,8 +274,8 @@ export async function finalizeWorktree(
       return result;
     }
     // Without --force, concurrent uncommitted changes or a lock prevent removal.
+    removalAttempted = true;
     await git(plan.repoRoot, ['worktree', 'remove', plan.path]);
-    verification.push({check: 'Remove worktree', result: 'passed'});
   } catch (error) {
     verification.push({
       check: 'Worktree finalization',
@@ -245,15 +287,54 @@ export async function finalizeWorktree(
     if (existsSync(plan.path)) {
       result.preservedPath = plan.path;
     }
+  } finally {
+    result.cleanup = await observeCleanup(plan);
+    if (result.cleanup.directoryRemoved === true) {
+      delete result.preservedPath;
+    } else if (removalAttempted && result.cleanup.directoryRemoved === false) {
+      result.preservedPath = plan.path;
+    }
+    if (removalAttempted) {
+      for (
+        const [check, removed] of [[
+          'Verify worktree directory removal',
+          result.cleanup.directoryRemoved,
+        ], [
+          'Verify Git worktree registration removal',
+          result.cleanup.registrationRemoved,
+        ]] as const
+      ) {
+        verification.push({
+          check,
+          result: removed === true
+            ? 'passed'
+            : removed === false
+            ? 'failed'
+            : 'not_run',
+          ...(removed === null ? {details: 'Could not verify removal.'} : {}),
+        });
+      }
+      if (
+        result.cleanup.directoryRemoved !== true ||
+        result.cleanup.registrationRemoved !== true
+      ) {
+        result.error = [result.error, 'worktree cleanup was not fully verified']
+          .filter(Boolean).join('; ');
+      }
+    }
   }
   return result;
 }
 
-export function preserveWorktreeOnCrash(plan: WorktreePlan): WorktreeOutcome {
-  const present = existsSync(plan.path);
+export async function preserveWorktreeOnCrash(
+  plan: WorktreePlan,
+): Promise<WorktreeOutcome> {
+  const cleanup = await observeCleanup(plan);
   return {
-    hasChanges: present,
-    ...(present ? {preservedPath: plan.path} : {}),
+    hasCommittedChanges: null,
+    hadUncommittedChanges: null,
+    cleanup,
+    ...(cleanup.directoryRemoved === false ? {preservedPath: plan.path} : {}),
     commits: [],
     verification: [{
       check: 'Worktree finalization',

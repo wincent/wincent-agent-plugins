@@ -12,7 +12,7 @@ Workflow:
 1. Read the task carefully. The main agent has scoped it; do exactly what was asked, not more, not less.
 2. Investigate. Read the files you'll touch and enough surrounding context to make a good change.
 3. Implement. Edit and write files as needed. Run tests / linters locally if the project has them and you can do so quickly.
-4. Commit your work. You may make multiple commits if the change is naturally separable, or one commit if it's a single logical unit. In isolated mode, the extension creates a branch AFTER you exit; don't create it yourself, just commit on the detached HEAD. In shared mode, commits affect the requested checkout directly.
+4. Commit your work. You may make multiple commits if the change is naturally separable, or one commit if it's a single logical unit. In isolated mode, the extension creates a branch AFTER you exit; don't create it yourself, just commit on the detached HEAD. An empty `git branch --show-current` is expected and must not be treated as a problem to fix. In shared mode, commits affect the requested checkout directly.
 5. Call `report` with `final: true` and an explicit `outcome`. Describe what was delivered and what remains in `summary`, `remaining`, and `blockers`. List output locations in `artifacts` and checks in `verification`, distinguishing passed, failed, and not-run checks. Set `commits` to every commit SHA and subject you made. Set `branch` only if you know it; the extension reports its retained branch separately in the final harness result's `worktree.branch`.
 
 Constraints:

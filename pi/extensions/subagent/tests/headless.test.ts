@@ -19,6 +19,7 @@ import {AuditLog} from '../bus/audit-log.js';
 import {Bus} from '../bus/bus.js';
 import type {Envelope} from '../bus/envelope.js';
 import {launchSubagent} from '../main/launch.js';
+import {readTaskResult, resultText} from '../main/result.js';
 import {terminateProcess, waitForExit} from '../main/spawn.js';
 
 const entry = realpathSync(
@@ -222,6 +223,20 @@ for (
         ).details
         : JSON.parse(toolTexts(requests, 'subagent')[0]);
       assert.equal(result.worktree.commits.length, 1);
+      assert.equal(result.worktree.hasCommittedChanges, true);
+      assert.equal(
+        result.worktree.hadUncommittedChanges,
+        scenario === 'worker-partial',
+      );
+      assert.ok(!('hasChanges' in result.worktree));
+      assert.equal(result.execution.processExited, true);
+      assert.equal(result.execution.processGroupExited, true);
+      const removed = scenario === 'worker-clean' ||
+        scenario === 'worker-background';
+      assert.deepEqual(result.worktree.cleanup, {
+        directoryRemoved: removed,
+        registrationRemoved: removed,
+      });
       const head = result.worktree.commits[0].sha;
       assert.equal(
         git(['rev-parse', `refs/heads/${result.worktree.branch}`]),
@@ -303,7 +318,17 @@ for (
       if (scenario === 'worker-background') {
         assert.match(requests, /report received \(not finalized\)/);
         assert.match(requests, /Agent reports task completion/);
-        assert.match(requests, /Retained branch points to finalized HEAD/);
+        assert.doesNotMatch(
+          requests,
+          /Retained branch points to finalized HEAD/,
+          'completion should not repeat the full verification report',
+        );
+        assert.match(requests, /Full report: subagent_status/);
+        const retrieved = JSON.parse(
+          resultText((await readTaskResult(result.taskId))!),
+        );
+        assert.equal(retrieved.worktree.cleanup.registrationRemoved, true);
+        assert.deepEqual(retrieved.finalReport, result.finalReport);
         assert.doesNotMatch(requests, /done \(ok\)/);
       }
     } finally {
@@ -476,10 +501,21 @@ for (
         assert.throws(() => process.kill(meta.subPid, 0), /ESRCH/);
       } else {
         assert.match(requests, /metadata update failed/);
-        assert.match(
+        assert.doesNotMatch(
           requests,
           /commit summary 4/,
-          'background completion must expose report data too',
+          'background completion should be a digest',
+        );
+        assert.match(requests, /Full report: subagent_status/);
+        const taskId = readdirSync(join(dir, 'pi', 'subagent'))[0];
+        const retrieved = JSON.parse(
+          resultText((await readTaskResult(taskId))!),
+        );
+        assert.equal(retrieved.status, 'failed');
+        assert.equal(
+          retrieved.finalReport.data.commits[4].summary,
+          'commit summary 4',
+          'full data must remain retrievable',
         );
       }
       assert.doesNotMatch(requests, /"status":"failed"/);

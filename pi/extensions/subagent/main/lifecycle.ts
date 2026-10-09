@@ -10,6 +10,8 @@ export interface TaskOutcome {
   error?: string;
   finalText?: string;
   exit?: ProcessExit;
+  processExited: boolean | null;
+  processGroupExited: boolean | null;
 }
 
 export function cancelTask(
@@ -46,6 +48,7 @@ export function observeTask(
   const killGraceMs = options.killGraceMs ?? SIGKILL_GRACE_MS;
   return new Promise((resolve) => {
     let done: DonePayload | undefined;
+    let processExited: boolean | null = null;
     let finishing = false;
     let exitTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = async () => {
@@ -86,7 +89,20 @@ export function observeTask(
         status = done.status;
         error = done.error;
       }
-      resolve({status, error, finalText: done?.finalText, exit});
+      let processGroupExited: boolean | null = null;
+      try {
+        processGroupExited = !task.process.isGroupAlive();
+      } catch {
+        // Preserve unknown rather than claiming successful group cleanup.
+      }
+      resolve({
+        status,
+        error,
+        finalText: done?.finalText,
+        exit,
+        processExited,
+        processGroupExited,
+      });
     };
     const unsub = task.bus.subscribe((env) => {
       if (env.from === 'sub' && env.type === 'done') {
@@ -97,7 +113,8 @@ export function observeTask(
     const unsubClose = task.bus.onPeerClose(() => void finish());
     // Exit can precede delivery of the last socket data. Allow that data to drain,
     // but don't wait indefinitely if a descendant has kept the socket open.
-    void task.process.exited.then(() => {
+    void task.process.exited.then((result) => {
+      processExited = result.error ? null : true;
       if (!finishing) {
         exitTimer = setTimeout(
           () => void finish(),

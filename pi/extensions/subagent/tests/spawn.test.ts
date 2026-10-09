@@ -208,6 +208,8 @@ test(
         'process settlement cannot publish terminal task success',
       );
       assert.equal(outcome.exit?.code, 0);
+      assert.equal(outcome.processExited, true);
+      assert.equal(outcome.processGroupExited, true);
       assert.ok(Date.now() - started >= 100);
       assert.match(readFileSync(task.process.stdoutPath, 'utf8'), /task_test/);
       assert.match(
@@ -223,6 +225,32 @@ test(
     });
   },
 );
+
+test('an observed leader exit is separate from unverified group cleanup', {
+  timeout: 5_000,
+}, async () => {
+  await withChild('normal', async (_dir, task) => {
+    await task.process.exited;
+    const original = task.process.isGroupAlive;
+    task.process.isGroupAlive = () => true;
+    try {
+      const outcome = await observeTask(task, {
+        exitGraceMs: 20,
+        killGraceMs: 20,
+      });
+      assert.equal(outcome.status, 'crashed');
+      assert.equal(outcome.processExited, true);
+      assert.equal(outcome.processGroupExited, false);
+      assert.equal(
+        outcome.exit,
+        undefined,
+        'a leader exit alone must not permit worktree finalization',
+      );
+    } finally {
+      task.process.isGroupAlive = original;
+    }
+  });
+});
 
 test(
   'direct child ask/answer round-trip needs no child UI',

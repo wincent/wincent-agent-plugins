@@ -7,7 +7,7 @@
 import {strict as assert} from 'node:assert';
 import {execFile} from 'node:child_process';
 import {existsSync, realpathSync} from 'node:fs';
-import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, rm, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
@@ -145,6 +145,33 @@ test('placement follows a linked worktree root, including when called from a sub
   }
 });
 
+test('cleanup matches canonical registrations even through symlinks and unusual paths', async () => {
+  const {repo, cleanup} = await makeTempRepo();
+  try {
+    const target = join(repo, 'tree storage\nwith newline');
+    await mkdir(target);
+    await symlink(target, join(repo, '.agent-worktrees'), 'dir');
+    const plan = await prepareWorktree(repo, 'task_alias', 'worker');
+    assert.equal(plan.path, join(realpathSync(target), 'task_alias'));
+    const preserved = await preserveWorktreeOnCrash(plan);
+    assert.deepEqual(preserved.cleanup, {
+      directoryRemoved: false,
+      registrationRemoved: false,
+    });
+    const finalized = await finalizeWorktree(plan, {
+      agentName: 'worker',
+      taskSummary: 'noop',
+    });
+    assert.equal(finalized.error, undefined);
+    assert.deepEqual(finalized.cleanup, {
+      directoryRemoved: true,
+      registrationRemoved: true,
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
 test('finalizeWorktree prunes a clean worktree', async (t) => {
   if (!(await gitIsAvailable())) {
     t.skip('git not available');
@@ -157,7 +184,12 @@ test('finalizeWorktree prunes a clean worktree', async (t) => {
       agentName: 'scout',
       taskSummary: 'noop',
     });
-    assert.equal(outcome.hasChanges, false);
+    assert.equal(outcome.hasCommittedChanges, false);
+    assert.equal(outcome.hadUncommittedChanges, false);
+    assert.deepEqual(outcome.cleanup, {
+      directoryRemoved: true,
+      registrationRemoved: true,
+    });
     assert.equal(outcome.branch, undefined);
     assert.ok(!existsSync(plan.path));
   } finally {
@@ -178,7 +210,12 @@ test('finalizeWorktree commits and creates a branch when changes exist', async (
       agentName: 'worker',
       taskSummary: 'add new file',
     });
-    assert.equal(outcome.hasChanges, true);
+    assert.equal(outcome.hasCommittedChanges, true);
+    assert.equal(outcome.hadUncommittedChanges, true);
+    assert.deepEqual(outcome.cleanup, {
+      directoryRemoved: true,
+      registrationRemoved: true,
+    });
     assert.equal(outcome.error, undefined);
     assert.equal(outcome.commits.length, 1);
     assert.ok(outcome.branch);
@@ -243,7 +280,13 @@ test('worker commits survive a clean checkout and a subsequent parent HEAD chang
       }],
     });
     assert.equal(outcome.error, undefined);
-    assert.equal(outcome.hasChanges, true);
+    assert.equal(outcome.hasCommittedChanges, true);
+    assert.equal(outcome.hadUncommittedChanges, false);
+    assert.deepEqual(outcome.cleanup, {
+      directoryRemoved: true,
+      registrationRemoved: true,
+    });
+    assert.ok(!('hasChanges' in outcome));
     assert.deepEqual(outcome.commits.map(({sha}) => sha), [first, second]);
     await assertRetained(plan, outcome.branch, second);
     assert.ok(!existsSync(plan.path));
@@ -308,6 +351,10 @@ test('cleanup failure is explicit and retains both branch and worktree', async (
       taskSummary: 'file',
     });
     assert.match(outcome.error!, /locked/);
+    assert.deepEqual(outcome.cleanup, {
+      directoryRemoved: false,
+      registrationRemoved: false,
+    });
     assert.equal(outcome.preservedPath, plan.path);
     await assertRetained(plan, outcome.branch, head);
     assert.ok(existsSync(plan.path));
@@ -329,6 +376,12 @@ test('disabling auto-commit preserves uncommitted work while retaining existing 
     });
     assert.equal(outcome.error, undefined);
     assert.ok(outcome.warnings?.length);
+    assert.equal(outcome.hasCommittedChanges, true);
+    assert.equal(outcome.hadUncommittedChanges, true);
+    assert.deepEqual(outcome.cleanup, {
+      directoryRemoved: false,
+      registrationRemoved: false,
+    });
     assert.equal(outcome.preservedPath, plan.path);
     await assertRetained(plan, outcome.branch, head);
     const {stdout} = await execFileAsync('git', [
@@ -358,6 +411,53 @@ test('missing worktree cannot silently finalize successfully', async () => {
   }
 });
 
+test('directory disappearance does not imply Git registration removal', async () => {
+  const {repo, cleanup} = await makeTempRepo();
+  try {
+    const plan = await prepareWorktree(
+      repo,
+      'task_missing_directory',
+      'worker',
+    );
+    await rm(plan.path, {recursive: true});
+    const outcome = await finalizeWorktree(plan, {
+      agentName: 'worker',
+      taskSummary: 'file',
+    });
+    assert.match(outcome.error!, /worktree is missing/);
+    assert.deepEqual(outcome.cleanup, {
+      directoryRemoved: true,
+      registrationRemoved: false,
+    });
+    assert.equal(outcome.hasCommittedChanges, null);
+    assert.equal(outcome.hadUncommittedChanges, null);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('an unavailable Git query leaves registration cleanup unknown', async () => {
+  const {repo, cleanup} = await makeTempRepo();
+  try {
+    const plan = await prepareWorktree(
+      repo,
+      'task_unknown_registration',
+      'worker',
+    );
+    const outcome = await preserveWorktreeOnCrash({
+      ...plan,
+      repoRoot: join(repo, 'not-a-directory'),
+    });
+    assert.deepEqual(outcome.cleanup, {
+      directoryRemoved: false,
+      registrationRemoved: null,
+    });
+    assert.ok(existsSync(plan.path));
+  } finally {
+    await cleanup();
+  }
+});
+
 test('preserveWorktreeOnCrash leaves the worktree alone', async (t) => {
   if (!(await gitIsAvailable())) {
     t.skip('git not available');
@@ -367,8 +467,13 @@ test('preserveWorktreeOnCrash leaves the worktree alone', async (t) => {
   try {
     const plan = await prepareWorktree(repo, 'task_crash', 'worker');
     await writeFile(join(plan.path, 'partial.md'), 'partial\n');
-    const outcome = preserveWorktreeOnCrash(plan);
-    assert.equal(outcome.hasChanges, true);
+    const outcome = await preserveWorktreeOnCrash(plan);
+    assert.equal(outcome.hasCommittedChanges, null);
+    assert.equal(outcome.hadUncommittedChanges, null);
+    assert.deepEqual(outcome.cleanup, {
+      directoryRemoved: false,
+      registrationRemoved: false,
+    });
     assert.equal(outcome.preservedPath, plan.path);
     // The worktree should still exist on disk.
     assert.ok(existsSync(plan.path));

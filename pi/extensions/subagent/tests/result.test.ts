@@ -17,6 +17,7 @@ import {describeResult} from '../main/description.js';
 import {
   MAX_RESULT_CHARS,
   type SubagentDetails,
+  completionText,
   readTaskResult,
   recentCompletedTasks,
   resultPath,
@@ -127,6 +128,37 @@ test('saved results round-trip privately without in-memory task registration', a
       resultPath(result.taskId),
     );
     assert.deepEqual(readdirSync(result.taskDir), ['result.json']);
+  });
+});
+
+test('saved completion notifications are short and point to the full report', async () => {
+  await withState(async () => {
+    const result = details();
+    result.finalReport!.summary = 'Long summary '.repeat(300);
+    result.finalReport!.data = {
+      deliverable: 'Do not repeat this payload in a notification',
+    };
+    saveResult(result);
+    const notice = completionText(result);
+    assert.ok(notice.length < 1500);
+    assert.ok(notice.includes(result.taskId));
+    assert.ok(notice.includes(result.resultPath!));
+    assert.match(notice, /Full report: subagent_status/);
+    assert.doesNotMatch(notice, /Do not repeat this payload/);
+    assert.deepEqual(
+      (await readTaskResult(result.taskId))!.finalReport,
+      result.finalReport,
+    );
+  });
+});
+
+test('completion still includes full result data when no snapshot was saved', async () => {
+  await withState(async () => {
+    const result = details();
+    result.retrievalNote = 'Result persistence failed';
+    const notice = completionText(result);
+    assert.match(notice, /Details of commit 4/);
+    assert.match(notice, /Result persistence failed/);
   });
 });
 

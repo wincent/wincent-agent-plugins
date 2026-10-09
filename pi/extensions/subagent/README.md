@@ -95,7 +95,7 @@ On session start, stale entries whose recorded pids are gone are marked `crashed
 
 ## Results and completed-task history
 
-Synchronous final tool results and background completion messages include model-visible status, full task ID, artifact paths, worktree outcome, and the full `finalReport`: summary, findings, branch/commits, and arbitrary `data`. The UI's `details` object is not the model-facing interface. Task-specific deliverables can live under `finalReport.data`, not just `summary`.
+Synchronous final tool results and per-task `subagent_status` responses include model-visible status, full task ID, artifact paths, worktree outcome, and the full `finalReport`: summary, findings, branch/commits, and arbitrary `data`. Background completion messages are short digests with a task ID and result path; retrieve the full report with `subagent_status` if the finalized result has not already been observed. If saving fails, the completion message still carries the full bounded result so finalization details are not lost. The UI's `details` object is not the model-facing interface. Task-specific deliverables can live under `finalReport.data`, not just `summary`.
 
 Large results produce an explicitly marked preview (32,000 characters of result data plus identity/path information) and a path to the full saved result. If persistence fails, the result still includes the report and a diagnostic; the audit log remains the fallback inspection surface.
 
@@ -109,7 +109,7 @@ Children can report `outcome` as `completed`, `partial`, `blocked`, `declined`, 
 
 Artifacts have `kind`, `location`, and optional `description`. Verification entries have `check`, `result` (`passed`, `failed`, or `not_run`), and optional `details`. Results separate `artifacts.reported` from `artifacts.retained`, and `verification.reported` from `verification.harness`. The controller verifies process completion, Git inventory, branch retention, and worktree cleanup; it does not independently rerun the child's checks. A completed testing task can legitimately report failing tests. Saved snapshots retain the raw `details` and derived `result` description.
 
-Background report notifications are marked not finalized. Completion notifications lead with the result description, including blockers/remaining work and any harness failure, instead of a bare `done (ok)`.
+Background report notifications are marked not finalized. Completion notifications lead with a bounded result description, followed by lifecycle/outcome, retained branch or preserved path when available, and a retrieval pointer. They do not repeat the full artifacts and verification tables. Already-queued notifications are not retracted when a status query observes completion first.
 
 Workers remain commit-producing agents even with `worktree: false`. A no-commit request should be declined without edits and with an explicit reason; use the main agent or a custom non-committing agent instead.
 
@@ -135,7 +135,11 @@ For `worktree: true` agents (case 2), the extension:
 
 Configure `.agent-worktrees/` in your global Git ignore file before using isolated workers. The extension does not edit your ignore configuration. Keeping worktrees inside the source checkout avoids a sibling-directory write outside a repository-scoped sandbox grant; access to shared Git metadata and the task files/socket still needs validation, especially when the source is a linked worktree or the sandbox starts in a subdirectory.
 
-The branch is the artefact; the worktree directory is internal. The main agent decides whether to merge, PR, or abandon.
+An isolated worker starts on detached HEAD and commits there. An empty `git branch --show-current` is expected, not a setup failure: the harness creates the retained branch after the worker exits. Do not create or switch branches merely to make that command nonempty. The branch is the artefact; the worktree directory is internal. The main agent decides whether to merge, PR, or abandon.
+
+New results replace the ambiguous `worktree.hasChanges` with `hasCommittedChanges` (new commits since the starting commit, including any harness-created commit) and `hadUncommittedChanges` (dirty files observed at the start of finalization). These describe output history, not whether a worktree currently exists. A clean, removed checkout can have `hasCommittedChanges: true` and `hadUncommittedChanges: false`; `null` means the inventory was not established.
+
+Cleanup is independently observed during controller finalization: `worktree.cleanup.directoryRemoved` checks the directory, while `worktree.cleanup.registrationRemoved` queries Git's worktree registrations. `false` records a remaining directory/registration, including intentionally preserved work; `null` means the check could not establish the state. `execution.processExited` records an observed child exit; `execution.processGroupExited` records whether the owned process group passed the disappearance check. Exit code and signal remain separate. Missing fields in older snapshots do not prove successful cleanup, and shared-cwd tasks have no worktree cleanup object.
 
 ## Files
 

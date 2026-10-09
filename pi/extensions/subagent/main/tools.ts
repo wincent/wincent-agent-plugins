@@ -32,9 +32,9 @@ import {
 } from './registry.js';
 import {
   type SubagentDetails,
+  completionText,
   readTaskResult,
   recentCompletedTasks,
-  resultText,
   saveResult,
   taskResult,
 } from './result.js';
@@ -447,6 +447,8 @@ async function runSubagentTool(
         status: result.status,
         exitCode: result.exit?.code,
         signal: result.exit?.signal,
+        processExited: result.processExited,
+        processGroupExited: result.processGroupExited,
       };
       try {
         updateMeta(taskId, {status: 'finalizing'});
@@ -472,7 +474,7 @@ async function runSubagentTool(
                 ? details.finalReport?.commits
                 : undefined,
             })
-            : preserveWorktreeOnCrash(worktreePlan);
+            : await preserveWorktreeOnCrash(worktreePlan);
           details.worktree = {
             enabled: true,
             baseCommit: worktreePlan.baseCommit,
@@ -492,7 +494,7 @@ async function runSubagentTool(
         if (worktreePlan) {
           details.worktree = {
             enabled: true,
-            ...preserveWorktreeOnCrash(worktreePlan),
+            ...(await preserveWorktreeOnCrash(worktreePlan)),
           };
         }
       } finally {
@@ -589,7 +591,7 @@ async function runSubagentTool(
     if (worktreePlan) {
       details.worktree = {
         enabled: true,
-        ...preserveWorktreeOnCrash(worktreePlan),
+        ...(await preserveWorktreeOnCrash(worktreePlan)),
       };
     }
     if (details.taskId) {
@@ -611,16 +613,6 @@ async function runSubagentTool(
     persistResult(details);
     return taskResult(details);
   }
-}
-
-function completionText(details: SubagentDetails): string {
-  const description = describeResult(details).resultDescription;
-  const headline = description.length > 1000
-    ? `${
-      description.slice(0, 1000)
-    }... (description truncated; full result follows)`
-    : description;
-  return `${headline}\n\n${resultText(details)}`;
 }
 
 function persistResult(details: SubagentDetails): void {
@@ -662,7 +654,7 @@ function buildSystemPromptFile(agent: AgentConfig, isolated: boolean): string {
     '',
     'You are a headless subagent. Use report for results, progress for short updates, and ask when you genuinely need clarification from the controlling agent or user.',
     isolated
-      ? 'Workspace mode: isolated worktree, initially on detached HEAD.'
+      ? 'Workspace mode: isolated worktree on detached HEAD. An empty git branch --show-current is expected; the controller creates the retained branch after you exit.'
       : 'Workspace mode: shared checkout. Do not assume isolation or that the controller will create a branch.',
     'In your final report, explicitly set outcome to completed, partial, blocked, declined, failed, or unknown. Describe delivered outputs and remaining work, with blockers, artifacts, and verification. A normal exit is not proof of task completion. A completed testing task can report failed checks; task fulfillment and check results are separate. Do not claim tests ran if they did not. Branch retention is verified by the controller after you exit.',
     '',
