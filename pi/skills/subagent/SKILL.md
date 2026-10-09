@@ -37,7 +37,7 @@ Useful fan-out idiom: launch several case-1 helpers in a single assistant turn. 
 
 ### Case 2: worktree per worker
 
-The user wants the same kind of change made in many places, each producing its own commit and (later) its own PR. The `worker` agent handles this. Workers are commit-producing agents; `worktree: false` disables isolation but does not enable a no-commit mode. For untracked-only edits, use the main agent or a custom non-committing agent. Default: `worktree: true`. The extension provisions an isolated worktree per call, lets the worker commit, and binds the commits to a branch named `subagent/worker/<task_id>` in the main repo. The worktree itself is pruned; the branch is the artefact.
+The user wants the same kind of change made in many places, each producing its own commit and (later) its own PR. The `worker` agent handles this. Workers are commit-producing agents; `worktree: false` disables isolation but does not enable a no-commit mode. For untracked-only edits, use the main agent or a custom non-committing agent. Default: `worktree: true`. The extension provisions an isolated worktree per call under `<source-worktree-root>/.agent-worktrees/<task_id>/`, lets the worker commit, and binds the commits to a branch named `subagent/worker/<task_id>` in the shared repository. Configure `.agent-worktrees/` in your global Git ignore file; the harness does not modify ignore settings. The worktree itself is pruned; the branch is the artefact.
 
 For a campaign of multiple workers, see the `/sweep` workflow prompt: scout out targets, confirm with the user, then call `subagent` once per target. Sequential (default) is safer; add `background: true` per call if the user explicitly wants parallelism.
 

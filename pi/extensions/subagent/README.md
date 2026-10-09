@@ -123,7 +123,7 @@ For inspection outside Pi, use `tail -F` on the task's `bus.jsonl`, `stdout.log`
 
 For `worktree: true` agents (case 2), the extension:
 
-1. Creates a sibling directory `<repo>-subagent-worktrees/<task_id>/`.
+1. Creates `<source-worktree-root>/.agent-worktrees/<task_id>/`, including when the source is itself a linked worktree. Requests from a subdirectory use that checkout's root.
 2. Records the starting commit and runs `git worktree add --detach` against that exact commit.
 3. Sets the subagent's cwd to that worktree.
 4. After the subagent exits:
@@ -132,6 +132,8 @@ For `worktree: true` agents (case 2), the extension:
    - Creates and verifies branch `subagent/<agent>/<task_id>` for committed output before removing the worktree. Existing branches are never overwritten.
    - Only a clean checkout with no new commits is treated as a no-op.
    - If reported commit IDs disagree with Git's detected commits, or retention/cleanup fails: reports failure and preserves the worktree when present. Detected commits and the retained branch remain visible under `worktree`; the child's original `finalReport` is not overwritten.
+
+Configure `.agent-worktrees/` in your global Git ignore file before using isolated workers. The extension does not edit your ignore configuration. Keeping worktrees inside the source checkout avoids a sibling-directory write outside a repository-scoped sandbox grant; access to shared Git metadata and the task files/socket still needs validation, especially when the source is a linked worktree or the sandbox starts in a subdirectory.
 
 The branch is the artefact; the worktree directory is internal. The main agent decides whether to merge, PR, or abandon.
 

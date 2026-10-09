@@ -51,13 +51,22 @@ async function makeTempRepo(): Promise<
   await execFileAsync('git', ['-C', repo, 'config', 'user.name', 'test']);
   await execFileAsync('git', ['-C', repo, 'config', 'commit.gpgsign', 'false']);
   await execFileAsync('git', ['-C', repo, 'config', 'tag.gpgsign', 'false']);
+  const ignore = join(parent, 'gitignore');
+  await writeFile(ignore, '.agent-worktrees/\n');
+  await execFileAsync('git', [
+    '-C',
+    repo,
+    'config',
+    'core.excludesFile',
+    ignore,
+  ]);
   await writeFile(join(repo, 'README.md'), 'hello\n');
   await execFileAsync('git', ['-C', repo, 'add', '-A']);
   await execFileAsync('git', ['-C', repo, 'commit', '-q', '-m', 'initial']);
   return {repo, cleanup: () => rm(parent, {recursive: true, force: true})};
 }
 
-test('prepareWorktree creates a sibling worktree directory', async (t) => {
+test('prepareWorktree creates an ignored directory inside the source worktree', async (t) => {
   if (!(await gitIsAvailable())) {
     t.skip('git not available');
     return;
@@ -65,7 +74,17 @@ test('prepareWorktree creates a sibling worktree directory', async (t) => {
   const {repo, cleanup} = await makeTempRepo();
   try {
     const plan = await prepareWorktree(repo, 'task_x', 'worker');
-    assert.ok(plan.path.includes('repo-subagent-worktrees'));
+    assert.equal(
+      plan.path,
+      join(realpathSync(repo), '.agent-worktrees', 'task_x'),
+    );
+    const {stdout: status} = await execFileAsync('git', [
+      '-C',
+      repo,
+      'status',
+      '--porcelain',
+    ]);
+    assert.equal(status, '');
     assert.ok(existsSync(plan.path));
     assert.ok(existsSync(join(plan.path, 'README.md')));
     // On macOS, `git rev-parse --show-toplevel` returns the resolved real
@@ -82,6 +101,45 @@ test('prepareWorktree creates a sibling worktree directory', async (t) => {
       '--force',
       plan.path,
     ]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('placement follows a linked worktree root, including when called from a subdirectory', async () => {
+  const {repo, cleanup} = await makeTempRepo();
+  try {
+    const parent = await prepareWorktree(repo, 'task_parent', 'worker');
+    const cwd = join(parent.path, 'subdirectory');
+    await mkdir(cwd);
+    const child = await prepareWorktree(cwd, 'task_child', 'worker');
+    assert.equal(child.repoRoot, parent.path);
+    assert.equal(
+      child.path,
+      join(parent.path, '.agent-worktrees', 'task_child'),
+    );
+    const head = await commitFile(child.path, 'output.txt');
+    const result = await finalizeWorktree(child, {
+      agentName: 'worker',
+      taskSummary: 'file',
+    });
+    assert.equal(result.error, undefined);
+    await assertRetained(child, result.branch, head);
+    assert.ok(!existsSync(child.path));
+    const {stdout: status} = await execFileAsync('git', [
+      '-C',
+      parent.path,
+      'status',
+      '--porcelain',
+    ]);
+    assert.equal(status, '');
+    const parentResult = await finalizeWorktree(parent, {
+      agentName: 'worker',
+      taskSummary: 'noop',
+    });
+    assert.equal(parentResult.error, undefined);
+    assert.ok(!existsSync(parent.path));
+    await assertRetained(parent, result.branch, head);
   } finally {
     await cleanup();
   }

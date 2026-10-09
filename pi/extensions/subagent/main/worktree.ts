@@ -3,7 +3,7 @@ import {execFile} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {existsSync} from 'node:fs';
 import {mkdir} from 'node:fs/promises';
-import {basename, dirname, join, resolve} from 'node:path';
+import {join} from 'node:path';
 import {promisify} from 'node:util';
 
 import type {CommitInfo, Verification} from '../bus/envelope.js';
@@ -61,10 +61,7 @@ export async function prepareWorktree(
   } catch {
     throw new Error('worktree creation requires at least one commit (no HEAD)');
   }
-  const worktreesParent = resolve(
-    dirname(repoRoot),
-    `${basename(repoRoot)}-subagent-worktrees`,
-  );
+  const worktreesParent = join(repoRoot, '.agent-worktrees');
   await mkdir(worktreesParent, {recursive: true, mode: 0o755});
   const path = join(worktreesParent, taskId);
   const branch = `subagent/${agentName}/${

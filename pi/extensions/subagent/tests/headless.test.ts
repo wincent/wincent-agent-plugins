@@ -199,6 +199,9 @@ for (
       git(['config', 'user.email', 'test@example.com']);
       git(['config', 'commit.gpgsign', 'false']);
       git(['config', 'core.hooksPath', '/dev/null']);
+      const ignore = join(dir, 'gitignore');
+      writeFileSync(ignore, '.agent-worktrees/\n');
+      git(['config', 'core.excludesFile', ignore]);
       writeFileSync(join(repo, 'README.md'), 'initial\n');
       git(['add', 'README.md']);
       git(['commit', '-qm', 'initial']);
