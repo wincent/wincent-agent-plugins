@@ -4,7 +4,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
-import {symlinkSync, writeFileSync} from 'node:fs';
+import {existsSync, symlinkSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {type Static, Type} from 'typebox';
 
@@ -29,11 +29,21 @@ import {
   remove,
   trackBus,
 } from './registry.js';
+import {
+  type SubagentDetails,
+  readTaskResult,
+  recentCompletedTasks,
+  resultText,
+  saveResult,
+  taskResult,
+} from './result.js';
 import {installMainRoutingFor, routeTaskCompletion} from './routing.js';
 import {
   auditLogPath,
   ensureTaskDir,
+  readMeta,
   systemPromptPath,
+  taskDir,
   updateMeta,
   writeMeta,
 } from './state.js';
@@ -77,30 +87,22 @@ const SubagentParams = Type.Object({
   ),
 });
 
-interface SubagentDetails {
-  taskId: string;
-  agent: string;
-  task: string;
-  mode: 'sync' | 'background';
-  pid: number | null;
-  taskDir: string;
-  worktree: {
-    enabled: boolean;
-    branch?: string;
-    commits?: {sha: string; subject: string}[];
-    preservedPath?: string;
-  };
-  status: 'spawning' | 'running' | 'ok' | 'failed' | 'aborted' | 'crashed';
-  progress: string[];
-  finalReport?: {
-    summary: string;
-    findings?: unknown;
-    branch?: string;
-    commits?: {sha: string; subject: string}[];
-    data?: unknown;
-  };
-  error?: string;
-}
+const StatusParams = Type.Object({
+  task_id: Type.Optional(
+    Type.String({
+      description:
+        'Retrieve an active or completed task, including its full report.',
+    }),
+  ),
+  limit: Type.Optional(
+    Type.Integer({
+      minimum: 0,
+      maximum: 50,
+      description:
+        'Number of recent completed tasks to list (default 10). Use 0 for active tasks only. Ignored with task_id.',
+    }),
+  ),
+});
 
 export function registerMainTools({pi}: {pi: ExtensionAPI}): void {
   let session = new AbortController();
@@ -196,37 +198,50 @@ export function registerMainTools({pi}: {pi: ExtensionAPI}): void {
     },
   });
 
-  pi.registerTool({
+  pi.registerTool<typeof StatusParams, unknown>({
     name: 'subagent_status',
     label: 'Subagent status',
-    description: 'List active subagents or details for one task_id.',
-    parameters: Type.Object({task_id: Type.Optional(Type.String())}),
+    description:
+      'List active tasks and recent completed tasks from local history, including IDs and log paths. With task_id, retrieve the full result of an active or completed task, including finalReport.data. Completed results survive session restart.',
+    parameters: StatusParams,
     async execute(_id, params) {
-      const tasks = params.task_id
-        ? [lookup(params.task_id)].filter((task): task is ActiveTask => !!task)
-        : listActive();
+      if (params.task_id !== undefined) {
+        taskDir(params.task_id);
+        const active = lookup(params.task_id);
+        const details = active
+          ? activeDetails(active)
+          : await readTaskResult(params.task_id);
+        return details
+          ? taskResult(details)
+          : textResult(
+            `No active or saved subagent with task_id=${params.task_id}.`,
+          );
+      }
+      const active = listActive();
+      const completed = recentCompletedTasks(
+        params.limit ?? 10,
+        new Set(active.map((task) => task.taskId)),
+      );
+      const summary = (details: SubagentDetails) => ({
+        taskId: details.taskId,
+        agent: details.agent,
+        status: details.status,
+        mode: details.mode,
+        task: details.task.slice(0, 200),
+        summary: details.finalReport?.summary.slice(0, 500),
+        taskDir: details.taskDir,
+        cwd: details.cwd,
+        resultPath: details.resultPath,
+        stdoutPath: join(details.taskDir, 'stdout.log'),
+        stderrPath: join(details.taskDir, 'stderr.log'),
+      });
+      const details = {
+        active: active.map((task) => summary(activeDetails(task))),
+        recentCompleted: completed.map(summary),
+      };
       return {
-        content: [{
-          type: 'text',
-          text: tasks.length
-            ? tasks.map((task) =>
-              `${task.taskId} ${task.agentName} mode=${task.mode} status=${task.status} task=${
-                task.task.slice(0, 60)
-              }`
-            ).join('\n')
-            : 'No active subagents.',
-        }],
-        details: {
-          tasks: tasks.map((task) => ({
-            taskId: task.taskId,
-            agent: task.agentName,
-            status: task.status,
-            mode: task.mode,
-            pid: task.process.pid,
-            stdoutPath: task.process.stdoutPath,
-            stderrPath: task.process.stderrPath,
-          })),
-        },
+        content: [{type: 'text', text: JSON.stringify(details, null, 2)}],
+        details,
       };
     },
   });
@@ -251,6 +266,7 @@ async function runSubagentTool(
     mode: params.background ? 'background' : 'sync',
     pid: null,
     taskDir: '',
+    cwd: params.cwd ?? ctx.cwd,
     worktree: {enabled: false},
     status: 'spawning',
     progress: [],
@@ -289,6 +305,7 @@ async function runSubagentTool(
         // The symlink is only an inspection convenience.
       }
     }
+    details.cwd = cwd;
     signal.throwIfAborted();
     const parentId = `pi-main-${process.pid}`;
     writeMeta({
@@ -304,6 +321,7 @@ async function runSubagentTool(
       subPid: null,
       cwd,
       worktreePath: worktreePlan?.path ?? null,
+      mode: params.background ? 'background' : 'sync',
       model,
       thinkingLevel,
     });
@@ -334,7 +352,7 @@ async function runSubagentTool(
       task: params.task,
       process: launched.process,
       bus,
-      mode: details.mode,
+      mode: params.background ? 'background' : 'sync',
       worktreePath: worktreePlan?.path ?? null,
       startedAt: Date.now(),
       cleanup: [],
@@ -354,7 +372,9 @@ async function runSubagentTool(
         return;
       }
       if (env.type === 'report') {
-        details.finalReport = {...env.payload};
+        details.finalReport = {
+          ...(active.finalReport ?? active.lastReport ?? env.payload),
+        };
       }
       if (active.mode !== 'sync') {
         return;
@@ -460,6 +480,7 @@ async function runSubagentTool(
         details.status = 'failed';
         details.error = `metadata update failed: ${(error as Error).message}`;
       }
+      persistResult(details);
       active.status = details.status;
       emitLifecycle(pi, 'subagent:done', {
         taskId,
@@ -468,24 +489,22 @@ async function runSubagentTool(
         worktree: details.worktree,
         llmAnswersTotal: active.llmAnswersTotal,
       });
-      const text = details.error ?? details.finalReport?.summary ??
-        `Subagent ${agent.name} finished with status=${details.status}.`;
       if (active.mode === 'background' && !active.ownerClosed) {
-        routeTaskCompletion(
-          pi,
-          ctx,
-          active,
-          text,
-          details.worktree.preservedPath,
-        );
+        routeTaskCompletion(pi, ctx, active, resultText(details));
       }
-      return {content: [{type: 'text', text}], details};
+      return taskResult(details);
     })();
     active.completion = completion;
     if (params.background) {
       // Observe unexpected finalizer failures immediately, not just at shutdown.
       void completion.catch((error) => {
         active.status = 'failed';
+        details.status = 'failed';
+        details.error = `Finalization failed: ${(error as Error).message}`;
+        if (worktreePlan && existsSync(worktreePlan.path)) {
+          details.worktree.preservedPath = worktreePlan.path;
+        }
+        persistResult(details);
         emitLifecycle(pi, 'subagent:failed', {
           taskId,
           error: (error as Error).message,
@@ -501,8 +520,7 @@ async function runSubagentTool(
             pi,
             ctx,
             active,
-            `Finalization failed: ${(error as Error).message}`,
-            worktreePlan?.path,
+            resultText(details),
           );
         }
       });
@@ -553,11 +571,38 @@ async function runSubagentTool(
         error: details.error,
       });
     }
-    return {
-      content: [{type: 'text', text: `error: ${details.error}`}],
-      details,
-    };
+    persistResult(details);
+    return taskResult(details);
   }
+}
+
+function persistResult(details: SubagentDetails): void {
+  if (!details.taskId) {
+    return;
+  }
+  try {
+    saveResult(details);
+  } catch (error) {
+    details.retrievalNote = `Could not save result.json: ${
+      (error as Error).message
+    }. The report is still included here; inspect bus.jsonl if needed.`;
+  }
+}
+
+function activeDetails(task: ActiveTask): SubagentDetails {
+  return {
+    taskId: task.taskId,
+    agent: task.agentName,
+    task: task.task,
+    mode: task.mode,
+    pid: task.process.pid,
+    taskDir: taskDir(task.taskId),
+    cwd: readMeta(task.taskId)?.cwd,
+    status: task.status,
+    progress: [],
+    worktree: {enabled: !!task.worktreePath},
+    finalReport: task.finalReport ?? task.lastReport,
+  };
 }
 
 function textResult(text: string): AgentToolResult<undefined> {

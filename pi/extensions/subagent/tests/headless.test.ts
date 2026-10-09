@@ -178,44 +178,125 @@ for (
   });
 }
 
-for (const scenario of ['ask', 'background', 'metadata-failure']) {
+function toolTexts(requests: string, toolName: string): string[] {
+  const texts: string[] = [];
+  for (const line of requests.trim().split('\n')) {
+    for (const message of JSON.parse(line).messages) {
+      if (message.role === 'toolResult' && message.toolName === toolName) {
+        for (const part of message.content) {
+          if (part.type === 'text') {
+            texts.push(part.text);
+          }
+        }
+      }
+    }
+  }
+  return texts;
+}
+
+async function runController(dir: string, scenario: string): Promise<void> {
+  const child = spawn(process.execPath, [
+    ...cliArgs,
+    '-p',
+    '--no-session',
+    '--provider',
+    model.provider,
+    '--model',
+    model.id,
+    '--thinking',
+    'high',
+    '--tools',
+    'subagent,subagent_status',
+    scenario,
+  ], {cwd: dir, stdio: ['ignore', 'pipe', 'pipe']});
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (data) => stdout += data);
+  child.stderr.on('data', (data) => stderr += data);
+  const timer = setTimeout(() => child.kill('SIGTERM'), 25_000);
+  try {
+    const code = await new Promise((resolve, reject) => {
+      child.once('exit', resolve);
+      child.once('error', reject);
+    });
+    assert.equal(code, 0, stderr);
+    assert.doesNotMatch(stderr, /Extension error|Failed to load extension/);
+    assert.match(stdout, /headless final answer/);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+for (
+  const scenario of [
+    'ask',
+    'background',
+    'metadata-failure',
+    'history',
+    'result-failure',
+  ]
+) {
   test(`real controlling Pi: ${scenario}`, {timeout: 30_000}, async () => {
     const {dir, cleanup} = setup();
     try {
-      const child = spawn(process.execPath, [
-        ...cliArgs,
-        '-p',
-        '--no-session',
-        '--provider',
-        model.provider,
-        '--model',
-        model.id,
-        '--thinking',
-        'high',
-        '--tools',
-        'subagent',
-        scenario,
-      ], {
-        cwd: dir,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (data) => stdout += data);
-      child.stderr.on('data', (data) => stderr += data);
-      const timer = setTimeout(() => child.kill('SIGTERM'), 25_000);
-      const code = await new Promise((resolve, reject) => {
-        child.once('exit', resolve);
-        child.once('error', reject);
-      });
-      clearTimeout(timer);
-      assert.equal(code, 0, stderr);
-      assert.doesNotMatch(stderr, /Extension error|Failed to load extension/);
-      assert.match(stdout, /headless final answer/);
+      await runController(dir, scenario);
       const requests = readFileSync(join(dir, 'requests.jsonl'), 'utf8');
-      if (scenario === 'ask') {
-        assert.match(requests, /headless report/);
-        assert.match(requests, /"status":"ok"/);
+      if (
+        scenario === 'ask' || scenario === 'history' ||
+        scenario === 'result-failure'
+      ) {
+        // Inspect only the tool's content sent to the provider, never UI details.
+        const visible = JSON.parse(toolTexts(requests, 'subagent')[0]);
+        assert.equal(visible.status, 'ok');
+        assert.match(visible.taskId, /^task_/);
+        assert.equal(visible.finalReport.summary, 'headless report');
+        assert.equal(visible.finalReport.data.commits.length, 5);
+        assert.deepEqual(visible.finalReport.data.commits[4], {
+          sha: 'sha-4',
+          subject: 'subject-4',
+          summary: 'commit summary 4',
+        });
+        assert.equal(
+          visible.finalReport.findings[0].message,
+          'detailed finding',
+        );
+        assert.equal(visible.finalReport.branch, 'subagent/test');
+        assert.equal(visible.finalReport.commits[0].sha, 'worker-sha');
+        if (scenario === 'result-failure') {
+          assert.equal(visible.resultPath, undefined);
+          assert.match(visible.retrievalNote, /Could not save result.json/);
+        } else {
+          assert.equal(
+            JSON.parse(readFileSync(visible.resultPath, 'utf8')).details.taskId,
+            visible.taskId,
+          );
+        }
+        if (scenario === 'history') {
+          const statuses = toolTexts(requests, 'subagent_status').map((text) =>
+            JSON.parse(text)
+          );
+          assert.ok(
+            statuses.some((status) =>
+              status.active?.length === 0 &&
+              status.recentCompleted?.[0]?.taskId === visible.taskId
+            ),
+          );
+          assert.ok(
+            statuses.some((status) =>
+              status.taskId === visible.taskId &&
+              status.finalReport?.data.commits.length === 5
+            ),
+          );
+          await runController(dir, `retrieve:${visible.taskId}`);
+          const afterRestart = toolTexts(
+            readFileSync(join(dir, 'requests.jsonl'), 'utf8'),
+            'subagent_status',
+          );
+          assert.deepEqual(
+            JSON.parse(afterRestart.at(-1)!).finalReport,
+            visible.finalReport,
+          );
+        }
       } else if (scenario === 'background') {
         assert.equal(
           requests.trim().split('\n').length,
@@ -233,6 +314,11 @@ for (const scenario of ['ask', 'background', 'metadata-failure']) {
         assert.throws(() => process.kill(meta.subPid, 0), /ESRCH/);
       } else {
         assert.match(requests, /metadata update failed/);
+        assert.match(
+          requests,
+          /commit summary 4/,
+          'background completion must expose report data too',
+        );
       }
       assert.doesNotMatch(requests, /"status":"failed"/);
     } finally {

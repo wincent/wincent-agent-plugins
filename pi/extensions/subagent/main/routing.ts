@@ -50,7 +50,7 @@ export function installMainRoutingFor(
     if (!inject || task.mode !== 'background') {
       // Sync tasks: the in-flight tool call handles surfacing.
       // Lifecycle events fire regardless. `ask` is handled inline by
-      // runSyncWait, not here, to avoid double-replying on the bus.
+      // the synchronous tool subscriber, not here, to avoid double replies.
       if (env.type !== 'ask') {
         emitLifecycleFromEnvelope(pi, task, env);
       }
@@ -114,7 +114,7 @@ function routeEnvelopeAsUserMessage(
   task: ActiveTask,
   env: Envelope,
 ): void {
-  const prefix = `[subagent ${task.agentName}:${shortId(task.taskId)}]`;
+  const prefix = `[subagent ${task.agentName}:${task.taskId}]`;
   let text: string | null = null;
   switch (env.type) {
     case 'progress':
@@ -150,14 +150,10 @@ export function routeTaskCompletion(
   pi: ExtensionAPI,
   ctx: ExtensionContext | undefined,
   task: ActiveTask,
-  summary: string,
-  preservedPath?: string,
+  result: string,
 ): void {
-  const text = `[subagent ${task.agentName}:${
-    shortId(task.taskId)
-  }] done (${task.status}). ${summary}${
-    preservedPath ? ` Worktree preserved: ${preservedPath}` : ''
-  }`;
+  const text =
+    `[subagent ${task.agentName}:${task.taskId}] done (${task.status}).\n${result}`;
   try {
     pi.sendUserMessage(
       text,
@@ -178,8 +174,4 @@ function describeReport(summary: string, branch?: string): string {
     parts.push(`(branch: ${branch})`);
   }
   return parts.join(' ');
-}
-
-function shortId(taskId: string): string {
-  return taskId.replace(/^msg_/, '').slice(0, 8);
 }

@@ -23,7 +23,7 @@ When loaded in main mode (no `PI_SUBAGENT_TASK_ID` in the environment), the exte
 | `subagent`        | Spawn a subagent and (by default) wait synchronously for its report. |
 | `subagent_steer`  | Send a steering message to a running subagent.                       |
 | `subagent_cancel` | Cancel a running subagent (graceful, then SIGTERM, then SIGKILL).    |
-| `subagent_status` | List active subagents or show status for one task_id.                |
+| `subagent_status` | List active/recent completed tasks or retrieve a task's full report. |
 
 When loaded in sub mode (env vars set by the spawner), the extension registers three tools:
 
@@ -83,6 +83,7 @@ Per-call `worktree` and `ask_policy` arguments override agent frontmatter. Retir
 Per-task state lives at `${XDG_STATE_HOME:-~/.local/state}/pi/subagent/<task_id>/`:
 
 - `meta.json`: task metadata (status, pids, inherited model/thinking, exit code/signal, started/ended timestamps)
+- `result.json`: full final result, written atomically with mode `0600` after finalization; retained across sessions
 - `main.sock`: Unix domain socket the main side listens on (cleaned up on close)
 - `bus.jsonl`: append-only audit log of every envelope in both directions
 - `system-prompt.md`: the rendered system prompt the subagent was given
@@ -91,6 +92,14 @@ Per-task state lives at `${XDG_STATE_HOME:-~/.local/state}/pi/subagent/<task_id>
 - `worktree`: symlink to the isolated worktree, when `worktree: true`
 
 On session start, stale entries whose recorded pids are gone are marked `crashed` automatically.
+
+## Results and completed-task history
+
+Synchronous final tool results and background completion messages include model-visible status, full task ID, artifact paths, worktree outcome, and the full `finalReport`: summary, findings, branch/commits, and arbitrary `data`. The UI's `details` object is not the model-facing interface. Task-specific deliverables can live under `finalReport.data`, not just `summary`.
+
+Large results produce an explicitly marked preview (32,000 characters of result data plus identity/path information) and a path to the full saved result. If persistence fails, the result still includes the report and a diagnostic; the audit log remains the fallback inspection surface.
+
+`subagent_status` without arguments lists this controller's active tasks and ten recent completed tasks from the local state directory, including previous sessions. `limit` selects 0 to 50 completed tasks; 0 means active only. Listings provide IDs, brief summaries, and paths. `subagent_status({task_id: "..."})` retrieves the full result for an active or completed task. Older tasks without a saved result can recover their report from the audit log; missing/corrupt artifacts produce an explicit diagnostic rather than hiding the task. Pruning task directories removes their history as well.
 
 ## Watching progress
 
@@ -126,6 +135,7 @@ pi/extensions/subagent/
     agents.ts               # discovery of agent .md files
     events.ts               # pi.events lifecycle emitters
     registry.ts             # in-process map of active tasks
+    result.ts               # model-visible results, persistence, completed history
     routing.ts              # extension-scoped routing for background tasks
     spawn.ts                # direct headless spawn, logs, process signals
     launch.ts               # connection/startup race and failed-spawn cleanup

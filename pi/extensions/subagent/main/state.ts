@@ -5,6 +5,7 @@
  *
  *   ${XDG_STATE_HOME:-~/.local/state}/pi/subagent/<task_id>/
  *     meta.json           # status metadata
+ *     result.json         # final model-visible result, retained after completion
  *     main.sock           # UDS bind point (removed on close)
  *     bus.jsonl           # append-only audit log
  *     system-prompt.md    # rendered system prompt for the subagent
@@ -47,6 +48,7 @@ export interface MetaJson {
   subPid: number | null;
   cwd: string;
   worktreePath: string | null;
+  mode?: 'sync' | 'background';
   model?: SpawnArgs['model'];
   thinkingLevel?: SpawnArgs['thinkingLevel'];
   exitCode?: number | null;
@@ -62,6 +64,9 @@ export function stateRoot(): string {
 }
 
 export function taskDir(taskId: string): string {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(taskId)) {
+    throw new Error('Invalid subagent task ID');
+  }
   return join(stateRoot(), taskId);
 }
 
@@ -98,7 +103,24 @@ export function writeMeta(meta: MetaJson): void {
 export function readMeta(taskId: string): MetaJson | null {
   try {
     const data = readFileSync(metaPath(taskId), 'utf-8');
-    return JSON.parse(data) as MetaJson;
+    const meta = JSON.parse(data) as MetaJson;
+    if (
+      meta?.v !== 1 || meta.taskId !== taskId
+      || typeof meta.agent !== 'string' || typeof meta.task !== 'string'
+      || typeof meta.startedAt !== 'string'
+      || ![
+        'spawning',
+        'running',
+        'ok',
+        'aborted',
+        'failed',
+        'crashed',
+        'spawn_failed',
+      ].includes(meta.status)
+    ) {
+      return null;
+    }
+    return meta;
   } catch {
     return null;
   }

@@ -7,7 +7,7 @@ description: Delegate focused work to specialized subagents (scout, linter, test
 
 Delegate work to a focused subagent. Each subagent is a separate headless pi process with its own narrower system prompt and tool whitelist. Provider, model, and thinking level are inherited at dispatch time. Progress appears in the controlling UI; structured reports and private task logs remain available without tmux.
 
-The `subagent` tool spawns a subagent; the `subagent_steer`, `subagent_cancel`, and `subagent_status` tools manage in-flight subagents.
+The `subagent` tool spawns a subagent; `subagent_steer` and `subagent_cancel` manage in-flight tasks. `subagent_status` lists active/recent completed tasks and retrieves their reports.
 
 ## When to delegate
 
@@ -81,13 +81,17 @@ The `llm` policy is gated by a per-task budget of 10 successful LLM-answered que
 
 ## Reading the report
 
-Every subagent returns an `AgentToolResult`. The `details` payload is the structured part you should reason about:
+The final tool result includes model-visible JSON. Read that content, not just the UI's `details` object, which is not necessarily sent to the model. Background completion includes the same result content.
 
-- `details.status`: one of `ok`, `failed`, `aborted`, `crashed`. Anything other than `ok` deserves scrutiny.
-- `details.finalReport.summary`: the subagent's one-line summary. Surface this to the user.
-- `details.finalReport.findings`: structured items (file, line, severity, message). For lint/test/review, act on these.
-- `details.finalReport.branch` + `details.finalReport.commits`: for `worker` subagents, the branch the work landed on and the commits it contains.
-- `details.worktree.preservedPath`: if a worker failed mid-task, the worktree was kept for inspection at this path.
+- `taskId` and `status`: identify the task and its outcome. Anything other than `ok` deserves scrutiny. A background dispatch initially returns a running-task handle, not a completed report.
+- `finalReport.summary`: the subagent's short summary. It is not necessarily the complete answer.
+- `finalReport.findings`: structured items (file, line, severity, message). For lint/test/review, act on these.
+- `finalReport.branch` + `finalReport.commits`: for `worker` subagents, the branch the work landed on and the commits it contains.
+- `finalReport.data`: arbitrary task-specific structured output. Inspect it before answering: it may hold the actual deliverable, such as `data.commits` containing five detailed commit summaries even when the top-level summary is only one sentence. Do not confuse these arbitrary records with `finalReport.commits`, which describes worker-produced commits.
+- `worktree.preservedPath`: if a worker failed mid-task, the worktree was kept for inspection at this path.
+- `taskDir`, `resultPath`, `stdoutPath`, `stderrPath`, and `auditLogPath`: artifact locations for later inspection.
+
+The complete result is retained in private `result.json` when saving succeeds. Large model-visible results have an explicit truncation notice and artifact path; read the artifact to obtain omitted data rather than treating the preview as the full report. Storage/retrieval failures are reported in `retrievalNote`.
 
 When a subagent reports findings, decide whether to:
 
@@ -97,7 +101,11 @@ When a subagent reports findings, decide whether to:
 
 ## Inspection
 
-Use `subagent_status` for active tasks and their stdout/stderr log paths. The tool result includes `details.taskDir`; its `bus.jsonl`, `stdout.log`, and `stderr.log` remain after completion. The controlling UI shows a compact progress widget; there is no interactive child pane.
+Call `subagent_status` without arguments to list this controller's active tasks and the ten most recent completed tasks in the local state directory, including tasks from previous sessions. Use `limit` (0 to 50) to change the number of completed tasks; `limit: 0` lists only active tasks. Listings contain IDs, short summaries, and artifact paths, not every report's full contents.
+
+Call `subagent_status` with `task_id` to retrieve the full result, including `finalReport.data`, after completion or a session restart. For older tasks without `result.json`, it recovers reports from `bus.jsonl` when available and explains missing artifacts. Do not search the parent session transcript to recover report data.
+
+The controlling UI shows a compact progress widget; there is no interactive child pane. Task artifacts remain after completion unless explicitly pruned.
 
 Extension approvals, including OCR approval, are not inherited yet. A headless tool requiring local UI approval may fail; do not interpret a parent grant or an LLM answer to `ask` as child authorization.
 

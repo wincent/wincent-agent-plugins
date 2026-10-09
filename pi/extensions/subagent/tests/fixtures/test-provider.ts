@@ -4,7 +4,7 @@ import {
   createAssistantMessageEventStream,
 } from '@earendil-works/pi-ai';
 import type {ExtensionAPI} from '@earendil-works/pi-coding-agent';
-import {appendFileSync, chmodSync, writeFileSync} from 'node:fs';
+import {appendFileSync, chmodSync, mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 
 /** Deterministic, in-memory provider. No requests, credentials, or paid tokens. */
@@ -48,6 +48,18 @@ export default function (pi: ExtensionAPI): void {
     }
   });
   pi.events.on('subagent:spawned', (data) => {
+    if (scenario === 'result-failure') {
+      const {taskId} = data as {taskId: string};
+      mkdirSync(
+        join(
+          process.env.XDG_STATE_HOME!,
+          'pi',
+          'subagent',
+          taskId,
+          'result.json',
+        ),
+      );
+    }
     if (scenario === 'metadata-failure') {
       const {taskId} = data as {taskId: string};
       chmodSync(
@@ -123,7 +135,25 @@ export default function (pi: ExtensionAPI): void {
           return;
         }
         let call: {name: string; arguments: ToolCall['arguments']} | undefined;
-        if (!isChild && current === 0) {
+        if (!isChild && scenario.startsWith('retrieve:') && current === 0) {
+          call = {
+            name: 'subagent_status',
+            arguments: {task_id: scenario.slice('retrieve:'.length)},
+          };
+        } else if (!isChild && scenario === 'history' && current === 1) {
+          call = {name: 'subagent_status', arguments: {}};
+        } else if (!isChild && scenario === 'history' && current === 2) {
+          const result = context.messages.find((message) =>
+            message.role === 'toolResult' && message.toolName === 'subagent'
+          );
+          const text = result?.role === 'toolResult'
+            ? result.content.find((part) => part.type === 'text')
+            : undefined;
+          const taskId = text?.type === 'text'
+            ? JSON.parse(text.text).taskId
+            : 'missing';
+          call = {name: 'subagent_status', arguments: {task_id: taskId}};
+        } else if (!isChild && current === 0) {
           call = {
             name: 'subagent',
             arguments: {
@@ -146,7 +176,31 @@ export default function (pi: ExtensionAPI): void {
             arguments: {question: 'Which value?', timeoutMs: 10_000},
           };
         } else if (isChild && current === 2) {
-          call = {name: 'report', arguments: {summary: 'headless report'}};
+          call = {
+            name: 'report',
+            arguments: {
+              summary: 'headless report',
+              findings: [{
+                severity: 'info',
+                message: 'detailed finding',
+                file: 'example.ts',
+                line: 3,
+              }],
+              branch: 'subagent/test',
+              commits: [{sha: 'worker-sha', subject: 'worker subject'}],
+              data: {
+                theme: 'detailed theme',
+                commits: Array.from(
+                  {length: 5},
+                  (_value, i) => ({
+                    sha: `sha-${i}`,
+                    subject: `subject-${i}`,
+                    summary: `commit summary ${i}`,
+                  }),
+                ),
+              },
+            },
+          };
         }
         stream.push({type: 'start', partial: output});
         if (call) {
