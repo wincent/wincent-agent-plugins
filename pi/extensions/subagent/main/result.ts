@@ -33,6 +33,10 @@ export interface SubagentDetails {
   cwd?: string;
   worktree: {
     enabled: boolean;
+    baseCommit?: string;
+    hasChanges?: boolean;
+    warnings?: string[];
+    error?: string;
     branch?: string;
     commits?: {sha: string; subject: string}[];
     preservedPath?: string;

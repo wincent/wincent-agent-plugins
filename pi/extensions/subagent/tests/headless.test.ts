@@ -1,6 +1,7 @@
 import {strict as assert} from 'node:assert';
 import {execFileSync, spawn} from 'node:child_process';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -173,6 +174,64 @@ for (
         await terminateProcess(launched.process, 0, 500);
       }
       await bus?.close();
+      cleanup();
+    }
+  });
+}
+
+for (const scenario of ['worker-clean', 'worker-mismatch']) {
+  test(`real controlling Pi: ${scenario}`, {timeout: 30_000}, async () => {
+    const {dir, cleanup} = setup();
+    const repo = join(dir, 'repo');
+    const git = (args: string[]) =>
+      execFileSync('git', ['-C', repo, ...args], {encoding: 'utf8'}).trim();
+    try {
+      mkdirSync(repo);
+      git(['init', '--initial-branch=main', '-q']);
+      git(['config', 'user.name', 'test']);
+      git(['config', 'user.email', 'test@example.com']);
+      git(['config', 'commit.gpgsign', 'false']);
+      git(['config', 'core.hooksPath', '/dev/null']);
+      writeFileSync(join(repo, 'README.md'), 'initial\n');
+      git(['add', 'README.md']);
+      git(['commit', '-qm', 'initial']);
+      await runController(repo, scenario);
+      const result = JSON.parse(
+        toolTexts(
+          readFileSync(join(repo, 'requests.jsonl'), 'utf8'),
+          'subagent',
+        )[0],
+      );
+      assert.equal(result.worktree.commits.length, 1);
+      const head = result.worktree.commits[0].sha;
+      assert.equal(
+        git(['rev-parse', `refs/heads/${result.worktree.branch}`]),
+        head,
+      );
+      assert.equal(
+        execFileSync('git', ['-C', repo, 'show', `${head}:foo.txt`], {
+          encoding: 'utf8',
+        }),
+        'example\n',
+      );
+      if (scenario === 'worker-clean') {
+        assert.equal(result.status, 'ok');
+        assert.equal(result.finalReport.commits[0].sha, head);
+        assert.ok(!existsSync(result.cwd));
+      } else {
+        assert.equal(result.status, 'failed');
+        assert.match(result.error, /reported commits disagree/);
+        assert.notEqual(
+          result.finalReport.commits[0].sha,
+          head,
+          'preserve the original report for comparison',
+        );
+        assert.ok(existsSync(result.worktree.preservedPath));
+      }
+      const saved = JSON.parse(readFileSync(result.resultPath, 'utf8')).details;
+      assert.equal(saved.status, result.status);
+      assert.deepEqual(saved.worktree, result.worktree);
+    } finally {
       cleanup();
     }
   });

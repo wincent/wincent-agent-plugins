@@ -112,12 +112,14 @@ For inspection outside Pi, use `tail -F` on the task's `bus.jsonl`, `stdout.log`
 For `worktree: true` agents (case 2), the extension:
 
 1. Creates a sibling directory `<repo>-subagent-worktrees/<task_id>/`.
-2. Runs `git worktree add --detach` against HEAD.
+2. Records the starting commit and runs `git worktree add --detach` against that exact commit.
 3. Sets the subagent's cwd to that worktree.
 4. After the subagent exits:
-   - If changes exist: stages, commits with `subagent(<agent>): <truncated task>`, creates branch `subagent/<agent>/<short_task_id>`, prunes the worktree.
-   - If clean: prunes the worktree.
-   - If something went wrong: leaves the worktree intact, reports its path.
+   - Detects commits since the recorded starting commit, even if the worker committed everything and left a clean checkout. Later changes to the parent's HEAD do not change that baseline.
+   - If uncommitted changes exist: stages and commits with `subagent(<agent>): <truncated task>`.
+   - Creates and verifies branch `subagent/<agent>/<task_id>` for committed output before removing the worktree. Existing branches are never overwritten.
+   - Only a clean checkout with no new commits is treated as a no-op.
+   - If reported commit IDs disagree with Git's detected commits, or retention/cleanup fails: reports failure and preserves the worktree when present. Detected commits and the retained branch remain visible under `worktree`; the child's original `finalReport` is not overwritten.
 
 The branch is the artefact; the worktree directory is internal. The main agent decides whether to merge, PR, or abandon.
 

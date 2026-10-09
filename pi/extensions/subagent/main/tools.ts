@@ -321,6 +321,7 @@ async function runSubagentTool(
       subPid: null,
       cwd,
       worktreePath: worktreePlan?.path ?? null,
+      worktreeBaseCommit: worktreePlan?.baseCommit,
       mode: params.background ? 'background' : 'sync',
       model,
       thinkingLevel,
@@ -439,12 +440,19 @@ async function runSubagentTool(
             ? await finalizeWorktree(worktreePlan, {
               agentName: agent.name,
               taskSummary: params.task,
+              reportedCommits: details.finalReport?.final !== false
+                ? details.finalReport?.commits
+                : undefined,
             })
             : preserveWorktreeOnCrash(worktreePlan);
-          details.worktree = {enabled: true, ...finalized};
-          if (finalized.branch && details.finalReport) {
-            details.finalReport.branch = finalized.branch;
-            details.finalReport.commits = finalized.commits;
+          details.worktree = {
+            enabled: true,
+            baseCommit: worktreePlan.baseCommit,
+            ...finalized,
+          };
+          if (finalized.error) {
+            details.status = 'failed';
+            details.error = `worktree finalization failed: ${finalized.error}`;
           }
         }
       } catch (error) {

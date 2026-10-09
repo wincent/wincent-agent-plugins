@@ -4,6 +4,7 @@ import {
   createAssistantMessageEventStream,
 } from '@earendil-works/pi-ai';
 import type {ExtensionAPI} from '@earendil-works/pi-coding-agent';
+import {execFileSync} from 'node:child_process';
 import {appendFileSync, chmodSync, mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 
@@ -157,7 +158,7 @@ export default function (pi: ExtensionAPI): void {
           call = {
             name: 'subagent',
             arguments: {
-              agent: 'scout',
+              agent: scenario.startsWith('worker-') ? 'worker' : 'scout',
               task: scenario === 'background'
                 ? 'wait'
                 : scenario === 'metadata-failure'
@@ -170,6 +171,26 @@ export default function (pi: ExtensionAPI): void {
           };
         } else if (isChild && current === 0) {
           call = {name: 'progress', arguments: {text: 'headless progress'}};
+        } else if (isChild && scenario.startsWith('worker-') && current === 1) {
+          call = {
+            name: 'bash',
+            arguments: {
+              command:
+                "printf 'example\\n' > foo.txt && git add -- foo.txt && git commit -m 'test worker output'",
+            },
+          };
+        } else if (isChild && scenario.startsWith('worker-') && current === 2) {
+          const sha = execFileSync('git', [
+            'rev-parse',
+            scenario === 'worker-mismatch' ? 'HEAD^' : 'HEAD',
+          ], {encoding: 'utf8'}).trim();
+          call = {
+            name: 'report',
+            arguments: {
+              summary: 'Created and committed foo.txt',
+              commits: [{sha, subject: 'test worker output'}],
+            },
+          };
         } else if (isChild && current === 1) {
           call = {
             name: 'ask',

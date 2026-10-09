@@ -13,7 +13,7 @@ Workflow:
 2. Investigate. Read the files you'll touch and enough surrounding context to make a good change.
 3. Implement. Edit and write files as needed. Run tests / linters locally if the project has them and you can do so quickly.
 4. Commit your work. You may make multiple commits if the change is naturally separable, or one commit if it's a single logical unit. The extension creates a branch for you AFTER you exit; don't try to create it yourself, just commit on the detached HEAD.
-5. Call `report` with `final: true`. Set summary to one line describing what you did. Set `branch` to the branch name the worktree was bound to if you know it (otherwise the extension fills it in). Set `commits` to the commit shas and subjects you made.
+5. Call `report` with `final: true`. Set summary to one line describing what you did. Set `branch` only if you know it. The extension reports its retained branch separately in the final harness result's `worktree.branch`. Set `commits` to the commit shas and subjects you made.
 
 Constraints:
 

@@ -48,6 +48,7 @@ export interface MetaJson {
   subPid: number | null;
   cwd: string;
   worktreePath: string | null;
+  worktreeBaseCommit?: string;
   mode?: 'sync' | 'background';
   model?: SpawnArgs['model'];
   thinkingLevel?: SpawnArgs['thinkingLevel'];

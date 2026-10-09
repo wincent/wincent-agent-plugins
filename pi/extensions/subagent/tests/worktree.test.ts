@@ -10,8 +10,10 @@ import {existsSync, realpathSync} from 'node:fs';
 import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+
 import {test} from 'node:test';
 import {promisify} from 'node:util';
+import type {WorktreePlan} from '../main/worktree.js';
 
 import {
   finalizeWorktree,
@@ -119,6 +121,8 @@ test('finalizeWorktree commits and creates a branch when changes exist', async (
       taskSummary: 'add new file',
     });
     assert.equal(outcome.hasChanges, true);
+    assert.equal(outcome.error, undefined);
+    assert.equal(outcome.commits.length, 1);
     assert.ok(outcome.branch);
     assert.match(outcome.branch!, /^subagent\/worker\//);
     // Worktree should be pruned now.
@@ -132,6 +136,165 @@ test('finalizeWorktree commits and creates a branch when changes exist', async (
       outcome.branch!,
     ]);
     assert.ok(stdout.trim().length > 0);
+  } finally {
+    await cleanup();
+  }
+});
+
+async function commitFile(
+  cwd: string,
+  name: string,
+  contents = 'example\n',
+): Promise<string> {
+  await writeFile(join(cwd, name), contents);
+  await execFileAsync('git', ['-C', cwd, 'add', '--', name]);
+  await execFileAsync('git', ['-C', cwd, 'commit', '-q', '-m', `add ${name}`]);
+  const {stdout} = await execFileAsync('git', ['-C', cwd, 'rev-parse', 'HEAD']);
+  return stdout.trim();
+}
+
+async function assertRetained(
+  plan: WorktreePlan,
+  branch: string | undefined,
+  head: string,
+): Promise<void> {
+  assert.ok(branch);
+  const {stdout} = await execFileAsync('git', [
+    '-C',
+    plan.repoRoot,
+    'rev-parse',
+    `refs/heads/${branch}`,
+  ]);
+  assert.equal(stdout.trim(), head);
+}
+
+test('worker commits survive a clean checkout and a subsequent parent HEAD change', async () => {
+  const {repo, cleanup} = await makeTempRepo();
+  try {
+    const plan = await prepareWorktree(repo, 'task_committed', 'worker');
+    const first = await commitFile(plan.path, 'first.txt');
+    const second = await commitFile(plan.path, 'second.txt');
+    // Moving the parent to the worker tip would make the old ^HEAD range empty.
+    await execFileAsync('git', ['-C', repo, 'merge', '--ff-only', second]);
+    const outcome = await finalizeWorktree(plan, {
+      agentName: 'worker',
+      taskSummary: 'two files',
+      reportedCommits: [{sha: first, subject: 'add first.txt'}, {
+        sha: second,
+        subject: 'add second.txt',
+      }],
+    });
+    assert.equal(outcome.error, undefined);
+    assert.equal(outcome.hasChanges, true);
+    assert.deepEqual(outcome.commits.map(({sha}) => sha), [first, second]);
+    await assertRetained(plan, outcome.branch, second);
+    assert.ok(!existsSync(plan.path));
+  } finally {
+    await cleanup();
+  }
+});
+
+test('mismatched reported commits fail explicitly without losing actual commits or the worktree', async () => {
+  const {repo, cleanup} = await makeTempRepo();
+  try {
+    const plan = await prepareWorktree(repo, 'task_mismatch', 'worker');
+    const head = await commitFile(plan.path, 'actual.txt');
+    const outcome = await finalizeWorktree(plan, {
+      agentName: 'worker',
+      taskSummary: 'file',
+      reportedCommits: [{sha: plan.baseCommit, subject: 'incorrect claim'}],
+    });
+    assert.match(outcome.error!, /reported commits disagree/);
+    assert.deepEqual(outcome.commits.map(({sha}) => sha), [head]);
+    await assertRetained(plan, outcome.branch, head);
+    assert.equal(outcome.preservedPath, plan.path);
+    assert.ok(existsSync(plan.path));
+  } finally {
+    await cleanup();
+  }
+});
+
+test('existing branch names are not overwritten', async () => {
+  const {repo, cleanup} = await makeTempRepo();
+  try {
+    const plan = await prepareWorktree(repo, 'task_collision', 'worker');
+    await execFileAsync('git', [
+      '-C',
+      repo,
+      'branch',
+      plan.branch,
+      plan.baseCommit,
+    ]);
+    const head = await commitFile(plan.path, 'new.txt');
+    const outcome = await finalizeWorktree(plan, {
+      agentName: 'worker',
+      taskSummary: 'file',
+    });
+    assert.equal(outcome.error, undefined);
+    assert.notEqual(outcome.branch, plan.branch);
+    await assertRetained(plan, plan.branch, plan.baseCommit);
+    await assertRetained(plan, outcome.branch, head);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('cleanup failure is explicit and retains both branch and worktree', async () => {
+  const {repo, cleanup} = await makeTempRepo();
+  try {
+    const plan = await prepareWorktree(repo, 'task_locked', 'worker');
+    const head = await commitFile(plan.path, 'new.txt');
+    await execFileAsync('git', ['-C', repo, 'worktree', 'lock', plan.path]);
+    const outcome = await finalizeWorktree(plan, {
+      agentName: 'worker',
+      taskSummary: 'file',
+    });
+    assert.match(outcome.error!, /locked/);
+    assert.equal(outcome.preservedPath, plan.path);
+    await assertRetained(plan, outcome.branch, head);
+    assert.ok(existsSync(plan.path));
+  } finally {
+    await cleanup();
+  }
+});
+
+test('disabling auto-commit preserves uncommitted work while retaining existing commits', async () => {
+  const {repo, cleanup} = await makeTempRepo();
+  try {
+    const plan = await prepareWorktree(repo, 'task_partial', 'worker');
+    const head = await commitFile(plan.path, 'done.txt');
+    await writeFile(join(plan.path, 'unfinished.txt'), 'partial\n');
+    const outcome = await finalizeWorktree(plan, {
+      agentName: 'worker',
+      taskSummary: 'partial',
+      allowCommit: false,
+    });
+    assert.equal(outcome.error, undefined);
+    assert.ok(outcome.warnings?.length);
+    assert.equal(outcome.preservedPath, plan.path);
+    await assertRetained(plan, outcome.branch, head);
+    const {stdout} = await execFileAsync('git', [
+      '-C',
+      plan.path,
+      'status',
+      '--porcelain',
+    ]);
+    assert.match(stdout, /\?\? unfinished.txt/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('missing worktree cannot silently finalize successfully', async () => {
+  const {repo, cleanup} = await makeTempRepo();
+  try {
+    const plan = await prepareWorktree(repo, 'task_missing', 'worker');
+    await execFileAsync('git', ['-C', repo, 'worktree', 'remove', plan.path]);
+    const outcome = await finalizeWorktree(plan, {
+      agentName: 'worker',
+      taskSummary: 'file',
+    });
+    assert.match(outcome.error!, /worktree is missing/);
   } finally {
     await cleanup();
   }
