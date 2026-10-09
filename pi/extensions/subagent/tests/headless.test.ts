@@ -240,6 +240,44 @@ test(
   },
 );
 
+test(
+  'real controller collects opt-in state and the child imports it before execution',
+  {timeout: 30_000},
+  async () => {
+    const {dir, cleanup} = setup();
+    try {
+      await runController(dir, 'ask');
+      const requests = readFileSync(join(dir, 'requests.jsonl'), 'utf8');
+      const result = JSON.parse(toolTexts(requests, 'subagent')[0]);
+      assert.equal(result.status, 'ok');
+      assert.deepEqual(
+        JSON.parse(
+          readFileSync(join(result.taskDir, 'extension-state.json'), 'utf8'),
+        ),
+        {language: 'de', enabled: true},
+      );
+      for (
+        const name of [
+          'run.sh',
+          'meta.json',
+          'result.json',
+          'bus.jsonl',
+          'system-prompt.md',
+          'task.txt',
+        ]
+      ) {
+        assert.doesNotMatch(
+          readFileSync(join(result.taskDir, name), 'utf8'),
+          /test-preference/,
+        );
+      }
+      assert.doesNotMatch(requests, /test-preference/);
+    } finally {
+      cleanup();
+    }
+  },
+);
+
 test('real controller keeps long state paths separate from socket allocation', {
   timeout: 30_000,
 }, async () => {

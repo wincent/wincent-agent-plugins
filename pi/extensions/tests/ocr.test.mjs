@@ -1,4 +1,5 @@
 import {strict as assert} from 'node:assert';
+import {EventEmitter} from 'node:events';
 import fs from 'node:fs';
 import {mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile} from 'node:fs/promises';
 import {createRequire, registerHooks, syncBuiltinESMExports} from 'node:module';
@@ -18,6 +19,7 @@ import {
   saveArtifacts,
 } from '../ocr/client.ts';
 
+import {collectSubagentState, SUBAGENT_STATE_ENV} from '../lib/subagent-state.ts';
 import {locatePiPackage} from './pi-package.mjs';
 
 // Use Pi's runtime TypeBox, just as the extension loader does (no npm install).
@@ -27,6 +29,7 @@ const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === 'typebox') return {url: pathToFileURL(requirePi.resolve('typebox')).href, shortCircuit: true};
     if (specifier === './client.js' && context.parentURL?.endsWith('/ocr/index.ts')) return {url: new URL('./client.ts', context.parentURL).href, shortCircuit: true};
+    if (specifier === '../lib/subagent-state.js' && context.parentURL?.endsWith('/ocr/index.ts')) return {url: new URL('../lib/subagent-state.ts', context.parentURL).href, shortCircuit: true};
     return nextResolve(specifier, context);
   },
 });
@@ -47,13 +50,15 @@ function registered() {
   let tool;
   const commands = new Map();
   const events = new Map();
+  const bus = new EventEmitter();
   extension({
+    events: bus,
     registerTool(value) { tool = value; },
     registerCommand(name, value) { commands.set(name, value); },
     on(name, handler) { events.set(name, handler); },
   });
   assert.equal(tool.name, 'ocr');
-  return {tool, status: commands.get('ocr-status'), approval: commands.get('ocr-approval'), events};
+  return {tool, status: commands.get('ocr-status'), approval: commands.get('ocr-approval'), events, snapshot: () => collectSubagentState({events: bus})};
 }
 
 function approvalContext(cwd, confirm = async () => true) {
@@ -320,7 +325,7 @@ test('extension refuses headless calls and declined uploads before any HTTP requ
   const fixture = await fakeCurl(t, `process.stdout.write('should not execute');`);
   await writeFile(join(fixture.dir, 'input.pdf'), pdf);
   const {tool} = registered();
-  await assert.rejects(() => tool.execute('headless', {path: 'input.pdf'}, undefined, undefined, {hasUI: false, cwd: fixture.dir}), /without a UI/);
+  await assert.rejects(() => tool.execute('headless', {path: 'input.pdf'}, undefined, undefined, {hasUI: false, cwd: fixture.dir}), /Without a UI/);
   let confirmations = 0;
   const ctx = {hasUI: true, cwd: fixture.dir, ui: {confirm: async (_title, message) => {
     confirmations++;
@@ -349,7 +354,9 @@ test('first use grants sticky session approval, skips subsequent PDF/image promp
     assert.match(message, /embedded metadata and unselected PDF pages/);
     assert.match(message, /incurs API charges/);
     assert.match(message, /no session spending cap/);
-    assert.match(message, /not saved or shared with subagents/);
+    assert.match(message, /subagents launched after approval/);
+    assert.match(message, /not saved/);
+    assert.match(message, /does not cancel an active OCR call or revoke approval in already-running subagents/);
     assert.match(message, /automatic retries/);
     assert.match(message, /First upload:/);
     assert.match(message, /File: .*input\.pdf/);
@@ -366,7 +373,8 @@ test('first use grants sticky session approval, skips subsequent PDF/image promp
     assert.equal(result.structuredContent.pages_processed, 1);
   }
   assert.equal(confirmations, 1);
-  await assert.rejects(() => tool.execute('headless', {path: 'input.pdf'}, undefined, undefined, {...ctx, hasUI: false}), /without a UI/);
+  const headless = await tool.execute('headless', {path: 'input.pdf'}, undefined, undefined, {...ctx, hasUI: false});
+  assert.equal(headless.structuredContent.pages_processed, 1);
   await assert.rejects(() => tool.execute('invalid-pages', {path: 'input.pdf', pages: Array.from({length: 26}, (_, i) => i)}, undefined, undefined, ctx), /Select 1-25/);
   await assert.rejects(() => tool.execute('invalid-image-pages', {path: 'scan.png', pages: [1]}, undefined, undefined, ctx), /Images are a single page/);
   await assert.rejects(() => tool.execute('cancelled', {path: 'input.pdf'}, AbortSignal.abort(), undefined, ctx), {name: 'AbortError'});
@@ -384,6 +392,59 @@ test('first use grants sticky session approval, skips subsequent PDF/image promp
   ctx.ui.confirm = async () => assert.fail('renewed approval must also be sticky');
   await tool.execute('still-approved', {path: 'scan.png'}, undefined, undefined, ctx);
   assert.equal(confirmations, 3);
+});
+
+test('controller approval is inherited once by new headless children, without live updates', async (t) => {
+  const fixture = await fakeCurl(t, `process.stdout.write(${JSON.stringify(imageResponse + '\n200')});`);
+  await writeFile(join(fixture.dir, 'input.pdf'), pdf);
+  setEnv(t, 'PI_SUBAGENT_TASK_ID', 'test-child');
+  setEnv(t, SUBAGENT_STATE_ENV, undefined);
+  const parent = registered();
+  const parentCtx = approvalContext(fixture.dir);
+  const beforeApproval = parent.snapshot();
+  await parent.approval.handler('session', parentCtx);
+  const approved = parent.snapshot();
+  assert.deepEqual(JSON.parse(approved), {ocr: true});
+  const child = registered();
+  const ctx = {hasUI: false, cwd: fixture.dir};
+  process.env[SUBAGENT_STATE_ENV] = approved;
+  await child.events.get('session_start')({reason: 'startup'}, ctx);
+  assert.equal(process.env[SUBAGENT_STATE_ENV], undefined);
+  assert.deepEqual(JSON.parse(child.snapshot()), {ocr: true});
+  await parent.approval.handler('revoke', parentCtx);
+  assert.deepEqual(JSON.parse(parent.snapshot()), {ocr: false});
+  for (let i = 0; i < 2; i++) {
+    const result = await child.tool.execute('inherited', {path: 'input.pdf'}, undefined, undefined, ctx);
+    assert.equal(result.structuredContent.pages_processed, 1);
+  }
+  for (const snapshot of [beforeApproval, parent.snapshot()]) {
+    const unapproved = registered();
+    process.env[SUBAGENT_STATE_ENV] = snapshot;
+    await unapproved.events.get('session_start')({reason: 'startup'}, ctx);
+    await assert.rejects(() => unapproved.tool.execute('unapproved', {path: 'input.pdf'}, undefined, undefined, ctx), /require session approval/);
+  }
+  await child.events.get('session_shutdown')({reason: 'reload'}, ctx);
+  await child.events.get('session_start')({reason: 'reload'}, ctx);
+  await assert.rejects(() => child.tool.execute('reset', {path: 'input.pdf'}, undefined, undefined, ctx), /require session approval/);
+  const reloaded = registered();
+  await reloaded.events.get('session_start')({reason: 'reload'}, ctx);
+  await assert.rejects(() => reloaded.tool.execute('reloaded', {path: 'input.pdf'}, undefined, undefined, ctx), /require session approval/);
+  assert.equal(await readFile(fixture.capture + '.calls', 'utf8'), '1\n1\n');
+});
+
+test('missing, malformed, and non-boolean inherited OCR approvals fail closed', async (t) => {
+  const fixture = await fakeCurl(t, `process.stdout.write('should not execute');`);
+  setEnv(t, 'PI_SUBAGENT_TASK_ID', 'test-child');
+  setEnv(t, SUBAGENT_STATE_ENV, undefined);
+  const ctx = {hasUI: false, cwd: fixture.dir};
+  for (const snapshot of [undefined, '{', 'null', '{}', '{"ocr":false}', '{"ocr":"true"}', '{"ocr":1}', '{"ocr":{"approved":true}}']) {
+    if (snapshot === undefined) delete process.env[SUBAGENT_STATE_ENV];
+    else process.env[SUBAGENT_STATE_ENV] = snapshot;
+    const child = registered();
+    await child.events.get('session_start')({reason: 'startup'}, ctx);
+    await assert.rejects(() => child.tool.execute('unapproved', {path: 'input.pdf'}, undefined, undefined, ctx), /require session approval/);
+  }
+  await assert.rejects(() => readFile(fixture.capture), {code: 'ENOENT'});
 });
 
 test('declined session approval, status queries, invalid arguments, and headless opt-in never grant approval', async (t) => {

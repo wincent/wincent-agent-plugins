@@ -12,6 +12,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {test} from 'node:test';
 
+import {SUBAGENT_STATE_ENV} from '../../lib/subagent-state.js';
 import {AuditLog} from '../bus/audit-log.js';
 import {Bus} from '../bus/bus.js';
 import {launchSubagent} from '../main/launch.js';
@@ -374,6 +375,40 @@ test('runtime execution failure does not fall back to pi', async () => {
     assert.equal((await child.exited).code, 127);
     assert.match(readFileSync(child.stderrPath, 'utf8'), /missing-runtime/);
   } finally {
+    rmSync(dir, {recursive: true, force: true});
+  }
+});
+
+test('extension snapshots replace inherited state without persisting it in launch artifacts', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sa-'));
+  const previous = process.env[SUBAGENT_STATE_ENV];
+  try {
+    process.env[SUBAGENT_STATE_ENV] = '{"stale":true}';
+    const script = join(dir, 'environment.mjs');
+    writeFileSync(script, `console.log(process.env.${SUBAGENT_STATE_ENV})`);
+    for (
+      const extensionState of [
+        JSON.stringify({fixture: {approved: true, label: "a 'quoted' $HOME"}}),
+        undefined,
+      ]
+    ) {
+      const args = {...argsFor(dir), extensionState};
+      const child = await spawnSubagent(args, {
+        executable: process.execPath,
+        args: [script],
+      });
+      assert.equal((await child.exited).code, 0);
+      const lines = readFileSync(child.stdoutPath, 'utf8').trim().split('\n');
+      assert.equal(lines.at(-1), extensionState ?? '{}');
+      for (const name of ['run.sh', 'task.txt']) {
+        const text = readFileSync(join(dir, name), 'utf8');
+        assert.ok(!text.includes(SUBAGENT_STATE_ENV));
+        assert.ok(!text.includes('approved'));
+      }
+    }
+    assert.equal(process.env[SUBAGENT_STATE_ENV], '{"stale":true}');
+  } finally {
+    restoreEnv(SUBAGENT_STATE_ENV, previous);
     rmSync(dir, {recursive: true, force: true});
   }
 });

@@ -15,6 +15,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import {join} from 'node:path';
+import {
+  provideSubagentState,
+  takeSubagentState,
+} from '../../../lib/subagent-state.js';
 
 /** Deterministic, in-memory provider. No requests, credentials, or paid tokens. */
 export default function (pi: ExtensionAPI): void {
@@ -23,6 +27,15 @@ export default function (pi: ExtensionAPI): void {
   let continued = false;
   let backgroundFinished = false;
   const isChild = !!process.env.PI_SUBAGENT_TASK_ID;
+  let inheritedState: unknown;
+  provideSubagentState(
+    pi,
+    'test-preference',
+    () => ({language: 'de', enabled: true}),
+  );
+  pi.on('session_start', () => {
+    inheritedState = takeSubagentState('test-preference');
+  });
   pi.on('input', (event) => {
     if (turn === 0) {
       scenario = event.text;
@@ -42,6 +55,10 @@ export default function (pi: ExtensionAPI): void {
       {mode: 0o600},
     );
     if (isChild) {
+      writeFileSync(
+        join(process.env.PI_SUBAGENT_BUS_DIR!, 'extension-state.json'),
+        JSON.stringify(inheritedState ?? null),
+      );
       writeFileSync(
         join(process.env.PI_SUBAGENT_BUS_DIR!, 'observed.json'),
         JSON.stringify({

@@ -3,6 +3,7 @@ import {spawn} from 'node:child_process';
 import {closeSync, openSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 
+import {SUBAGENT_STATE_ENV} from '../../lib/subagent-state.js';
 import {type PiRuntime, runningPiRuntime} from './runtime.js';
 
 export interface SpawnArgs {
@@ -14,6 +15,7 @@ export interface SpawnArgs {
   cwd: string;
   model?: {provider: string; id: string};
   thinkingLevel?: ReturnType<ExtensionAPI['getThinkingLevel']>;
+  extensionState?: string;
   toolsWhitelist: string[];
   disallowedTools?: string[];
   systemPromptPath: string;
@@ -58,6 +60,7 @@ export async function spawnSubagent(
     // A separate process group lets cancellation include launcher/tool children.
     const child = spawn('bash', [wrapperPath], {
       cwd: args.cwd,
+      env: {...process.env, [SUBAGENT_STATE_ENV]: args.extensionState ?? '{}'},
       detached: true,
       stdio: ['ignore', fds[0], fds[1]],
     });

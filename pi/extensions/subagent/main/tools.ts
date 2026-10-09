@@ -8,6 +8,7 @@ import {existsSync, symlinkSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {type Static, Type} from 'typebox';
 
+import {collectSubagentState} from '../../lib/subagent-state.js';
 import {AuditLog} from '../bus/audit-log.js';
 import {Bus} from '../bus/bus.js';
 import {newEnvelopeId} from '../bus/envelope.js';
@@ -268,6 +269,7 @@ async function runSubagentTool(
     ? {provider: ctx.model.provider, id: ctx.model.id}
     : undefined;
   const thinkingLevel = pi.getThinkingLevel();
+  const extensionState = collectSubagentState(pi);
   const details: SubagentDetails = {
     taskId: '',
     agent: params.agent,
@@ -347,6 +349,7 @@ async function runSubagentTool(
       cwd,
       model,
       thinkingLevel,
+      extensionState,
       toolsWhitelist: agent.tools,
       disallowedTools: agent.disallowedTools,
       systemPromptPath: systemPromptPath(taskId),

@@ -114,7 +114,7 @@ Call `subagent_status` with `task_id` to retrieve the full result, including `fi
 
 The controlling UI shows a compact progress widget; there is no interactive child pane. Task artifacts remain after completion unless explicitly pruned. Sockets are separate: `PI_SUBAGENT_SOCKET_ROOT` selects a launcher-prepared private directory, and `PI_SUBAGENT_SOCKET_PATH` passes the exact short per-task socket path to the child. `PI_SUBAGENT_BUS_DIR` still points to retained artifacts. An explicitly configured socket root never falls back elsewhere. Children invoke the same installed Pi runtime directly and inherit the controller's environment, sandbox, and proxy lifetime; they do not rerun wrappers or acquire independent leases. Sandbox launchers must authorize the socket subtree, task/worktree files, and runtime, not child-wrapper execution or the tmux socket. The controller owns child cleanup, so background tasks cannot outlive its session.
 
-Extension approvals, including OCR approval, are not inherited yet. A headless tool requiring local UI approval may fail; do not interpret a parent grant or an LLM answer to `ask` as child authorization.
+Extensions can opt into spawn-time state snapshots. OCR session approval is inherited by subsequently launched children when OCR is loaded and allowed by the child's tool configuration. Later grants or revocations do not reach existing children. Other approvals are not inherited unless their extension explicitly supports it; a headless tool requiring local UI approval may still fail. An LLM answer to `ask` is not authorization, and inherited state must never be forged.
 
 A one-shot headless controller cancels background children when its session ends. Use synchronous delegation there.
 

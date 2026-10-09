@@ -39,7 +39,7 @@ It also emits lifecycle events on `pi.events`: `subagent:spawned`, `subagent:con
 
 Each subagent inherits the main agent's active provider, model, and thinking level at dispatch time, passed explicitly via `--provider`, `--model`, and `--thinking`. Changing the main agent's settings affects subsequent spawns, not already-running subagents. If the main context has no model, the child uses Pi's normal model selection. Pi may clamp thinking to the selected model's supported levels; exact child-side verification is part of the planned state handoff.
 
-Generic extension state and approval delegation are not implemented yet. In particular, OCR approvals remain local to the controlling session; headless children cannot inherit them yet.
+Extensions can opt into small, namespaced JSON snapshots using the [shared state helper](../lib/README.md#subagent-state). Snapshots are collected synchronously at dispatch and passed through the child's environment, not persisted in launch artifacts or sent through prompts or the bus. There is no live synchronization: later parent changes affect future children only. OCR uses this to share session approval with subsequently launched children; its extension must still be loaded and allowed by the agent's tool configuration. This is cooperative workflow state, not authenticated authorization.
 
 ## Runtime and inherited environment
 
@@ -47,7 +47,7 @@ Subagents invoke the controlling process's interpreter and canonical installed P
 
 Direct children inherit the controller's environment and OS sandbox, even though each child has its own process group. A sandboxed controller produces sandboxed children; an unsandboxed controller produces unsandboxed children. Children do not rerun nono or proxy bootstrap wrappers, obtain independent proxy leases, or escape the parent's restrictions. The parent wrapper must authorize the task-specific socket subtree, task files, worktree paths, and installed runtime. No tmux socket grant or additional wrapper execution grant is needed.
 
-Both sandboxed and `pi-naked` children share the controller's proxy environment and lease lifetime. The controller owns their lifetime and cancels them at shutdown; a background subagent is not an independently leased session. Proxy access cannot be revoked separately for one child through this shared transport. Environment inheritance is not generic extension-state or approval delegation, which remains unimplemented. Start a fresh updated controller after changing these wrappers or the extension; old tmux-based controllers do not provide these inheritance guarantees.
+Both sandboxed and `pi-naked` children share the controller's proxy environment and lease lifetime. The controller owns their lifetime and cancels them at shutdown; a background subagent is not an independently leased session. Proxy access cannot be revoked separately for one child through this shared transport. Only explicitly registered extension snapshots are forwarded; ordinary environment inheritance alone does not transfer an extension's in-memory state. Start a fresh updated controller after changing these wrappers or the extension; old tmux-based controllers do not provide these inheritance guarantees.
 
 ### Socket placement
 
