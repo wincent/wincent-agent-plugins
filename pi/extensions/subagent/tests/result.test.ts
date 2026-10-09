@@ -13,6 +13,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
 
+import {describeResult} from '../main/description.js';
 import {
   MAX_RESULT_CHARS,
   type SubagentDetails,
@@ -75,7 +76,7 @@ function details(taskId = 'task_test'): SubagentDetails {
 
 function legacyMeta(
   taskId: string,
-  status: 'ok' | 'crashed' | 'running' = 'ok',
+  status: 'ok' | 'crashed' | 'running' | 'finalizing' = 'ok',
 ): void {
   ensureTaskDir(taskId);
   writeMeta({
@@ -86,7 +87,9 @@ function legacyMeta(
     task: 'old task',
     status,
     startedAt: '2026-01-01T00:00:00Z',
-    endedAt: status === 'running' ? null : '2026-01-01T00:01:00Z',
+    endedAt: status === 'running' || status === 'finalizing'
+      ? null
+      : '2026-01-01T00:01:00Z',
     mainPid: process.pid,
     subPid: null,
     cwd: tmpdir(),
@@ -158,6 +161,7 @@ test('recent completed tasks are bounded, newest first, and exclude active IDs',
       utimesSync(resultPath(taskId), 100 + index, 100 + index);
     }
     legacyMeta('task_running', 'running');
+    legacyMeta('task_finalizing', 'finalizing');
     assert.deepEqual(recentCompletedTasks(2).map((task) => task.taskId), [
       'task_c',
       'task_b',
@@ -241,6 +245,110 @@ test('history rejects traversal and mismatched metadata identities', async () =>
     );
     assert.equal(await readTaskResult('task_bad'), undefined);
     assert.deepEqual(recentCompletedTasks(10), []);
+  });
+});
+
+test('task outcomes are explicit claims, not inferred from exit or summary text', async () => {
+  await withState(async () => {
+    const result = details();
+    result.execution = {status: 'ok', exitCode: 0};
+    result.finalReport!.summary = 'Task completed successfully';
+    assert.equal(describeResult(result).taskOutcome, 'unknown');
+    for (
+      const outcome of [
+        'completed',
+        'partial',
+        'blocked',
+        'declined',
+        'failed',
+      ] as const
+    ) {
+      result.finalReport!.outcome = outcome;
+      assert.equal(describeResult(result).taskOutcome, outcome);
+      assert.equal(result.status, 'ok');
+    }
+    result.finalReport!.outcome = 'completed';
+    result.finalReport!.verification = [{
+      check: 'Run test suite',
+      result: 'failed',
+      details: 'Reported all failures',
+    }];
+    assert.equal(
+      describeResult(result).taskOutcome,
+      'completed',
+      'completing a testing task does not mean its tests passed',
+    );
+    result.finalReport!.final = false;
+    assert.equal(
+      describeResult(result).taskOutcome,
+      'unknown',
+      'interim reports cannot establish a final outcome',
+    );
+  });
+});
+
+test('descriptions separate reported delivery and verification from harness observations', async () => {
+  await withState(async () => {
+    const result = details();
+    result.finalReport = {
+      outcome: 'partial',
+      summary: 'Implemented parsing; integration remains blocked.',
+      remaining: ['Integrate the parser'],
+      blockers: ['Missing service access'],
+      artifacts: [{kind: 'file', location: 'parser.ts'}],
+      verification: [{check: 'Parser unit tests', result: 'passed'}, {
+        check: 'Integration tests',
+        result: 'not_run',
+      }],
+    };
+    result.worktree = {
+      enabled: true,
+      branch: 'retained',
+      commits: [{sha: 'abc', subject: 'parser'}],
+      retentionVerified: true,
+      verification: [{check: 'Branch retention', result: 'passed'}],
+    };
+    const description = describeResult(result);
+    assert.match(description.resultDescription, /partial delivery/);
+    assert.deepEqual(description.remaining, ['Integrate the parser']);
+    assert.deepEqual(description.blockers, ['Missing service access']);
+    assert.equal(description.artifacts.reported[0].location, 'parser.ts');
+    assert.equal(description.artifacts.retained[0].location, 'retained');
+    assert.equal(description.verification.reported.length, 2);
+    assert.deepEqual(description.verification.harness, [{
+      check: 'Branch retention',
+      result: 'passed',
+    }]);
+    result.worktree.retentionVerified = false;
+    assert.deepEqual(
+      describeResult(result).artifacts.retained,
+      [],
+      'an unverified branch is not a retained artifact claim',
+    );
+    result.execution = {status: 'ok', exitCode: 0};
+    result.status = 'failed';
+    result.error = 'retention failed';
+    assert.match(
+      describeResult(result).resultDescription,
+      /Harness finalization ended with status failed: retention failed/,
+    );
+    saveResult(result);
+    assert.deepEqual(
+      JSON.parse(readFileSync(result.resultPath!, 'utf8')).result,
+      describeResult(result),
+    );
+  });
+});
+
+test('a final agent report is not a finalized harness result', async () => {
+  await withState(async () => {
+    const result = details();
+    result.status = 'finalizing';
+    result.finalReport!.outcome = 'completed';
+    const visible = JSON.parse(resultText(result));
+    assert.equal(visible.finalized, false);
+    assert.equal(visible.status, 'finalizing');
+    assert.match(visible.resultDescription, /results are not finalized/);
   });
 });
 

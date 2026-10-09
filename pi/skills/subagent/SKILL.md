@@ -37,7 +37,7 @@ Useful fan-out idiom: launch several case-1 helpers in a single assistant turn. 
 
 ### Case 2: worktree per worker
 
-The user wants the same kind of change made in many places, each producing its own commit and (later) its own PR. The `worker` agent handles this. Default: `worktree: true`. The extension provisions an isolated worktree per call, lets the worker commit, and binds the commits to a branch named `subagent/worker/<short_task_id>` in the main repo. The worktree itself is pruned; the branch is the artefact.
+The user wants the same kind of change made in many places, each producing its own commit and (later) its own PR. The `worker` agent handles this. Workers are commit-producing agents; `worktree: false` disables isolation but does not enable a no-commit mode. For untracked-only edits, use the main agent or a custom non-committing agent. Default: `worktree: true`. The extension provisions an isolated worktree per call, lets the worker commit, and binds the commits to a branch named `subagent/worker/<task_id>` in the main repo. The worktree itself is pruned; the branch is the artefact.
 
 For a campaign of multiple workers, see the `/sweep` workflow prompt: scout out targets, confirm with the user, then call `subagent` once per target. Sequential (default) is safer; add `background: true` per call if the user explicitly wants parallelism.
 
@@ -83,15 +83,20 @@ The `llm` policy is gated by a per-task budget of 10 successful LLM-answered que
 
 The final tool result includes model-visible JSON. Read that content, not just the UI's `details` object, which is not necessarily sent to the model. Background completion includes the same result content.
 
-- `taskId` and `status`: identify the task and its outcome. Anything other than `ok` deserves scrutiny. A background dispatch initially returns a running-task handle, not a completed report.
+- `taskId`, `status`, and `finalized`: identify the task and harness lifecycle. `running` and `finalizing` are nonterminal. Only the controller's final result is authoritative about retention and cleanup. A background dispatch initially returns a handle, not a completed report. `status: "ok"` alone does not mean the user's request was fulfilled.
+- `taskOutcome`: the child's explicit final outcome: `completed`, `partial`, `blocked`, `declined`, `failed`, or `unknown`. Missing or interim-only outcomes remain `unknown`, even with a normal exit or success-sounding summary.
+- `resultDescription`, `remaining`, and `blockers`: what was delivered, what is still missing, and why work stopped. Lead the user-facing summary with this information, not a bare `ok`.
+- `artifacts.reported` versus `artifacts.retained`: child-reported output locations versus harness-observed retained branches, commits, or preserved worktrees. A reported file inside a removed worktree is not necessarily a live filesystem path; use its retained commit/branch to inspect it.
+- `verification.reported` versus `verification.harness`: child-reported checks versus checks the controller actually performed. Each has `check`, `result` (`passed`, `failed`, or `not_run`), and optional evidence in `details`. Do not promote a child claim into independent verification. A testing task can be completed while reporting failing tests.
+- `execution`: reconciled child completion and process exit, separate from subsequent harness finalization.
 - `finalReport.summary`: the subagent's short summary. It is not necessarily the complete answer.
 - `finalReport.findings`: structured items (file, line, severity, message). For lint/test/review, act on these.
-- `finalReport.branch` + `finalReport.commits`: for `worker` subagents, the branch the work landed on and the commits it contains.
+- `finalReport.branch` + `finalReport.commits`: the child's original claims. For isolated workers, `worktree.branch` and `worktree.commits` contain the controller's detected/retained output; discrepancies are explicit failures, not silently rewritten reports.
 - `finalReport.data`: arbitrary task-specific structured output. Inspect it before answering: it may hold the actual deliverable, such as `data.commits` containing five detailed commit summaries even when the top-level summary is only one sentence. Do not confuse these arbitrary records with `finalReport.commits`, which describes worker-produced commits.
 - `worktree.preservedPath`: if a worker failed mid-task, the worktree was kept for inspection at this path.
 - `taskDir`, `resultPath`, `stdoutPath`, `stderrPath`, and `auditLogPath`: artifact locations for later inspection.
 
-The complete result is retained in private `result.json` when saving succeeds. Large model-visible results have an explicit truncation notice and artifact path; read the artifact to obtain omitted data rather than treating the preview as the full report. Storage/retrieval failures are reported in `retrievalNote`.
+The complete result is retained in private `result.json` when saving succeeds, with raw `details` and a derived `result` description. Reports received while a task is running are provisional: a final agent report is not proof that output retention or cleanup has finished. Large model-visible results have an explicit truncation notice and artifact path; read the artifact to obtain omitted data rather than treating the preview as the full report. Storage/retrieval failures are reported in `retrievalNote`.
 
 When a subagent reports findings, decide whether to:
 

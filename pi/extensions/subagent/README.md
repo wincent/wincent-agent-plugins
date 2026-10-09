@@ -33,7 +33,7 @@ When loaded in sub mode (env vars set by the spawner), the extension registers t
 | `progress` | Send a short status update to the main agent.                |
 | `ask`      | Ask the main agent (or watching user) a clarifying question. |
 
-It also emits lifecycle events on `pi.events`: `subagent:spawned`, `subagent:connected`, `subagent:progress`, `subagent:report`, `subagent:asked`, `subagent:answered`, `subagent:steered`, `subagent:done`, `subagent:failed`. The namespace is singular to coexist with `@tintinweb/pi-subagents`' plural `subagents:*` namespace.
+It also emits lifecycle events on `pi.events`: `subagent:spawned`, `subagent:connected`, `subagent:progress`, `subagent:report`, `subagent:finalizing`, `subagent:asked`, `subagent:answered`, `subagent:steered`, `subagent:done`, `subagent:failed`. The namespace is singular to coexist with `@tintinweb/pi-subagents`' plural `subagents:*` namespace.
 
 ## Model selection
 
@@ -101,6 +101,18 @@ Large results produce an explicitly marked preview (32,000 characters of result 
 
 `subagent_status` without arguments lists this controller's active tasks and ten recent completed tasks from the local state directory, including previous sessions. `limit` selects 0 to 50 completed tasks; 0 means active only. Listings provide IDs, brief summaries, and paths. `subagent_status({task_id: "..."})` retrieves the full result for an active or completed task. Older tasks without a saved result can recover their report from the audit log; missing/corrupt artifacts produce an explicit diagnostic rather than hiding the task. Pruning task directories removes their history as well.
 
+### Lifecycle, task fulfillment, and evidence
+
+`status` describes the harness lifecycle, not whether the request was fulfilled. After child settlement it remains `finalizing` until commit retention, cleanup, and result handling finish. `finalized: false` marks provisional results; a child's `final: true` report is not a controller completion notification.
+
+Children can report `outcome` as `completed`, `partial`, `blocked`, `declined`, `failed`, or `unknown`, with a descriptive `summary`, `remaining`, `blockers`, `artifacts`, and `verification`. Final tool results expose that claim as `taskOutcome` alongside a human-readable `resultDescription`. Missing outcomes are `unknown`; neither a zero exit code nor prose is converted into a completion claim. `execution` records child completion/exit separately, so a reported completed task can still have a failed harness lifecycle when retention fails.
+
+Artifacts have `kind`, `location`, and optional `description`. Verification entries have `check`, `result` (`passed`, `failed`, or `not_run`), and optional `details`. Results separate `artifacts.reported` from `artifacts.retained`, and `verification.reported` from `verification.harness`. The controller verifies process completion, Git inventory, branch retention, and worktree cleanup; it does not independently rerun the child's checks. A completed testing task can legitimately report failing tests. Saved snapshots retain the raw `details` and derived `result` description.
+
+Background report notifications are marked not finalized. Completion notifications lead with the result description, including blockers/remaining work and any harness failure, instead of a bare `done (ok)`.
+
+Workers remain commit-producing agents even with `worktree: false`. A no-commit request should be declined without edits and with an explicit reason; use the main agent or a custom non-committing agent instead.
+
 ## Watching progress
 
 The controlling UI shows a running-task count and a compact progress widget. Synchronous calls also stream progress/report updates in the tool result; background reports and completion arrive as user messages. `subagent_status` exposes each active task's pid and log paths.
@@ -116,7 +128,7 @@ For `worktree: true` agents (case 2), the extension:
 3. Sets the subagent's cwd to that worktree.
 4. After the subagent exits:
    - Detects commits since the recorded starting commit, even if the worker committed everything and left a clean checkout. Later changes to the parent's HEAD do not change that baseline.
-   - If uncommitted changes exist: stages and commits with `subagent(<agent>): <truncated task>`.
+   - If uncommitted changes exist and the child explicitly reported `completed`: stages and commits with `subagent(<agent>): <truncated task>`. Otherwise leaves uncommitted work untouched and preserves the worktree, while still retaining any existing commits.
    - Creates and verifies branch `subagent/<agent>/<task_id>` for committed output before removing the worktree. Existing branches are never overwritten.
    - Only a clean checkout with no new commits is treated as a no-op.
    - If reported commit IDs disagree with Git's detected commits, or retention/cleanup fails: reports failure and preserves the worktree when present. Detected commits and the retained branch remain visible under `worktree`; the child's original `finalReport` is not overwritten.
@@ -138,6 +150,7 @@ pi/extensions/subagent/
     events.ts               # pi.events lifecycle emitters
     registry.ts             # in-process map of active tasks
     result.ts               # model-visible results, persistence, completed history
+    description.ts          # task fulfillment, result narrative, artifacts/evidence
     routing.ts              # extension-scoped routing for background tasks
     spawn.ts                # direct headless spawn, logs, process signals
     launch.ts               # connection/startup race and failed-spawn cleanup

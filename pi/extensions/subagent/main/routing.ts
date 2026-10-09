@@ -122,7 +122,7 @@ function routeEnvelopeAsUserMessage(
       // the meaningful boundary.
       return;
     case 'report':
-      text = `${prefix} report: ${
+      text = `${prefix} report received (not finalized): ${
         describeReport(env.payload.summary, env.payload.branch)
       }`;
       break;
@@ -152,8 +152,7 @@ export function routeTaskCompletion(
   task: ActiveTask,
   result: string,
 ): void {
-  const text =
-    `[subagent ${task.agentName}:${task.taskId}] done (${task.status}).\n${result}`;
+  const text = `[subagent ${task.agentName}:${task.taskId}] ${result}`;
   try {
     pi.sendUserMessage(
       text,
@@ -171,7 +170,7 @@ export function routeTaskCompletion(
 function describeReport(summary: string, branch?: string): string {
   const parts: string[] = [summary];
   if (branch) {
-    parts.push(`(branch: ${branch})`);
+    parts.push(`(reported branch: ${branch})`);
   }
   return parts.join(' ');
 }

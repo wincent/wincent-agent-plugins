@@ -130,6 +130,29 @@ test('reapStaleEntries marks dead processes as crashed', async () => {
   });
 });
 
+test('reaper recognizes a controller that died during finalization', async () => {
+  await withTempStateRoot(async () => {
+    ensureTaskDir('task_finalizing');
+    writeMeta({
+      v: 1,
+      taskId: 'task_finalizing',
+      parentId: 'parent',
+      agent: 'worker',
+      task: 'retain output',
+      status: 'finalizing',
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      mainPid: 999999,
+      subPid: 999998,
+      cwd: TMP,
+      worktreePath: null,
+    });
+    assert.equal(readMeta('task_finalizing')?.status, 'finalizing');
+    assert.equal(reapStaleEntries(), 1);
+    assert.equal(readMeta('task_finalizing')?.status, 'crashed');
+  });
+});
+
 test('reapStaleEntries does not touch entries with live pids', async () => {
   await withTempStateRoot(async (root) => {
     const taskRoot = join(root, 'pi', 'subagent');

@@ -13,7 +13,7 @@ export function installStatus(pi: ExtensionAPI): void {
     }
     ctx.ui.setStatus(
       'subagent',
-      tasks.size ? `Subagents: ${tasks.size} running` : undefined,
+      tasks.size ? `Subagents: ${tasks.size} active` : undefined,
     );
     const lines = [...tasks.values()].slice(0, 6).map(({agent, text}) =>
       `${agent}: ${text}`
@@ -33,6 +33,7 @@ export function installStatus(pi: ExtensionAPI): void {
       'spawned',
       'progress',
       'report',
+      'finalizing',
       'asked',
       'answered',
       'done',
@@ -56,7 +57,11 @@ export function installStatus(pi: ExtensionAPI): void {
           const task = tasks.get(event.taskId);
           if (task) {
             task.text = (event.text ?? event.summary ??
-              (kind === 'asked' ? 'waiting for an answer' : 'running'))
+              (kind === 'asked'
+                ? 'waiting for an answer'
+                : kind === 'finalizing'
+                ? 'finalizing outputs and cleanup'
+                : 'running'))
               .replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').slice(0, 160);
           }
         }

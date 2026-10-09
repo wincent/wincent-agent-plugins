@@ -29,11 +29,17 @@ import {join} from 'node:path';
 export type TaskStatus =
   | 'spawning'
   | 'running'
+  | 'finalizing'
   | 'ok'
   | 'aborted'
   | 'failed'
   | 'crashed'
   | 'spawn_failed';
+
+export function isTaskPending(status: TaskStatus): boolean {
+  return status === 'spawning' || status === 'running' ||
+    status === 'finalizing';
+}
 
 export interface MetaJson {
   v: 1;
@@ -112,6 +118,7 @@ export function readMeta(taskId: string): MetaJson | null {
       || ![
         'spawning',
         'running',
+        'finalizing',
         'ok',
         'aborted',
         'failed',
@@ -183,7 +190,7 @@ export function reapStaleEntries(): number {
     if (!meta) {
       continue;
     }
-    if (meta.status !== 'running' && meta.status !== 'spawning') {
+    if (!isTaskPending(meta.status)) {
       continue;
     }
     if (processAlive(meta.mainPid) || processAlive(meta.subPid)) {
@@ -220,7 +227,7 @@ export async function pruneOldEntries(maxAgeMs: number): Promise<number> {
     if (!meta) {
       continue;
     }
-    if (meta.status === 'running' || meta.status === 'spawning') {
+    if (isTaskPending(meta.status)) {
       continue;
     }
     if (!meta.endedAt) {

@@ -13,6 +13,7 @@ import {Bus} from '../bus/bus.js';
 import {newEnvelopeId} from '../bus/envelope.js';
 import {type AgentConfig, discoverAgents} from './agents.js';
 import {handleAsk} from './ask.js';
+import {describeResult, reportedOutcome} from './description.js';
 import {emitLifecycle} from './events.js';
 import {launchSubagent} from './launch.js';
 import {
@@ -137,6 +138,7 @@ export function registerMainTools({pi}: {pi: ExtensionAPI}): void {
       'Use synchronously (default) or background: true for a later result.',
       "Subagents inherit the controlling agent's active provider, model, and thinking level.",
       'Progress appears in the controlling UI; logs remain in the task directory.',
+      'Final results separate lifecycle status from taskOutcome and include resultDescription, artifacts, and verification. status=ok alone does not mean the request was fulfilled.',
     ].join(' '),
     parameters: SubagentParams,
     async execute(_id, params, signal, onUpdate, ctx) {
@@ -225,7 +227,14 @@ export function registerMainTools({pi}: {pi: ExtensionAPI}): void {
       const summary = (details: SubagentDetails) => ({
         taskId: details.taskId,
         agent: details.agent,
+        pid: details.pid,
         status: details.status,
+        taskOutcome: reportedOutcome(details.finalReport),
+        resultDescription: describeResult(details).resultDescription.slice(
+          0,
+          1000,
+        ),
+        finalized: describeResult(details).finalized,
         mode: details.mode,
         task: details.task.slice(0, 200),
         summary: details.finalReport?.summary.slice(0, 500),
@@ -291,10 +300,14 @@ async function runSubagentTool(
     details.taskId = taskId;
     details.taskDir = dir;
     details.worktree.enabled = params.worktree ?? agent.worktree;
-    writeFileSync(systemPromptPath(taskId), buildSystemPromptFile(agent), {
-      encoding: 'utf-8',
-      mode: 0o600,
-    });
+    writeFileSync(
+      systemPromptPath(taskId),
+      buildSystemPromptFile(agent, details.worktree.enabled),
+      {
+        encoding: 'utf-8',
+        mode: 0o600,
+      },
+    );
     let cwd = params.cwd ?? ctx.cwd;
     if (details.worktree.enabled) {
       worktreePlan = await prepareWorktree(cwd, taskId, agent.name);
@@ -372,6 +385,9 @@ async function runSubagentTool(
       if (env.from !== 'sub') {
         return;
       }
+      if (env.type === 'done') {
+        details.status = 'finalizing';
+      }
       if (env.type === 'report') {
         details.finalReport = {
           ...(active.finalReport ?? active.lastReport ?? env.payload),
@@ -427,6 +443,17 @@ async function runSubagentTool(
     emitLifecycle(pi, 'subagent:connected', {taskId});
     const completion = (async (): Promise<AgentToolResult<SubagentDetails>> => {
       const result = await outcome;
+      details.execution = {
+        status: result.status,
+        exitCode: result.exit?.code,
+        signal: result.exit?.signal,
+      };
+      try {
+        updateMeta(taskId, {status: 'finalizing'});
+      } catch {
+        // The terminal metadata update below reports persistent write failures.
+      }
+      emitLifecycle(pi, 'subagent:finalizing', {taskId});
       details.status = result.status;
       details.error = result.error;
       if (!details.finalReport && result.finalText) {
@@ -440,6 +467,7 @@ async function runSubagentTool(
             ? await finalizeWorktree(worktreePlan, {
               agentName: agent.name,
               taskSummary: params.task,
+              allowCommit: reportedOutcome(details.finalReport) === 'completed',
               reportedCommits: details.finalReport?.final !== false
                 ? details.finalReport?.commits
                 : undefined,
@@ -448,6 +476,7 @@ async function runSubagentTool(
           details.worktree = {
             enabled: true,
             baseCommit: worktreePlan.baseCommit,
+            repoRoot: worktreePlan.repoRoot,
             ...finalized,
           };
           if (finalized.error) {
@@ -473,8 +502,6 @@ async function runSubagentTool(
         } catch (error) {
           details.status = 'failed';
           details.error = `bus cleanup failed: ${(error as Error).message}`;
-        } finally {
-          remove(taskId);
         }
       }
       try {
@@ -490,15 +517,17 @@ async function runSubagentTool(
       }
       persistResult(details);
       active.status = details.status;
+      remove(taskId);
       emitLifecycle(pi, 'subagent:done', {
         taskId,
         status: details.status,
+        ...describeResult(details),
         durationMs: Date.now() - active.startedAt,
         worktree: details.worktree,
         llmAnswersTotal: active.llmAnswersTotal,
       });
       if (active.mode === 'background' && !active.ownerClosed) {
-        routeTaskCompletion(pi, ctx, active, resultText(details));
+        routeTaskCompletion(pi, ctx, active, completionText(details));
       }
       return taskResult(details);
     })();
@@ -528,7 +557,7 @@ async function runSubagentTool(
             pi,
             ctx,
             active,
-            resultText(details),
+            completionText(details),
           );
         }
       });
@@ -584,6 +613,16 @@ async function runSubagentTool(
   }
 }
 
+function completionText(details: SubagentDetails): string {
+  const description = describeResult(details).resultDescription;
+  const headline = description.length > 1000
+    ? `${
+      description.slice(0, 1000)
+    }... (description truncated; full result follows)`
+    : description;
+  return `${headline}\n\n${resultText(details)}`;
+}
+
 function persistResult(details: SubagentDetails): void {
   if (!details.taskId) {
     return;
@@ -617,11 +656,15 @@ function textResult(text: string): AgentToolResult<undefined> {
   return {content: [{type: 'text', text}], details: undefined};
 }
 
-function buildSystemPromptFile(agent: AgentConfig): string {
+function buildSystemPromptFile(agent: AgentConfig, isolated: boolean): string {
   return [
     `# Subagent system prompt (${agent.name})`,
     '',
     'You are a headless subagent. Use report for results, progress for short updates, and ask when you genuinely need clarification from the controlling agent or user.',
+    isolated
+      ? 'Workspace mode: isolated worktree, initially on detached HEAD.'
+      : 'Workspace mode: shared checkout. Do not assume isolation or that the controller will create a branch.',
+    'In your final report, explicitly set outcome to completed, partial, blocked, declined, failed, or unknown. Describe delivered outputs and remaining work, with blockers, artifacts, and verification. A normal exit is not proof of task completion. A completed testing task can report failed checks; task fulfillment and check results are separate. Do not claim tests ran if they did not. Branch retention is verified by the controller after you exit.',
     '',
     `## Soft turn limit: ${MAX_TURNS} (grace: ${GRACE_TURNS})`,
     '',

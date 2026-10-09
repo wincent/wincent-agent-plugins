@@ -12,6 +12,7 @@ export type LifecycleEvent =
   | 'subagent:connected'
   | 'subagent:progress'
   | 'subagent:report'
+  | 'subagent:finalizing'
   | 'subagent:asked'
   | 'subagent:answered'
   | 'subagent:steered'

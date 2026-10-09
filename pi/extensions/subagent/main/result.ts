@@ -13,11 +13,13 @@ import {
 import {join} from 'node:path';
 import {createInterface} from 'node:readline';
 
-import type {ReportPayload} from '../bus/envelope.js';
+import type {ReportPayload, Verification} from '../bus/envelope.js';
+import {type ResultDescription, describeResult} from './description.js';
 import {
   type MetaJson,
   type TaskStatus,
   auditLogPath,
+  isTaskPending,
   readMeta,
   stateRoot,
   taskDir,
@@ -31,9 +33,17 @@ export interface SubagentDetails {
   pid: number | null;
   taskDir: string;
   cwd?: string;
+  execution?: {
+    status: 'ok' | 'failed' | 'aborted' | 'crashed';
+    exitCode?: number | null;
+    signal?: NodeJS.Signals | null;
+  };
   worktree: {
     enabled: boolean;
     baseCommit?: string;
+    repoRoot?: string;
+    retentionVerified?: boolean;
+    verification?: Verification[];
     hasChanges?: boolean;
     warnings?: string[];
     error?: string;
@@ -53,6 +63,7 @@ interface SavedResult {
   v: 1;
   completedAt: string;
   details: SubagentDetails;
+  result?: ResultDescription;
 }
 
 export const MAX_RESULT_CHARS = 32_000;
@@ -69,6 +80,7 @@ export function saveResult(details: SubagentDetails): void {
       v: 1,
       completedAt: new Date().toISOString(),
       details: {...details, resultPath: path},
+      result: describeResult(details),
     };
     writeFileSync(temporary, JSON.stringify(saved, null, 2) + '\n', {
       encoding: 'utf8',
@@ -139,6 +151,8 @@ export function resultText(details: SubagentDetails): string {
       {}),
   };
   const body = {
+    ...describeResult(details),
+    execution: details.execution,
     error: details.error,
     retrievalNote: details.retrievalNote,
     finalReport: details.finalReport,
@@ -271,7 +285,7 @@ export function recentCompletedTasks(
       if (existsSync(path)) {
         candidates.push({taskId, time: statSync(path).mtimeMs, meta});
       } else if (
-        meta && meta.status !== 'running' && meta.status !== 'spawning'
+        meta && !isTaskPending(meta.status)
       ) {
         candidates.push({
           taskId,
@@ -295,8 +309,7 @@ export function recentCompletedTasks(
     if (saved) {
       results.push(saved.details);
     } else if (
-      candidate.meta && candidate.meta.status !== 'running' &&
-      candidate.meta.status !== 'spawning'
+      candidate.meta && !isTaskPending(candidate.meta.status)
     ) {
       results.push(detailsFromMeta(candidate.meta));
     }

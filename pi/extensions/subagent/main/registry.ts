@@ -37,8 +37,8 @@ export interface ActiveTask {
   finalReport?: ReportEnvelope['payload'];
   /** Most recent any-report received. */
   lastReport?: ReportEnvelope['payload'];
-  /** Last status from the subagent. */
-  status: 'running' | 'ok' | 'failed' | 'aborted' | 'crashed';
+  /** Only the controller publishes a terminal status, after finalization. */
+  status: 'running' | 'finalizing' | 'ok' | 'failed' | 'aborted' | 'crashed';
   /**
    * Resolved ask policy for this task: per-call override beats agent
    * frontmatter beats the global default of `'human'`. Read by routing
@@ -109,11 +109,7 @@ export function trackBus(
         task.finalReport = env.payload;
       }
     } else if (env.type === 'done') {
-      task.status = env.payload.status === 'ok'
-        ? 'ok'
-        : env.payload.status === 'aborted'
-        ? 'aborted'
-        : 'failed';
+      task.status = 'finalizing';
     }
     onUpdate?.(env);
   });

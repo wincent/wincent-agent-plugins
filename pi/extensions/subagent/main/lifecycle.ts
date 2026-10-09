@@ -53,6 +53,7 @@ export function observeTask(
         return;
       }
       finishing = true;
+      task.status = 'finalizing';
       clearTimeout(exitTimer);
       let exit: ProcessExit | undefined;
       let error: string | undefined;
@@ -85,7 +86,6 @@ export function observeTask(
         status = done.status;
         error = done.error;
       }
-      task.status = status;
       resolve({status, error, finalText: done?.finalText, exit});
     };
     const unsub = task.bus.subscribe((env) => {

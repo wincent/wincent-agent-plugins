@@ -14,10 +14,12 @@ import type {
 import {Type} from 'typebox';
 
 import type {Bus} from '../bus/bus.js';
+import {REPORT_OUTCOMES} from '../bus/envelope.js';
 import type {
   AnswerEnvelope,
   CommitInfo,
   Finding,
+  ReportArtifact,
   Severity,
 } from '../bus/envelope.js';
 
@@ -58,8 +60,43 @@ const ProgressParams = Type.Object({
 
 const ReportParams = Type.Object({
   summary: Type.String({
-    description: 'One or two sentence summary of what was done',
+    description:
+      'Describe what was delivered, what remains, and why work stopped. Do not equate a normal exit with fulfilling the request.',
   }),
+  outcome: Type.Optional(
+    Type.Union(REPORT_OUTCOMES.map((value) => Type.Literal(value)), {
+      description:
+        'Task fulfillment, not process health or whether all checks passed. Set explicitly in a final report; omission means unknown.',
+    }),
+  ),
+  remaining: Type.Optional(
+    Type.Array(Type.String({description: 'Requested work not delivered'})),
+  ),
+  blockers: Type.Optional(
+    Type.Array(Type.String({description: 'What prevented completion'})),
+  ),
+  artifacts: Type.Optional(Type.Array(Type.Object({
+    kind: Type.Union(
+      ['file', 'directory', 'commit', 'branch', 'url', 'other'].map((value) =>
+        Type.Literal(value)
+      ),
+    ),
+    location: Type.String(),
+    description: Type.Optional(Type.String()),
+  }))),
+  verification: Type.Optional(Type.Array(Type.Object({
+    check: Type.String({
+      description: 'Command or check actually performed, or explicitly not run',
+    }),
+    result: Type.Union([
+      Type.Literal('passed'),
+      Type.Literal('failed'),
+      Type.Literal('not_run'),
+    ]),
+    details: Type.Optional(
+      Type.String({description: 'Evidence or reason the check was not run'}),
+    ),
+  }))),
   findings: Type.Optional(Type.Array(FindingSchema)),
   branch: Type.Optional(
     Type.String({description: 'Branch name (case-2 workers)'}),
@@ -123,13 +160,22 @@ export function registerSubTools(
       'Send a structured report back to the main agent. Use this for findings, '
       + 'commit summaries, or your final answer. Set `final: false` to send an '
       + 'incremental report and continue working; `final: true` (the default) '
-      + 'indicates this is your last report.',
+      + 'indicates this is your last report, not that harness finalization is complete. '
+      + 'Include outcome, a useful result description, remaining work/blockers, artifacts, '
+      + 'and verification. Use partial, blocked, or declined instead of claiming completion when work is unfinished.',
     parameters: ReportParams,
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       const findings = params.findings as Finding[] | undefined;
       const commits = params.commits as CommitInfo[] | undefined;
       getBus().emit('report', {
         summary: params.summary,
+        ...(params.outcome ? {outcome: params.outcome} : {}),
+        ...(params.remaining ? {remaining: params.remaining} : {}),
+        ...(params.blockers ? {blockers: params.blockers} : {}),
+        ...(params.artifacts
+          ? {artifacts: params.artifacts as ReportArtifact[]}
+          : {}),
+        ...(params.verification ? {verification: params.verification} : {}),
         ...(findings ? {findings} : {}),
         ...(params.branch ? {branch: params.branch} : {}),
         ...(commits ? {commits} : {}),

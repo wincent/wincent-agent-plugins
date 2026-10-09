@@ -34,8 +34,35 @@ export interface ProgressPayload {
   kind?: ProgressKind;
 }
 
+export const REPORT_OUTCOMES = [
+  'completed',
+  'partial',
+  'blocked',
+  'declined',
+  'failed',
+  'unknown',
+] as const;
+export type ReportedOutcome = typeof REPORT_OUTCOMES[number];
+
+export interface ReportArtifact {
+  kind: 'file' | 'directory' | 'commit' | 'branch' | 'url' | 'other';
+  location: string;
+  description?: string;
+}
+
+export interface Verification {
+  check: string;
+  result: 'passed' | 'failed' | 'not_run';
+  details?: string;
+}
+
 export interface ReportPayload {
   summary: string;
+  outcome?: ReportedOutcome;
+  remaining?: string[];
+  blockers?: string[];
+  artifacts?: ReportArtifact[];
+  verification?: Verification[];
   findings?: Finding[];
   branch?: string;
   commits?: CommitInfo[];

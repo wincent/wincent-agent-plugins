@@ -17,7 +17,7 @@ import {AuditLog} from '../bus/audit-log.js';
 import {Bus} from '../bus/bus.js';
 import {launchSubagent} from '../main/launch.js';
 import {cancelTask, observeTask} from '../main/lifecycle.js';
-import type {ActiveTask} from '../main/registry.js';
+import {type ActiveTask, trackBus} from '../main/registry.js';
 import {
   type SpawnArgs,
   type SpawnedProcess,
@@ -189,11 +189,24 @@ test(
   async () => {
     await withChild('normal', async (dir, task) => {
       const started = Date.now();
+      trackBus(task);
+      const doneStatuses: string[] = [];
+      task.bus.subscribe((env) => {
+        if (env.type === 'done') {
+          doneStatuses.push(task.status);
+        }
+      });
       const outcome = await observeTask(task, {
         exitGraceMs: 500,
         killGraceMs: 100,
       });
       assert.equal(outcome.status, 'ok');
+      assert.deepEqual(doneStatuses, ['finalizing']);
+      assert.equal(
+        task.status,
+        'finalizing',
+        'process settlement cannot publish terminal task success',
+      );
       assert.equal(outcome.exit?.code, 0);
       assert.ok(Date.now() - started >= 100);
       assert.match(readFileSync(task.process.stdoutPath, 'utf8'), /task_test/);

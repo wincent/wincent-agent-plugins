@@ -179,7 +179,14 @@ for (
   });
 }
 
-for (const scenario of ['worker-clean', 'worker-mismatch']) {
+for (
+  const scenario of [
+    'worker-clean',
+    'worker-mismatch',
+    'worker-partial',
+    'worker-background',
+  ]
+) {
   test(`real controlling Pi: ${scenario}`, {timeout: 30_000}, async () => {
     const {dir, cleanup} = setup();
     const repo = join(dir, 'repo');
@@ -196,12 +203,21 @@ for (const scenario of ['worker-clean', 'worker-mismatch']) {
       git(['add', 'README.md']);
       git(['commit', '-qm', 'initial']);
       await runController(repo, scenario);
-      const result = JSON.parse(
-        toolTexts(
-          readFileSync(join(repo, 'requests.jsonl'), 'utf8'),
-          'subagent',
-        )[0],
-      );
+      const requests = readFileSync(join(repo, 'requests.jsonl'), 'utf8');
+      const result = scenario === 'worker-background'
+        ? JSON.parse(
+          readFileSync(
+            join(
+              dir,
+              'pi',
+              'subagent',
+              readdirSync(join(dir, 'pi', 'subagent'))[0],
+              'result.json',
+            ),
+            'utf8',
+          ),
+        ).details
+        : JSON.parse(toolTexts(requests, 'subagent')[0]);
       assert.equal(result.worktree.commits.length, 1);
       const head = result.worktree.commits[0].sha;
       assert.equal(
@@ -214,13 +230,34 @@ for (const scenario of ['worker-clean', 'worker-mismatch']) {
         }),
         'example\n',
       );
-      if (scenario === 'worker-clean') {
+      if (scenario !== 'worker-mismatch') {
         assert.equal(result.status, 'ok');
         assert.equal(result.finalReport.commits[0].sha, head);
-        assert.ok(!existsSync(result.cwd));
+        if (scenario === 'worker-partial') {
+          assert.equal(result.taskOutcome, 'partial');
+          assert.match(result.resultDescription, /partial delivery/);
+          assert.ok(existsSync(result.worktree.preservedPath));
+          assert.match(
+            execFileSync('git', ['-C', result.cwd, 'status', '--porcelain'], {
+              encoding: 'utf8',
+            }),
+            /\?\? unfinished.txt/,
+          );
+        } else {
+          assert.ok(!existsSync(result.cwd));
+        }
       } else {
         assert.equal(result.status, 'failed');
         assert.match(result.error, /reported commits disagree/);
+        assert.equal(
+          result.taskOutcome,
+          'completed',
+          'the claim is separate from harness failure',
+        );
+        assert.match(
+          result.resultDescription,
+          /Harness finalization ended with status failed/,
+        );
         assert.notEqual(
           result.finalReport.commits[0].sha,
           head,
@@ -228,14 +265,77 @@ for (const scenario of ['worker-clean', 'worker-mismatch']) {
         );
         assert.ok(existsSync(result.worktree.preservedPath));
       }
-      const saved = JSON.parse(readFileSync(result.resultPath, 'utf8')).details;
-      assert.equal(saved.status, result.status);
-      assert.deepEqual(saved.worktree, result.worktree);
+      const saved = JSON.parse(readFileSync(result.resultPath, 'utf8'));
+      assert.equal(saved.details.status, result.status);
+      assert.deepEqual(saved.details.worktree, result.worktree);
+      assert.ok(
+        saved.result.artifacts.retained.some((
+          artifact: {kind: string; location: string},
+        ) =>
+          artifact.kind === 'branch' &&
+          artifact.location === result.worktree.branch
+        ),
+      );
+      assert.equal(
+        saved.result.verification.reported[0].check,
+        'Read foo.txt contents',
+      );
+      assert.ok(
+        saved.result.verification.harness.some((
+          check: {check: string; result: string},
+        ) =>
+          check.check === 'Retained branch points to finalized HEAD' &&
+          check.result === 'passed'
+        ),
+      );
+      assert.deepEqual(
+        JSON.parse(
+          readFileSync(
+            join(result.taskDir, 'finalizing-observed.json'),
+            'utf8',
+          ),
+        ),
+        {status: 'finalizing', hasSavedResult: false},
+      );
+      if (scenario === 'worker-background') {
+        assert.match(requests, /report received \(not finalized\)/);
+        assert.match(requests, /Agent reports task completion/);
+        assert.match(requests, /Retained branch points to finalized HEAD/);
+        assert.doesNotMatch(requests, /done \(ok\)/);
+      }
     } finally {
       cleanup();
     }
   });
 }
+
+test(
+  'worker refusal has a declined outcome even when execution and lifecycle succeed',
+  {timeout: 30_000},
+  async () => {
+    const {dir, cleanup} = setup();
+    try {
+      await runController(dir, 'worker-declined');
+      const result = JSON.parse(
+        toolTexts(
+          readFileSync(join(dir, 'requests.jsonl'), 'utf8'),
+          'subagent',
+        )[0],
+      );
+      assert.equal(result.status, 'ok');
+      assert.equal(result.execution.status, 'ok');
+      assert.equal(result.taskOutcome, 'declined');
+      assert.match(result.resultDescription, /declined the task/);
+      assert.deepEqual(result.blockers, [
+        'Mandatory commit workflow conflicts with untracked-only request',
+      ]);
+      assert.deepEqual(result.artifacts.reported, []);
+      assert.equal(result.verification.reported[0].result, 'not_run');
+    } finally {
+      cleanup();
+    }
+  },
+);
 
 function toolTexts(requests: string, toolName: string): string[] {
   const texts: string[] = [];

@@ -48,8 +48,10 @@ test('status widget follows lifecycle events and unsubscribes on shutdown', () =
   hooks.get('session_start')!({}, ctx);
   emit('spawned', {taskId: 'one', agent: 'scout'});
   emit('progress', {taskId: 'one', text: 'reading\nfiles'});
-  assert.equal(statuses.at(-1), 'Subagents: 1 running');
+  assert.equal(statuses.at(-1), 'Subagents: 1 active');
   assert.deepEqual(widgets.at(-1), ['scout: reading files']);
+  emit('finalizing', {taskId: 'one'});
+  assert.deepEqual(widgets.at(-1), ['scout: finalizing outputs and cleanup']);
   emit('done', {taskId: 'one'});
   assert.equal(widgets.at(-1), undefined);
   hooks.get('session_shutdown')!({}, ctx);

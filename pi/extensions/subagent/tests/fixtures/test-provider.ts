@@ -5,7 +5,14 @@ import {
 } from '@earendil-works/pi-ai';
 import type {ExtensionAPI} from '@earendil-works/pi-coding-agent';
 import {execFileSync} from 'node:child_process';
-import {appendFileSync, chmodSync, mkdirSync, writeFileSync} from 'node:fs';
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import {join} from 'node:path';
 
 /** Deterministic, in-memory provider. No requests, credentials, or paid tokens. */
@@ -13,6 +20,7 @@ export default function (pi: ExtensionAPI): void {
   let scenario = 'ask';
   let turn = 0;
   let continued = false;
+  let backgroundFinished = false;
   const isChild = !!process.env.PI_SUBAGENT_TASK_ID;
   pi.on('input', (event) => {
     if (turn === 0) {
@@ -74,6 +82,20 @@ export default function (pi: ExtensionAPI): void {
         0o400,
       );
     }
+  });
+  pi.events.on('subagent:finalizing', (data) => {
+    const {taskId} = data as {taskId: string};
+    const dir = join(process.env.XDG_STATE_HOME!, 'pi', 'subagent', taskId);
+    writeFileSync(
+      join(dir, 'finalizing-observed.json'),
+      JSON.stringify({
+        status: JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8')).status,
+        hasSavedResult: existsSync(join(dir, 'result.json')),
+      }),
+    );
+  });
+  pi.events.on('subagent:done', () => {
+    backgroundFinished = true;
   });
   pi.registerProvider('subagent-test', {
     api: 'subagent-test-api',
@@ -159,6 +181,7 @@ export default function (pi: ExtensionAPI): void {
             name: 'subagent',
             arguments: {
               agent: scenario.startsWith('worker-') ? 'worker' : 'scout',
+              ...(scenario === 'worker-declined' ? {worktree: false} : {}),
               task: scenario === 'background'
                 ? 'wait'
                 : scenario === 'metadata-failure'
@@ -166,20 +189,30 @@ export default function (pi: ExtensionAPI): void {
                 : scenario,
               ask_policy: 'deny',
               background: scenario === 'background' ||
-                scenario === 'metadata-failure',
+                scenario === 'metadata-failure' ||
+                scenario === 'worker-background',
             },
           };
         } else if (isChild && current === 0) {
           call = {name: 'progress', arguments: {text: 'headless progress'}};
-        } else if (isChild && scenario.startsWith('worker-') && current === 1) {
+        } else if (
+          isChild && scenario.startsWith('worker-') &&
+          scenario !== 'worker-declined' && current === 1
+        ) {
           call = {
             name: 'bash',
             arguments: {
               command:
-                "printf 'example\\n' > foo.txt && git add -- foo.txt && git commit -m 'test worker output'",
+                "printf 'example\\n' > foo.txt && git add -- foo.txt && git commit -m 'test worker output'" +
+                (scenario === 'worker-partial'
+                  ? " && printf 'unfinished\\n' > unfinished.txt"
+                  : ''),
             },
           };
-        } else if (isChild && scenario.startsWith('worker-') && current === 2) {
+        } else if (
+          isChild && scenario.startsWith('worker-') &&
+          scenario !== 'worker-declined' && current === 2
+        ) {
           const sha = execFileSync('git', [
             'rev-parse',
             scenario === 'worker-mismatch' ? 'HEAD^' : 'HEAD',
@@ -188,6 +221,22 @@ export default function (pi: ExtensionAPI): void {
             name: 'report',
             arguments: {
               summary: 'Created and committed foo.txt',
+              outcome: scenario === 'worker-partial' ? 'partial' : 'completed',
+              remaining: scenario === 'worker-partial'
+                ? ['Finish the second file']
+                : [],
+              artifacts: [{
+                kind: 'file',
+                location: 'foo.txt',
+                description: 'Example output',
+              }],
+              verification: [{
+                check: 'Read foo.txt contents',
+                result: readFileSync('foo.txt', 'utf8') === 'example\n'
+                  ? 'passed'
+                  : 'failed',
+                details: 'example followed by a newline',
+              }],
               commits: [{sha, subject: 'test worker output'}],
             },
           };
@@ -195,6 +244,25 @@ export default function (pi: ExtensionAPI): void {
           call = {
             name: 'ask',
             arguments: {question: 'Which value?', timeoutMs: 10_000},
+          };
+        } else if (isChild && scenario === 'worker-declined' && current === 2) {
+          call = {
+            name: 'report',
+            arguments: {
+              outcome: 'declined',
+              summary:
+                'No file was created because this role requires a commit.',
+              blockers: [
+                'Mandatory commit workflow conflicts with untracked-only request',
+              ],
+              remaining: ['Create the untracked scratch file'],
+              artifacts: [],
+              verification: [{
+                check: 'Scratch file contents',
+                result: 'not_run',
+                details: 'No file was created',
+              }],
+            },
           };
         } else if (isChild && current === 2) {
           call = {
@@ -270,7 +338,11 @@ export default function (pi: ExtensionAPI): void {
         }
         stream.end();
       };
-      if (!isChild && scenario === 'metadata-failure' && turn === 1) {
+      if (!isChild && scenario === 'worker-background' && turn === 1) {
+        const wait = () =>
+          backgroundFinished ? respond() : setTimeout(wait, 10);
+        wait();
+      } else if (!isChild && scenario === 'metadata-failure' && turn === 1) {
         setTimeout(respond, 300);
       } else {
         queueMicrotask(respond);

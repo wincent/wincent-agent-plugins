@@ -6,7 +6,7 @@ import {mkdir} from 'node:fs/promises';
 import {basename, dirname, join, resolve} from 'node:path';
 import {promisify} from 'node:util';
 
-import type {CommitInfo} from '../bus/envelope.js';
+import type {CommitInfo, Verification} from '../bus/envelope.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -25,6 +25,8 @@ export interface WorktreeOutcome {
   commits: CommitInfo[];
   warnings?: string[];
   error?: string;
+  retentionVerified?: boolean;
+  verification?: Verification[];
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {
@@ -122,7 +124,12 @@ export async function finalizeWorktree(
     allowCommit?: boolean;
   },
 ): Promise<WorktreeOutcome> {
-  const result: WorktreeOutcome = {hasChanges: false, commits: []};
+  const verification: Verification[] = [];
+  const result: WorktreeOutcome = {
+    hasChanges: false,
+    commits: [],
+    verification,
+  };
   try {
     if (!existsSync(plan.path)) {
       throw new Error(
@@ -133,6 +140,11 @@ export async function finalizeWorktree(
     const dirty = (await git(plan.path, ['status', '--porcelain'])).length > 0;
     result.hasChanges = dirty || head !== plan.baseCommit;
     result.commits = await commitsSinceBase(plan, head);
+    verification.push({
+      check: 'Enumerate worker commits',
+      result: 'passed',
+      details: `${result.commits.length} commits since ${plan.baseCommit}`,
+    });
     try {
       await git(plan.path, [
         'merge-base',
@@ -140,11 +152,30 @@ export async function finalizeWorktree(
         plan.baseCommit,
         head,
       ]);
+      verification.push({
+        check: 'Dispatch baseline is an ancestor of worker HEAD',
+        result: 'passed',
+      });
     } catch {
       result.error =
         'worktree HEAD no longer descends from its dispatch baseline';
+      verification.push({
+        check: 'Dispatch baseline is an ancestor of worker HEAD',
+        result: 'failed',
+      });
     }
     // Compare before a harness-created commit can extend the child's output.
+    verification.push({
+      check: 'Reported commit IDs match Git inventory',
+      result: options.reportedCommits === undefined
+        ? 'not_run'
+        : reportsAgree(options.reportedCommits, result.commits)
+        ? 'passed'
+        : 'failed',
+      ...(options.reportedCommits === undefined
+        ? {details: 'No commit inventory was reported.'}
+        : {}),
+    });
     if (
       options.reportedCommits !== undefined &&
       !reportsAgree(options.reportedCommits, result.commits)
@@ -187,14 +218,31 @@ export async function finalizeWorktree(
           'retained branch does not point to the finalized worktree HEAD',
         );
       }
+      result.retentionVerified = true;
+      verification.push({
+        check: 'Retained branch points to finalized HEAD',
+        result: 'passed',
+        details: `${branch} -> ${head}`,
+      });
     }
     if (result.error || (dirty && options.allowCommit === false)) {
+      verification.push({
+        check: 'Remove worktree',
+        result: 'not_run',
+        details: 'Worktree preserved for inspection.',
+      });
       result.preservedPath = plan.path;
       return result;
     }
     // Without --force, concurrent uncommitted changes or a lock prevent removal.
     await git(plan.repoRoot, ['worktree', 'remove', plan.path]);
+    verification.push({check: 'Remove worktree', result: 'passed'});
   } catch (error) {
+    verification.push({
+      check: 'Worktree finalization',
+      result: 'failed',
+      details: (error as Error).message,
+    });
     result.error = [result.error, (error as Error).message].filter(Boolean)
       .join('; ');
     if (existsSync(plan.path)) {
@@ -205,9 +253,16 @@ export async function finalizeWorktree(
 }
 
 export function preserveWorktreeOnCrash(plan: WorktreePlan): WorktreeOutcome {
+  const present = existsSync(plan.path);
   return {
-    hasChanges: existsSync(plan.path),
-    preservedPath: plan.path,
+    hasChanges: present,
+    ...(present ? {preservedPath: plan.path} : {}),
     commits: [],
+    verification: [{
+      check: 'Worktree finalization',
+      result: 'not_run',
+      details:
+        'Worktree left for inspection; commit retention was not verified.',
+    }],
   };
 }
