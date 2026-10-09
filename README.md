@@ -57,6 +57,7 @@ Pi extensions live under [`pi/extensions`](./pi/extensions/):
 - [jj-guard](./pi/extensions/jj-guard.ts)
 - [model-info](./pi/extensions/model-info.ts)
 - [ocr](./pi/extensions/ocr)
+- [sandbox](./pi/extensions/sandbox.ts)
 - [slack-mcp](./pi/extensions/slack-mcp.ts)
 - [subagent](./pi/extensions/subagent)
 - [total-cost](./pi/extensions/total-cost.ts)

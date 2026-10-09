@@ -63,6 +63,10 @@ Because the block is regenerated every turn, `/model` and `/thinking` changes ar
 
 Adds an `ocr` tool for local scanned PDFs and PNG/JPEG images, plus `/ocr-status` and `/ocr-approval`. Sends only a placeholder credential through the existing nono proxy; the extension never reads the real Mistral key. The first OCR call asks for approval, which is retained for the rest of the session without further prompts and inherited by subsequently launched subagents with OCR enabled. `/ocr-approval session` approves ahead of first use, and `/ocr-approval revoke` clears approval so the next call asks again. Each call defaults to the first PDF page or a single image and returns private JSON/Markdown/provenance artifacts rather than document text. Requires `curl` and a host-side Mistral OCR credential route; images use the same route as PDFs. See [`ocr/README.md`](ocr/README.md) for setup, limits, security boundaries, and tests. A companion Pi-only `ocr` skill covers document handling and transcription fidelity.
 
+### `sandbox.ts`
+
+Shows a dimmed `Sandbox ✔` footer status when `NONO_CAP_FILE` is non-empty, alongside other extension statuses such as OCR and subagents. Checks the current process environment on session start (including reload), without reading the capability file. This is a nono launcher hint, not verification of sandbox enforcement. Shows nothing when the variable is unset or empty, and does nothing outside TUI mode.
+
 ### `subagent/`
 
 Delegates focused tasks to specialized subagents that run as direct, headless Pi processes, communicating with the main agent over a typed Unix domain socket bus. No tmux dependency; the controlling UI shows progress and each task retains private stdout/stderr and bus logs. Ships six default agent personalities (`scout`, `linter`, `tester`, `reviewer`, `formatter`, `worker`); more can be added by dropping files into `~/.pi/agent/agents/`.
