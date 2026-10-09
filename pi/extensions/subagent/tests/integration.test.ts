@@ -5,8 +5,8 @@
  * sub-side Bus on the same socket (in the same process) and exercises
  * the request/reply, progress streaming, and graceful shutdown flow.
  *
- * Does NOT involve a real pi subprocess or tmux. The full end-to-end
- * exercise (real `pi -p` spawned in a tmux pane) is checked manually.
+ * Does not involve a real Pi subprocess. Direct-process and headless Pi
+ * coverage lives in the spawn and headless tests.
  */
 
 import {strict as assert} from 'node:assert';

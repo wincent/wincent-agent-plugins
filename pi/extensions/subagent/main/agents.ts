@@ -6,9 +6,7 @@
  *   description       (required)
  *   tools             (required)
  *   disallowed_tools  (optional)
- *   placement         (optional)
  *   worktree          (optional)
- *   close_on_success  (optional)
  *   ask_policy        (optional; one of "human", "deny", "llm")
  *
  * Frontmatter is authoritative for the fields it sets. Per-call `subagent`
@@ -20,12 +18,6 @@ import {homedir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-export type Placement =
-  | 'split-right'
-  | 'split-down'
-  | 'window'
-  | 'window-detached';
-
 export type AskPolicy = 'human' | 'deny' | 'llm';
 
 export type AgentSource = 'project' | 'user' | 'extension';
@@ -35,9 +27,7 @@ export interface AgentConfig {
   description: string;
   tools: string[];
   disallowedTools?: string[];
-  placement: Placement;
   worktree: boolean;
-  closeOnSuccess: boolean;
   /**
    * Default policy for handling `ask` envelopes from the subagent.
    * Undefined means the agent file did not set one; the per-call
@@ -53,9 +43,7 @@ interface RawFrontmatter {
   description?: string;
   tools?: string;
   disallowed_tools?: string;
-  placement?: string;
   worktree?: string | boolean;
-  close_on_success?: string | boolean;
   ask_policy?: string;
 }
 
@@ -112,13 +100,6 @@ function parseFrontmatter(content: string): ParsedFrontmatter {
   };
 }
 
-const VALID_PLACEMENTS: ReadonlySet<Placement> = new Set([
-  'split-right',
-  'split-down',
-  'window',
-  'window-detached',
-]);
-
 const VALID_ASK_POLICIES: ReadonlySet<AskPolicy> = new Set([
   'human',
   'deny',
@@ -143,17 +124,6 @@ function parseBool(
     return false;
   }
   return fallback;
-}
-
-function parsePlacement(
-  value: string | undefined,
-  fallback: Placement,
-): Placement {
-  if (!value) {
-    return fallback;
-  }
-  const trimmed = value.trim() as Placement;
-  return VALID_PLACEMENTS.has(trimmed) ? trimmed : fallback;
 }
 
 function parseAskPolicy(value: string | undefined): AskPolicy | undefined {
@@ -225,14 +195,9 @@ function loadAgentsFromDir(
       disallowedTools: frontmatter.disallowed_tools
         ? parseToolList(frontmatter.disallowed_tools)
         : undefined,
-      placement: parsePlacement(frontmatter.placement, 'split-right'),
       worktree: parseBool(
         frontmatter.worktree as string | boolean | undefined,
         false,
-      ),
-      closeOnSuccess: parseBool(
-        frontmatter.close_on_success as string | boolean | undefined,
-        true,
       ),
       askPolicy: parseAskPolicy(frontmatter.ask_policy),
       systemPrompt: body.trim(),

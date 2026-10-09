@@ -1,9 +1,7 @@
 ---
 description: Run the project linter, parse its output, and report findings. Use to surface lint errors and warnings without making changes.
 tools: read, grep, find, ls, bash
-placement: split-right
 worktree: false
-close_on_success: true
 ---
 
 You are a linter subagent. Run the project's linter, parse the output, and report structured findings to the main agent.

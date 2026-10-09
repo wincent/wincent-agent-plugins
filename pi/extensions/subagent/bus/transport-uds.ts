@@ -10,6 +10,7 @@
  * the local end with no further data.
  */
 
+import {chmodSync} from 'node:fs';
 import {unlink} from 'node:fs/promises';
 import {
   type Server,
@@ -116,8 +117,16 @@ export function listenForPeer(
     let socket: Socket | null = null;
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     let flushBuffer: () => void = () => {};
+    let ownsSocketFile = false;
+    const onAbort = () => {
+      finishWithError(new Error('aborted while waiting for subagent'));
+    };
 
     const cleanupSocketFile = async () => {
+      if (!ownsSocketFile) {
+        return;
+      }
+      ownsSocketFile = false;
       try {
         await unlink(socketPath);
       } catch {
@@ -130,6 +139,7 @@ export function listenForPeer(
         return;
       }
       resolved = true;
+      options.signal?.removeEventListener('abort', onAbort);
       if (timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
@@ -152,9 +162,6 @@ export function listenForPeer(
     }, options.timeoutMs);
 
     if (options.signal) {
-      const onAbort = () => {
-        finishWithError(new Error('aborted while waiting for subagent'));
-      };
       if (options.signal.aborted) {
         onAbort();
         return;
@@ -163,7 +170,12 @@ export function listenForPeer(
     }
 
     server = createServer((conn) => {
+      if (resolved) {
+        conn.destroy();
+        return;
+      }
       socket = conn;
+      options.signal?.removeEventListener('abort', onAbort);
       if (timeoutHandle) {
         clearTimeout(timeoutHandle);
         timeoutHandle = null;
@@ -208,8 +220,7 @@ export function listenForPeer(
         closeHandlers,
         parseErrorHandlers,
         close: async () => {
-          conn.end();
-          conn.destroy();
+          await closeSocket(conn);
           await cleanupSocketFile();
         },
       }));
@@ -219,7 +230,19 @@ export function listenForPeer(
       finishWithError(err);
     });
 
-    server.listen(socketPath);
+    server.listen(socketPath, () => {
+      ownsSocketFile = true;
+      if (resolved) {
+        server?.close();
+        void cleanupSocketFile();
+        return;
+      }
+      try {
+        chmodSync(socketPath, 0o600);
+      } catch (error) {
+        finishWithError(error as Error);
+      }
+    });
   });
 }
 
@@ -304,10 +327,7 @@ export function connectToPeer(
           handlers,
           closeHandlers,
           parseErrorHandlers,
-          close: async () => {
-            conn.end();
-            conn.destroy();
-          },
+          close: () => closeSocket(conn),
         }));
       });
 
@@ -334,6 +354,20 @@ export function connectToPeer(
     };
 
     tryConnect();
+  });
+}
+
+function closeSocket(socket: Socket): Promise<void> {
+  if (socket.destroyed) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => socket.destroy(), 1_000);
+    socket.once('close', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    socket.end(() => socket.destroy());
   });
 }
 

@@ -1,11 +1,11 @@
 ---
 name: subagent
-description: Delegate focused work to specialized subagents (scout, linter, tester, reviewer, formatter, worker) that run in their own pi processes inside tmux panes. Use when you need read-only investigation, lint/test/review of current work, or sweeping changes across many locations that should each produce their own commit.
+description: Delegate focused work to specialized subagents (scout, linter, tester, reviewer, formatter, worker) that run in their own headless pi processes. Use when you need read-only investigation, lint/test/review of current work, or sweeping changes across many locations that should each produce their own commit.
 ---
 
 # subagent
 
-Delegate work to a focused subagent. Each subagent is a separate pi process running in a tmux pane (split or window), with its own narrower system prompt and tool whitelist. They report back via structured envelopes.
+Delegate work to a focused subagent. Each subagent is a separate headless pi process with its own narrower system prompt and tool whitelist. Provider, model, and thinking level are inherited at dispatch time. Progress appears in the controlling UI; structured reports and private task logs remain available without tmux.
 
 The `subagent` tool spawns a subagent; the `subagent_steer`, `subagent_cancel`, and `subagent_status` tools manage in-flight subagents.
 
@@ -31,13 +31,13 @@ The main agent (you) is working on a single change. You delegate side tasks to s
 
 > "Use the `reviewer` to look at my changes against main and report any concerns. Then use the `linter` to make sure lint is clean. If either reports issues, fix them and continue."
 
-Defaults that fit: `worktree: false`, `placement: split-right`, `close_on_success: true`. All built-in case-1 agents (`scout`, `linter`, `tester`, `reviewer`, `formatter`) already set these.
+Default: `worktree: false`. All built-in case-1 agents (`scout`, `linter`, `tester`, `reviewer`, `formatter`) already set this. Children exit when finished; logs are retained. There are no `placement` or `close_on_success` parameters.
 
-Useful fan-out idiom: launch several case-1 helpers in a single assistant turn. When the active model supports parallel tool calls, multiple `subagent` calls emitted in the same response run concurrently, each in its own pane.
+Useful fan-out idiom: launch several case-1 helpers in a single assistant turn. When the active model supports parallel tool calls, multiple `subagent` calls emitted in the same response run concurrently, each in its own process.
 
 ### Case 2: worktree per worker
 
-The user wants the same kind of change made in many places, each producing its own commit and (later) its own PR. The `worker` agent handles this. Defaults: `worktree: true`, `placement: window-detached`, `close_on_success: false`. The extension provisions an isolated worktree per call, lets the worker commit, and binds the commits to a branch named `subagent/worker/<short_task_id>` in the main repo. The worktree itself is pruned; the branch is the artefact.
+The user wants the same kind of change made in many places, each producing its own commit and (later) its own PR. The `worker` agent handles this. Default: `worktree: true`. The extension provisions an isolated worktree per call, lets the worker commit, and binds the commits to a branch named `subagent/worker/<short_task_id>` in the main repo. The worktree itself is pruned; the branch is the artefact.
 
 For a campaign of multiple workers, see the `/sweep` workflow prompt: scout out targets, confirm with the user, then call `subagent` once per target. Sequential (default) is safer; add `background: true` per call if the user explicitly wants parallelism.
 
@@ -52,7 +52,7 @@ For a campaign of multiple workers, see the `/sweep` workflow prompt: scout out 
 | Run the formatter and have it write changes                 | `formatter` |
 | Implement a scoped change in isolation, with its own branch | `worker`    |
 
-If none of these fits, define a new agent at `pi/extensions/subagent/agents/<name>.md` (in this repo) with frontmatter (`description`, `tools`, optional `placement`/`worktree`/`close_on_success`/`disallowed_tools`/`ask_policy`) and a system prompt body.
+If none of these fits, define a new agent at `pi/extensions/subagent/agents/<name>.md` (in this repo) with frontmatter (`description`, `tools`, optional `worktree`/`disallowed_tools`/`ask_policy`) and a system prompt body.
 
 ## How subagents ask clarifying questions (`ask_policy`)
 
@@ -60,7 +60,7 @@ Subagents can call their `ask` tool to request clarification mid-task. The main 
 
 | Policy  | What happens when the subagent asks                                                                                    | When to use                                                                                                                                                          |
 | ------- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `human` | The watching user gets a TUI input prompt. Whatever they type is the answer.                                           | **Default.** Right for case-1 helpers in a visible split where the user is at the keyboard and a single popup is fine.                                               |
+| `human` | The watching user gets a TUI input prompt. Whatever they type is the answer.                                           | **Default.** Right for case-1 helpers when the user is watching the controlling UI and a single popup is fine.                                                       |
 | `deny`  | No one is consulted. The subagent gets a canned reply telling it to make a reasonable assumption and document it.      | Unattended or high-fan-out work where popups would be intrusive (e.g. a sweep of background workers). Already the default for the bundled `worker` agent.            |
 | `llm`   | The question is forwarded to the main agent's own model via a one-shot out-of-band call. The reply is sent on the bus. | Background or parallel work where you want better-than-deny answer quality without bothering the user. Costs extra tokens per ask; adds latency. Use when justified. |
 
@@ -68,7 +68,7 @@ Precedence: the per-call `ask_policy` argument to the `subagent` tool wins; if a
 
 Practical guidance for choosing:
 
-- Single visible helper, user is watching: leave it alone (`human`).
+- Single helper, user is watching the controlling UI: leave it alone (`human`).
 - A `worker` (especially via `/sweep`): leave it alone (`worker`'s frontmatter already sets `deny`).
 - `background: true` task you launched while the user is doing something else: prefer `deny` unless the work is high-value enough to justify `llm` round-trips.
 - You want the subagent to clarify with "the same brain that delegated the task" rather than the user: `llm`.
@@ -94,6 +94,14 @@ When a subagent reports findings, decide whether to:
 - Fix and move on (most case-1 lint/format)
 - Surface to the user and ask (when findings are subjective)
 - Stop and reconsider (when a reviewer flags a serious bug)
+
+## Inspection
+
+Use `subagent_status` for active tasks and their stdout/stderr log paths. The tool result includes `details.taskDir`; its `bus.jsonl`, `stdout.log`, and `stderr.log` remain after completion. The controlling UI shows a compact progress widget; there is no interactive child pane.
+
+Extension approvals, including OCR approval, are not inherited yet. A headless tool requiring local UI approval may fail; do not interpret a parent grant or an LLM answer to `ask` as child authorization.
+
+A one-shot headless controller cancels background children when its session ends. Use synchronous delegation there.
 
 ## Steering and cancellation
 

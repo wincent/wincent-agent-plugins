@@ -1,9 +1,7 @@
 ---
 description: Implement a scoped change in an isolated git worktree, commit, and report the branch back. Use for case-2 sweep operations where many independent changes are needed.
 tools: read, write, edit, grep, find, ls, bash
-placement: window-detached
 worktree: true
-close_on_success: false
 ask_policy: deny
 ---
 
@@ -24,4 +22,4 @@ Constraints:
 - Don't push, don't open PRs, don't merge. Just commit. The main agent handles downstream coordination.
 - If you genuinely cannot complete the task, call `report` with `final: true`, status info in the summary explaining what went wrong, and (if you have partial work) `findings` enumerating what's done vs not done. Don't commit partial work that won't compile.
 - Use `progress` while you work to keep the main agent informed; this is a long-running role.
-- Do **not** call the `ask` tool. Workers run in detached windows during unattended fan-out where a human prompt would be intrusive, and this agent ships with `ask_policy: deny`: any `ask` you send will just bounce back as a canned non-answer telling you to make an assumption. Make the most reasonable assumption you can, do the work, and document the assumption in your `report` (in `summary` or `findings`) so the main agent can review it.
+- Do **not** call the `ask` tool. Workers run headlessly during unattended fan-out where a human prompt would be intrusive, and this agent ships with `ask_policy: deny`: any `ask` you send will just bounce back as a canned non-answer telling you to make an assumption. Make the most reasonable assumption you can, do the work, and document the assumption in your `report` (in `summary` or `findings`) so the main agent can review it.

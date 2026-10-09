@@ -16,4 +16,4 @@ Steps:
 4. **Collect.** As each worker reports back, accumulate its branch name and commits. If a worker fails, note that and decide (with the user) whether to retry, skip, or abort.
 5. **Summarize.** Once all workers have reported, produce a single final summary listing branches created, commits, and any failures. Suggest next steps (open PRs? merge sequentially?) but don't take them automatically.
 
-Keep the user informed throughout. Workers running in worktrees do not affect the main working tree; the user can switch to a worker's tmux window/pane to watch a specific worker's progress.
+Keep the user informed throughout. Workers running in worktrees do not affect the main working tree; the user can watch the controlling UI's progress widget or inspect a worker's task logs.

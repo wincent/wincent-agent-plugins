@@ -90,14 +90,14 @@ const AskParams = Type.Object({
 const DEFAULT_ASK_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface SubToolsOptions {
-  bus: Bus;
+  getBus: () => Bus;
 }
 
 export function registerSubTools(
   pi: ExtensionAPI,
   options: SubToolsOptions,
 ): void {
-  const {bus} = options;
+  const {getBus} = options;
 
   pi.registerTool({
     name: 'progress',
@@ -108,7 +108,7 @@ export function registerSubTools(
       + 'when you have structured findings or final results.',
     parameters: ProgressParams,
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      bus.emit('progress', {text: params.text, kind: params.kind});
+      getBus().emit('progress', {text: params.text, kind: params.kind});
       return {
         content: [{type: 'text', text: 'progress sent'}],
         details: {},
@@ -128,7 +128,7 @@ export function registerSubTools(
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       const findings = params.findings as Finding[] | undefined;
       const commits = params.commits as CommitInfo[] | undefined;
-      bus.emit('report', {
+      getBus().emit('report', {
         summary: params.summary,
         ...(findings ? {findings} : {}),
         ...(params.branch ? {branch: params.branch} : {}),
@@ -153,8 +153,9 @@ export function registerSubTools(
       + 'timeout elapses.',
     parameters: AskParams,
     async execute(_toolCallId, params, signal, _onUpdate, _ctx) {
+      signal?.throwIfAborted();
       const timeoutMs = params.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
-      const askPromise = bus.request('ask', {
+      const askPromise = getBus().request('ask', {
         question: params.question,
         ...(params.options ? {options: params.options} : {}),
         ...(params.default !== undefined ? {default: params.default} : {}),

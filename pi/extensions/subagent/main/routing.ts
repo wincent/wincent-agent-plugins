@@ -44,7 +44,7 @@ export function installMainRoutingFor(
   const {pi, getCtx} = options;
   const inject = options.injectForBackground ?? true;
   const unsub = task.bus.subscribe((env) => {
-    if (env.from !== 'sub') {
+    if (env.from !== 'sub' || task.ownerClosed) {
       return;
     }
     if (!inject || task.mode !== 'background') {
@@ -103,13 +103,6 @@ function emitLifecycleFromEnvelope(
         commits: env.payload.commits,
       });
       break;
-    case 'done':
-      emitLifecycle(pi, 'subagent:done', {
-        taskId: task.taskId,
-        status: env.payload.status,
-        durationMs: Date.now() - task.startedAt,
-      });
-      break;
     default:
       break;
   }
@@ -133,11 +126,6 @@ function routeEnvelopeAsUserMessage(
         describeReport(env.payload.summary, env.payload.branch)
       }`;
       break;
-    case 'done':
-      text = `${prefix} done (${env.payload.status}). ${
-        env.payload.finalText ?? ''
-      }`.trim();
-      break;
     default:
       // `ask` is handled by handleAsk(); everything else is uninteresting.
       return;
@@ -154,6 +142,32 @@ function routeEnvelopeAsUserMessage(
   } catch (err) {
     process.stderr.write(
       `[subagent main] sendUserMessage failed: ${(err as Error).message}\n`,
+    );
+  }
+}
+
+export function routeTaskCompletion(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext | undefined,
+  task: ActiveTask,
+  summary: string,
+  preservedPath?: string,
+): void {
+  const text = `[subagent ${task.agentName}:${
+    shortId(task.taskId)
+  }] done (${task.status}). ${summary}${
+    preservedPath ? ` Worktree preserved: ${preservedPath}` : ''
+  }`;
+  try {
+    pi.sendUserMessage(
+      text,
+      ctx && !ctx.isIdle() ? {deliverAs: 'followUp'} : undefined,
+    );
+  } catch (error) {
+    process.stderr.write(
+      `[subagent main] completion delivery failed: ${
+        (error as Error).message
+      }\n`,
     );
   }
 }

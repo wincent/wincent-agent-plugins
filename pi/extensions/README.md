@@ -65,7 +65,7 @@ Adds an `ocr` tool for local scanned PDFs and PNG/JPEG images, plus `/ocr-status
 
 ### `subagent/`
 
-Delegates focused tasks to specialized subagents that run as their own Pi processes inside tmux panes, communicating with the main agent over a typed Unix domain socket bus (never via `tmux capture-pane` or `send-keys`). Ships six default agent personalities (`scout`, `linter`, `tester`, `reviewer`, `formatter`, `worker`); more can be added by dropping files into `~/.pi/agent/agents/`.
+Delegates focused tasks to specialized subagents that run as direct, headless Pi processes, communicating with the main agent over a typed Unix domain socket bus. No tmux dependency; the controlling UI shows progress and each task retains private stdout/stderr and bus logs. Ships six default agent personalities (`scout`, `linter`, `tester`, `reviewer`, `formatter`, `worker`); more can be added by dropping files into `~/.pi/agent/agents/`.
 
 In main mode, registers `subagent`, `subagent_steer`, `subagent_cancel`, and `subagent_status` tools. In sub mode (when spawned by another Pi), registers `report`, `progress`, and `ask` tools so the child can talk back. Lifecycle events are emitted on `pi.events` under the `subagent:*` namespace.
 

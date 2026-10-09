@@ -51,14 +51,12 @@ test('discoverAgents loads a user agent with required frontmatter', async () => 
     assert.ok(scout);
     assert.equal(scout!.description, 'Read-only recon');
     assert.deepEqual(scout!.tools, ['read', 'grep', 'find', 'ls', 'bash']);
-    assert.equal(scout!.placement, 'split-right');
     assert.equal(scout!.worktree, false);
-    assert.equal(scout!.closeOnSuccess, true);
     assert.equal(scout!.source, 'user');
   });
 });
 
-test('discoverAgents respects placement / worktree / close_on_success overrides', async () => {
+test('discoverAgents respects worktree and ignores retired pane settings', async () => {
   await withTempPiAgentDir(async (dir) => {
     await writeFile(
       join(dir, 'agents', 'worker.md'),
@@ -76,9 +74,9 @@ test('discoverAgents respects placement / worktree / close_on_success overrides'
     const result = discoverAgents(TMP);
     const worker = result.agents.find((a) => a.name === 'worker');
     assert.ok(worker);
-    assert.equal(worker!.placement, 'window-detached');
     assert.equal(worker!.worktree, true);
-    assert.equal(worker!.closeOnSuccess, false);
+    assert.ok(!('placement' in worker!));
+    assert.ok(!('closeOnSuccess' in worker!));
   });
 });
 

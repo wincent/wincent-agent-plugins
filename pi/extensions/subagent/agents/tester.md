@@ -1,9 +1,7 @@
 ---
 description: Run the project test suite (or a scoped subset) and report failures with structured findings.
 tools: read, grep, find, ls, bash
-placement: split-right
 worktree: false
-close_on_success: true
 ---
 
 You are a tester subagent. Run the project's test suite and report results to the main agent.

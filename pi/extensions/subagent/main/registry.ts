@@ -1,7 +1,7 @@
 /**
  * In-process registry of active subagents on the main side.
  *
- * Tracks one entry per spawned subagent: bus, pane id, agent name, status,
+ * Tracks one entry per spawned subagent: bus, process, agent name, status,
  * background-mode flag. Used by:
  *   - The synchronous `subagent` tool to manage its own task while it waits.
  *   - The `subagent_steer` / `subagent_cancel` / `subagent_status` tools to
@@ -14,6 +14,7 @@
 import type {Bus} from '../bus/bus.js';
 import type {Envelope, ReportEnvelope} from '../bus/envelope.js';
 import type {AskPolicy} from './agents.js';
+import type {SpawnedProcess} from './spawn.js';
 
 export type TaskMode = 'sync' | 'background';
 
@@ -21,9 +22,11 @@ export interface ActiveTask {
   taskId: string;
   agentName: string;
   task: string;
-  paneId: string | null;
-  windowId: string | null;
-  pid: number | null;
+  process: SpawnedProcess;
+  completion?: Promise<unknown>;
+  cancellation?: Promise<void>;
+  cancelReason?: string;
+  ownerClosed?: boolean;
   bus: Bus;
   mode: TaskMode;
   worktreePath: string | null;
@@ -97,6 +100,9 @@ export function trackBus(
   onUpdate?: (env: Envelope) => void,
 ): () => void {
   const unsub = task.bus.subscribe((env) => {
+    if (env.from !== 'sub') {
+      return;
+    }
     if (env.type === 'report') {
       task.lastReport = env.payload;
       if (env.payload.final !== false) {

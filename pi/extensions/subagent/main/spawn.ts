@@ -1,23 +1,7 @@
-/**
- * Spawn a subagent in a tmux pane.
- *
- * The wrapper script lives in the task dir, sets the env vars, and execs
- * `pi -p '<task>' --append-system-prompt ...`. We don't pass the task via
- * `-p` directly to tmux because of quoting: the wrapper script reads the
- * task text from a file in the task dir so we never have to escape.
- *
- * Returns the pane id, window id, and the pi subprocess pid (read after
- * spawn via `tmux display-message`).
- */
-
-import {execFile} from 'node:child_process';
-import {writeFileSync} from 'node:fs';
+import type {ExtensionAPI} from '@earendil-works/pi-coding-agent';
+import {spawn} from 'node:child_process';
+import {closeSync, openSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {promisify} from 'node:util';
-
-import type {Placement} from './agents.js';
-
-const execFileAsync = promisify(execFile);
 
 export interface SpawnArgs {
   taskId: string;
@@ -25,196 +9,191 @@ export interface SpawnArgs {
   task: string;
   parentId: string;
   cwd: string;
-  agentName: string;
   model?: {provider: string; id: string};
+  thinkingLevel?: ReturnType<ExtensionAPI['getThinkingLevel']>;
   toolsWhitelist: string[];
   disallowedTools?: string[];
   systemPromptPath: string;
-  placement: Placement;
 }
 
-export interface SpawnedPane {
-  paneId: string;
-  windowId: string;
+export interface ProcessExit {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  error?: string;
+}
+
+export interface SpawnedProcess {
   pid: number;
+  stdoutPath: string;
+  stderrPath: string;
+  exited: Promise<ProcessExit>;
+  isGroupAlive(): boolean;
+  signal(signal: NodeJS.Signals): void;
 }
 
-const WRAPPER_FILENAME = 'run.sh';
-const TASK_FILENAME = 'task.txt';
-
-/**
- * Tool names registered on the sub side by this extension. They must always
- * be in the allowlist passed to pi via --tools so the model can call them.
- * Kept in sync with sub/tools.ts.
- */
 const BUS_TOOL_NAMES = ['report', 'progress', 'ask'] as const;
 
-export async function ensureInTmux(): Promise<void> {
-  if (!process.env.TMUX) {
-    throw new Error(
-      'subagent requires running inside tmux. $TMUX is not set.',
-    );
-  }
-  // Cheap sanity check: this fails if tmux isn't reachable.
-  await execFileAsync('tmux', ['display-message', '-p', '#{session_id}'], {
-    timeout: 5_000,
+export async function spawnSubagent(args: SpawnArgs): Promise<SpawnedProcess> {
+  writeFileSync(join(args.taskDir, 'task.txt'), args.task, {
+    encoding: 'utf-8',
+    mode: 0o600,
   });
-}
-
-export async function spawnSubagentPane(args: SpawnArgs): Promise<SpawnedPane> {
-  const taskFilePath = join(args.taskDir, TASK_FILENAME);
-  writeFileSync(taskFilePath, args.task, {encoding: 'utf-8', mode: 0o600});
-
-  const wrapperPath = join(args.taskDir, WRAPPER_FILENAME);
+  const wrapperPath = join(args.taskDir, 'run.sh');
   writeFileSync(wrapperPath, renderWrapper(args), {
     encoding: 'utf-8',
     mode: 0o700,
   });
-
-  const tmuxArgs = buildTmuxArgs(args, wrapperPath);
-  const {stdout} = await execFileAsync('tmux', tmuxArgs, {timeout: 15_000});
-  const [paneId, windowIdRaw, pidStr] = stdout.trim().split(/\s+/);
-  if (!paneId || !pidStr) {
-    throw new Error(
-      `unexpected output from tmux split/new-window: ${JSON.stringify(stdout)}`,
-    );
-  }
-  const pid = Number.parseInt(pidStr, 10);
-  if (!Number.isFinite(pid) || pid <= 0) {
-    throw new Error(`tmux returned non-numeric pid: ${pidStr}`);
-  }
-  const windowId = windowIdRaw && windowIdRaw.startsWith('@')
-    ? windowIdRaw
-    : await lookupWindowId(paneId);
-
-  await trySetTitles(
-    paneId,
-    windowId,
-    args.agentName,
-    args.taskId,
-    args.placement,
-  );
-
-  return {paneId, windowId, pid};
-}
-
-async function lookupWindowId(paneId: string): Promise<string> {
-  const {stdout} = await execFileAsync(
-    'tmux',
-    ['display-message', '-p', '-t', paneId, '#{window_id}'],
-    {timeout: 5_000},
-  );
-  return stdout.trim();
-}
-
-async function trySetTitles(
-  paneId: string,
-  windowId: string,
-  agentName: string,
-  taskId: string,
-  placement: Placement,
-): Promise<void> {
-  const shortTask = taskId.replace(/^msg_/, '').slice(0, 8);
-  // Best-effort: these requires tmux 3.2+ and the right options; ignore errors.
+  const stdoutPath = join(args.taskDir, 'stdout.log');
+  const stderrPath = join(args.taskDir, 'stderr.log');
+  const fds: number[] = [];
   try {
-    await execFileAsync(
-      'tmux',
-      ['select-pane', '-t', paneId, '-T', `subagent:${agentName}`],
-      {timeout: 5_000},
-    );
-  } catch {
-    // ignored
-  }
-  if (placement !== 'window' && placement !== 'window-detached') {
-    return;
-  }
-  try {
-    await execFileAsync(
-      'tmux',
-      ['rename-window', '-t', windowId, `pi:${agentName}:${shortTask}`],
-      {timeout: 5_000},
-    );
-  } catch {
-    // ignored
+    fds.push(openSync(stdoutPath, 'a', 0o600));
+    fds.push(openSync(stderrPath, 'a', 0o600));
+    // A separate process group lets cancellation include launcher/tool children.
+    const child = spawn('bash', [wrapperPath], {
+      cwd: args.cwd,
+      detached: true,
+      stdio: ['ignore', fds[0], fds[1]],
+    });
+    const exited = new Promise<ProcessExit>((resolve) => {
+      child.once('error', (error) => {
+        resolve({code: null, signal: null, error: error.message});
+      });
+      child.once('exit', (code, signal) => {
+        resolve({code, signal});
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.once('error', reject);
+    });
+    // POSIX retains the group ID while descendants still belong to it, even
+    // after the leader exits. Latch disappearance so later calls cannot signal
+    // a reused ID. This owns one process group, not descendants that detach.
+    let groupGone = false;
+    const isGroupAlive = () => {
+      if (groupGone) {
+        return false;
+      }
+      try {
+        process.kill(-child.pid!, 0);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
+          groupGone = true;
+          return false;
+        }
+        if ((error as NodeJS.ErrnoException).code === 'EPERM') {
+          // Includes transient unreaped members on macOS. Permission failure
+          // is not evidence that the group is gone.
+          return true;
+        }
+        throw error;
+      }
+    };
+    void exited.then(() => {
+      try {
+        isGroupAlive();
+      } catch {
+        // Surface permission errors through the caller's cleanup path.
+      }
+    });
+    return {
+      pid: child.pid!,
+      stdoutPath,
+      stderrPath,
+      exited,
+      isGroupAlive,
+      signal(signal) {
+        if (!isGroupAlive()) {
+          return;
+        }
+        try {
+          process.kill(-child.pid!, signal);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+            throw error;
+          }
+          groupGone = true;
+        }
+      },
+    };
+  } finally {
+    for (const fd of fds) {
+      closeSync(fd);
+    }
   }
 }
 
-function buildTmuxArgs(args: SpawnArgs, wrapperPath: string): string[] {
-  const printFormat = '#{pane_id} #{window_id} #{pane_pid}';
-  switch (args.placement) {
-    case 'split-down':
-      return [
-        'split-window',
-        '-v',
-        '-d',
-        '-P',
-        '-F',
-        printFormat,
-        '-c',
-        args.cwd,
-        'bash',
-        wrapperPath,
-      ];
-    case 'window':
-      return [
-        'new-window',
-        '-P',
-        '-F',
-        printFormat,
-        '-c',
-        args.cwd,
-        'bash',
-        wrapperPath,
-      ];
-    case 'window-detached':
-      return [
-        'new-window',
-        '-d',
-        '-P',
-        '-F',
-        printFormat,
-        '-c',
-        args.cwd,
-        'bash',
-        wrapperPath,
-      ];
-    case 'split-right':
-    default:
-      return [
-        'split-window',
-        '-h',
-        '-d',
-        '-P',
-        '-F',
-        printFormat,
-        '-c',
-        args.cwd,
-        'bash',
-        wrapperPath,
-      ];
+export function waitForExit(
+  child: SpawnedProcess,
+  timeoutMs: number,
+): Promise<ProcessExit | undefined> {
+  return new Promise((resolve, reject) => {
+    let exit: ProcessExit | undefined;
+    const finish = (result?: ProcessExit, error?: unknown) => {
+      clearTimeout(timer);
+      clearInterval(poll);
+      if (error) {
+        reject(error);
+      } else {
+        resolve(result);
+      }
+    };
+    const check = () => {
+      try {
+        if (exit && !child.isGroupAlive()) {
+          finish(exit);
+        }
+      } catch (error) {
+        finish(undefined, error);
+      }
+    };
+    const timer = setTimeout(() => finish(), timeoutMs);
+    const poll = setInterval(check, 20);
+    void child.exited.then((result) => {
+      exit = result;
+      check();
+    });
+  });
+}
+
+export async function terminateProcess(
+  child: SpawnedProcess,
+  graceMs: number,
+  killGraceMs: number,
+): Promise<ProcessExit> {
+  let exit = await waitForExit(child, graceMs);
+  if (exit) {
+    return exit;
   }
+  child.signal('SIGTERM');
+  exit = await waitForExit(child, killGraceMs);
+  if (exit) {
+    return exit;
+  }
+  child.signal('SIGKILL');
+  exit = await waitForExit(child, killGraceMs);
+  if (!exit) {
+    throw new Error(`subagent process ${child.pid} did not exit after SIGKILL`);
+  }
+  return exit;
 }
 
 export function renderWrapper(args: SpawnArgs): string {
-  // The wrapper sets env vars, then execs pi reading the task text from a
-  // file. We escape values via single-quote-bash-quoting (`'` -> `'\''`).
-  const exports: string[] = [
+  const exports = [
     `export PI_SUBAGENT_TASK_ID=${shellQuote(args.taskId)}`,
     `export PI_SUBAGENT_BUS_DIR=${shellQuote(args.taskDir)}`,
     `export PI_SUBAGENT_PARENT_ID=${shellQuote(args.parentId)}`,
   ];
-
-  // Let a sandbox/proxy launcher stand in for the bare `pi` binary. May be a
-  // path or a command with arguments; unset means `pi`.
+  // This is trusted launcher configuration, not model-supplied shell text.
   const launcher = process.env.PI_SUBAGENT_LAUNCHER || 'pi';
-
-  const piArgs: string[] = [
-    '"$(cat ' + shellQuote(join(args.taskDir, TASK_FILENAME)) + ')"',
+  const piArgs = [
+    '-p',
     '--append-system-prompt',
     shellQuote(args.systemPromptPath),
     '--no-session',
   ];
-  // Use the main agent's active model rather than the child cwd's defaults.
   if (args.model) {
     piArgs.push(
       '--provider',
@@ -223,22 +202,26 @@ export function renderWrapper(args: SpawnArgs): string {
       shellQuote(args.model.id),
     );
   }
-  // Pi's --tools is an allowlist that covers built-in, extension, AND
-  // custom tools. The bus tools registered by this extension on the sub
-  // side (report, progress, ask) must always be available, so we splice
-  // them into the whitelist regardless of the agent's declared `tools`.
-  if (args.toolsWhitelist.length > 0) {
-    const merged = Array.from(
-      new Set([...args.toolsWhitelist, ...BUS_TOOL_NAMES]),
-    );
-    piArgs.push('--tools', shellQuote(merged.join(',')));
+  if (args.thinkingLevel !== undefined) {
+    piArgs.push('--thinking', shellQuote(args.thinkingLevel));
   }
-
-  // The subagent runs in interactive mode (no `-p`) so its full TUI is
-  // visible in the pane. The positional task argument is auto-submitted by
-  // pi on startup; once the agent finishes that single prompt, pi waits for
-  // further user input. The main side either kills the pane on done
-  // (close_on_success) or leaves it alive for inspection / interaction.
+  const denied = new Set(args.disallowedTools ?? []);
+  if (BUS_TOOL_NAMES.some((name) => denied.has(name))) {
+    throw new Error(
+      'disallowed_tools must not exclude report, progress, or ask',
+    );
+  }
+  const tools = Array.from(
+    new Set([...args.toolsWhitelist, ...BUS_TOOL_NAMES]),
+  );
+  piArgs.push('--tools', shellQuote(tools.join(',')));
+  if (denied.size > 0) {
+    piArgs.push('--exclude-tools', shellQuote([...denied].join(',')));
+  }
+  piArgs.push(
+    '--',
+    '"$(cat ' + shellQuote(join(args.taskDir, 'task.txt')) + ')"',
+  );
   return [
     '#!/usr/bin/env bash',
     'set -e',
@@ -251,18 +234,4 @@ export function renderWrapper(args: SpawnArgs): string {
 
 function shellQuote(value: string): string {
   return "'" + value.replace(/'/g, "'\\''") + "'";
-}
-
-export async function sendKeysCtrlC(paneId: string): Promise<void> {
-  await execFileAsync('tmux', ['send-keys', '-t', paneId, 'C-c'], {
-    timeout: 5_000,
-  });
-}
-
-export async function killPane(paneId: string): Promise<void> {
-  try {
-    await execFileAsync('tmux', ['kill-pane', '-t', paneId], {timeout: 5_000});
-  } catch {
-    // Pane may already be gone; ignore.
-  }
 }

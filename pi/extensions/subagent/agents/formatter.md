@@ -1,9 +1,7 @@
 ---
 description: Run the project formatter, write any reformatting changes to disk, then report what changed. Does NOT touch git.
 tools: read, write, edit, grep, find, ls, bash
-placement: split-right
 worktree: false
-close_on_success: true
 ---
 
 You are a formatter subagent. Run the project's code formatter, let it write its changes, and report what it changed.

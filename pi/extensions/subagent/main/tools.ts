@@ -1,26 +1,26 @@
-/**
- * Tools registered in main mode: subagent, subagent_steer, subagent_cancel,
- * subagent_status.
- */
-
 import type {
   AgentToolResult,
   AgentToolUpdateCallback,
   ExtensionAPI,
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
-import {existsSync, symlinkSync, writeFileSync} from 'node:fs';
+import {symlinkSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {Type} from 'typebox';
+import {type Static, Type} from 'typebox';
 
 import {AuditLog} from '../bus/audit-log.js';
 import {Bus} from '../bus/bus.js';
 import {newEnvelopeId} from '../bus/envelope.js';
-import {listenForPeer} from '../bus/transport-uds.js';
-import type {AgentConfig, AskPolicy, Placement} from './agents.js';
-import {discoverAgents} from './agents.js';
+import {type AgentConfig, discoverAgents} from './agents.js';
 import {handleAsk} from './ask.js';
 import {emitLifecycle} from './events.js';
+import {launchSubagent} from './launch.js';
+import {
+  CANCEL_GRACE_MS,
+  SIGKILL_GRACE_MS,
+  cancelTask,
+  observeTask,
+} from './lifecycle.js';
 import {
   type ActiveTask,
   listActive,
@@ -29,18 +29,10 @@ import {
   remove,
   trackBus,
 } from './registry.js';
-import {installMainRoutingFor} from './routing.js';
-import {
-  type SpawnedPane,
-  ensureInTmux,
-  killPane,
-  sendKeysCtrlC,
-  spawnSubagentPane,
-} from './spawn.js';
+import {installMainRoutingFor, routeTaskCompletion} from './routing.js';
 import {
   auditLogPath,
   ensureTaskDir,
-  socketPath,
   systemPromptPath,
   updateMeta,
   writeMeta,
@@ -53,87 +45,45 @@ import {
 } from './worktree.js';
 
 export const CONNECT_TIMEOUT_MS = 10_000;
-export const CANCEL_GRACE_MS = 5_000;
-export const SIGKILL_GRACE_MS = 5_000;
 export const MAX_TURNS = 15;
 export const GRACE_TURNS = 5;
-
-const PlacementSchema = Type.Union([
-  Type.Literal('split-right'),
-  Type.Literal('split-down'),
-  Type.Literal('window'),
-  Type.Literal('window-detached'),
-]);
-
-const AskPolicySchema = Type.Union(
-  [Type.Literal('human'), Type.Literal('deny'), Type.Literal('llm')],
-  {
-    description: [
-      'How to handle `ask` envelopes from the subagent.',
-      '"human" prompts the watching user (the default; use for short',
-      'visible helpers running in a split). "deny" replies with a canned',
-      'message telling the subagent to make a reasonable assumption and',
-      'document it (use for unattended/background fan-out where a popup',
-      'would interrupt the user). "llm" forwards the question to the main',
-      "agent's own model via a one-shot out-of-band call and returns the",
-      'reply (use when you want autonomous clarification without bothering',
-      'the user, at the cost of extra tokens). If unset, the per-call',
-      'value beats the agent .md frontmatter, which beats the global',
-      'default of "human".',
-    ].join(' '),
-  },
-);
 
 const SubagentParams = Type.Object({
   agent: Type.String({description: 'Name of an agent (matches an .md file)'}),
   task: Type.String({description: 'The task to delegate, in natural language'}),
-  placement: Type.Optional(PlacementSchema),
   worktree: Type.Optional(
-    Type.Boolean({
-      description: 'Override the agent.md default for case-2 isolation',
-    }),
+    Type.Boolean({description: 'Override the agent.md worktree default'}),
   ),
   cwd: Type.Optional(
     Type.String({
       description: "Working directory; defaults to main agent's cwd",
     }),
   ),
-  close_on_success: Type.Optional(Type.Boolean()),
   background: Type.Optional(
     Type.Boolean({
       description:
-        'Return immediately; route results as user messages. Default false.',
+        'Return after connecting; deliver the final result later. Default false.',
     }),
   ),
-  ask_policy: Type.Optional(AskPolicySchema),
+  ask_policy: Type.Optional(
+    Type.Union([
+      Type.Literal('human'),
+      Type.Literal('deny'),
+      Type.Literal('llm'),
+    ], {
+      description:
+        'How to answer subagent questions: human prompts the controlling UI (default); deny asks the child to make a reasonable assumption; llm consults the controlling model at extra token cost. Per-call policy overrides agent frontmatter.',
+    }),
+  ),
 });
-
-const SteerParams = Type.Object({
-  task_id: Type.String(),
-  text: Type.String(),
-});
-
-const CancelParams = Type.Object({
-  task_id: Type.String(),
-  reason: Type.Optional(Type.String()),
-  grace_ms: Type.Optional(Type.Integer({minimum: 0})),
-});
-
-const StatusParams = Type.Object({
-  task_id: Type.Optional(Type.String()),
-});
-
-export interface MainToolsOptions {
-  pi: ExtensionAPI;
-}
 
 interface SubagentDetails {
   taskId: string;
   agent: string;
   task: string;
   mode: 'sync' | 'background';
-  paneId: string | null;
-  windowId: string | null;
+  pid: number | null;
+  taskDir: string;
   worktree: {
     enabled: boolean;
     branch?: string;
@@ -152,120 +102,129 @@ interface SubagentDetails {
   error?: string;
 }
 
-export function registerMainTools(options: MainToolsOptions): void {
-  const {pi} = options;
+export function registerMainTools({pi}: {pi: ExtensionAPI}): void {
+  let session = new AbortController();
+  const pending = new Set<Promise<unknown>>();
+  pi.on('session_start', () => {
+    session = new AbortController();
+  });
+  pi.on('session_shutdown', async () => {
+    session.abort();
+    const active = listActive();
+    for (const task of active) {
+      task.ownerClosed = true;
+    }
+    await Promise.allSettled(active.map((task) =>
+      cancelTask(task, {
+        reason: 'controlling session ended',
+        graceMs: CANCEL_GRACE_MS,
+      })
+    ));
+    await Promise.allSettled([
+      ...pending,
+      ...active.map((task) => task.completion),
+    ]);
+  });
 
   pi.registerTool<typeof SubagentParams, SubagentDetails>({
     name: 'subagent',
     label: 'Subagent',
     description: [
-      'Delegate a task to a specialized subagent that runs in its own pi process',
-      "inside a tmux pane. The subagent's system prompt, tool whitelist, and",
-      'default placement/worktree behaviour come from an .md file under',
-      '~/.pi/agent/agents/ or <repo>/.pi/agents/. Use synchronously (default)',
-      'or with background: true to fire-and-forget. Reports from the subagent',
-      "arrive structured. Subagents inherit the main agent's current provider and model.",
+      'Delegate a task to a specialized subagent in its own headless Pi process.',
+      'The system prompt, tool whitelist, and worktree default come from an agent .md file.',
+      'Use synchronously (default) or background: true for a later result.',
+      "Subagents inherit the controlling agent's active provider, model, and thinking level.",
+      'Progress appears in the controlling UI; logs remain in the task directory.',
     ].join(' '),
     parameters: SubagentParams,
-    async execute(toolCallId, params, signal, onUpdate, ctx) {
-      return runSubagentTool(pi, params, signal, onUpdate, ctx);
+    async execute(_id, params, signal, onUpdate, ctx) {
+      const combined = signal
+        ? AbortSignal.any([signal, session.signal])
+        : session.signal;
+      const run = runSubagentTool(pi, params, combined, onUpdate, ctx);
+      pending.add(run);
+      try {
+        return await run;
+      } finally {
+        pending.delete(run);
+      }
     },
   });
 
-  pi.registerTool<typeof SteerParams>({
+  pi.registerTool({
     name: 'subagent_steer',
     label: 'Steer subagent',
-    description:
-      "Send a steering message to a running subagent. Injected as a user message into the subagent's session.",
-    parameters: SteerParams,
-    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+    description: 'Send a steering message to a running subagent.',
+    parameters: Type.Object({task_id: Type.String(), text: Type.String()}),
+    async execute(_id, params) {
       const task = lookup(params.task_id);
-      if (!task) {
-        return {
-          content: [{
-            type: 'text',
-            text: `No active subagent with task_id=${params.task_id}.`,
-          }],
-          details: {},
-        };
+      if (!task || task.bus.isClosed) {
+        return textResult(
+          `No connected subagent with task_id=${params.task_id}.`,
+        );
       }
       task.bus.emit('steer', {text: params.text});
       emitLifecycle(pi, 'subagent:steered', {
         taskId: task.taskId,
         text: params.text,
       });
-      return {
-        content: [{
-          type: 'text',
-          text: `Steered ${task.agentName} (${task.taskId}).`,
-        }],
-        details: {},
-      };
+      return textResult(`Steered ${task.agentName} (${task.taskId}).`);
     },
   });
 
-  pi.registerTool<typeof CancelParams>({
+  pi.registerTool({
     name: 'subagent_cancel',
     label: 'Cancel subagent',
     description:
-      'Cancel a running subagent. Sends a cancel envelope, escalates to SIGTERM/SIGKILL after grace.',
-    parameters: CancelParams,
-    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      'Cancel a running subagent via the bus, then SIGTERM/SIGKILL if needed.',
+    parameters: Type.Object({
+      task_id: Type.String(),
+      reason: Type.Optional(Type.String()),
+      grace_ms: Type.Optional(Type.Integer({minimum: 0})),
+    }),
+    async execute(_id, params) {
       const task = lookup(params.task_id);
       if (!task) {
-        return {
-          content: [{
-            type: 'text',
-            text: `No active subagent with task_id=${params.task_id}.`,
-          }],
-          details: {},
-        };
+        return textResult(`No active subagent with task_id=${params.task_id}.`);
       }
       await cancelTask(task, {
-        reason: params.reason ?? 'master requested cancel',
+        reason: params.reason ?? 'controlling agent requested cancel',
         graceMs: params.grace_ms ?? CANCEL_GRACE_MS,
       });
-      return {
-        content: [{
-          type: 'text',
-          text: `Cancelled ${task.agentName} (${task.taskId}).`,
-        }],
-        details: {},
-      };
+      await task.completion;
+      return textResult(`Cancelled ${task.agentName} (${task.taskId}).`);
     },
   });
 
-  pi.registerTool<typeof StatusParams>({
+  pi.registerTool({
     name: 'subagent_status',
     label: 'Subagent status',
-    description:
-      'List active subagents (or details for a single task_id). Useful in background mode.',
-    parameters: StatusParams,
-    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+    description: 'List active subagents or details for one task_id.',
+    parameters: Type.Object({task_id: Type.Optional(Type.String())}),
+    async execute(_id, params) {
       const tasks = params.task_id
-        ? [lookup(params.task_id)].filter((t): t is ActiveTask =>
-          t !== undefined
-        )
+        ? [lookup(params.task_id)].filter((task): task is ActiveTask => !!task)
         : listActive();
-      if (tasks.length === 0) {
-        return {
-          content: [{type: 'text', text: 'No active subagents.'}],
-          details: {},
-        };
-      }
-      const lines = tasks.map((t) =>
-        `${t.taskId} ${t.agentName} mode=${t.mode} status=${t.status} task=${
-          t.task.slice(0, 60)
-        }`
-      );
       return {
-        content: [{type: 'text', text: lines.join('\n')}],
+        content: [{
+          type: 'text',
+          text: tasks.length
+            ? tasks.map((task) =>
+              `${task.taskId} ${task.agentName} mode=${task.mode} status=${task.status} task=${
+                task.task.slice(0, 60)
+              }`
+            ).join('\n')
+            : 'No active subagents.',
+        }],
         details: {
-          tasks: tasks.map((t) => ({
-            taskId: t.taskId,
-            agent: t.agentName,
-            status: t.status,
-            mode: t.mode,
+          tasks: tasks.map((task) => ({
+            taskId: task.taskId,
+            agent: task.agentName,
+            status: task.status,
+            mode: task.mode,
+            pid: task.process.pid,
+            stdoutPath: task.process.stdoutPath,
+            stderrPath: task.process.stderrPath,
           })),
         },
       };
@@ -275,595 +234,349 @@ export function registerMainTools(options: MainToolsOptions): void {
 
 async function runSubagentTool(
   pi: ExtensionAPI,
-  params: {
-    agent: string;
-    task: string;
-    placement?: Placement;
-    worktree?: boolean;
-    cwd?: string;
-    close_on_success?: boolean;
-    background?: boolean;
-    ask_policy?: AskPolicy;
-  },
-  signal: AbortSignal | undefined,
+  params: Static<typeof SubagentParams>,
+  signal: AbortSignal,
   onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
   ctx: ExtensionContext,
 ): Promise<AgentToolResult<SubagentDetails>> {
-  // Snapshot at dispatch, before asynchronous setup or a model switch.
+  // Snapshot before asynchronous worktree/launcher setup or a parent model switch.
   const model = ctx.model
     ? {provider: ctx.model.provider, id: ctx.model.id}
     : undefined;
-
-  try {
-    await ensureInTmux();
-  } catch (err) {
-    return errorResult(params, `${(err as Error).message}`);
-  }
-
-  const discovery = discoverAgents(ctx.cwd);
-  const agent = discovery.agents.find((a) => a.name === params.agent);
-  if (!agent) {
-    const available = discovery.agents.map((a) => a.name).join(', ') ||
-      '(none)';
-    return errorResult(
-      params,
-      `Unknown agent "${params.agent}". Available: ${available}.`,
-    );
-  }
-
-  const placement: Placement = params.placement ?? agent.placement;
-  const closeOnSuccess = params.close_on_success ?? agent.closeOnSuccess;
-  const useWorktree = params.worktree ?? agent.worktree;
-  const askPolicy: AskPolicy = params.ask_policy ?? agent.askPolicy ?? 'human';
-  const background = params.background ?? false;
-  const taskId = `task_${newEnvelopeId().replace(/^msg_/, '')}`;
-  const requestedCwd = params.cwd ?? ctx.cwd;
-
-  // Prepare task dir + audit log + system prompt file
-  const dir = ensureTaskDir(taskId);
-  writeFileSync(systemPromptPath(taskId), buildSystemPromptFile(agent), {
-    encoding: 'utf-8',
-    mode: 0o600,
-  });
-
+  const thinkingLevel = pi.getThinkingLevel();
+  const details: SubagentDetails = {
+    taskId: '',
+    agent: params.agent,
+    task: params.task,
+    mode: params.background ? 'background' : 'sync',
+    pid: null,
+    taskDir: '',
+    worktree: {enabled: false},
+    status: 'spawning',
+    progress: [],
+  };
   let worktreePlan: WorktreePlan | null = null;
-  let effectiveCwd = requestedCwd;
-  if (useWorktree) {
-    try {
-      worktreePlan = await prepareWorktree(requestedCwd, taskId, agent.name);
-      effectiveCwd = worktreePlan.path;
-      try {
-        symlinkSync(worktreePlan.path, join(dir, 'worktree'));
-      } catch {
-        // ignored: best effort
-      }
-    } catch (err) {
-      return errorResult(
-        params,
-        `worktree setup failed: ${(err as Error).message}`,
+  let task: ActiveTask | undefined;
+  try {
+    signal.throwIfAborted();
+    const discovery = discoverAgents(ctx.cwd);
+    const agent = discovery.agents.find((candidate) =>
+      candidate.name === params.agent
+    );
+    if (!agent) {
+      throw new Error(
+        `Unknown agent "${params.agent}". Available: ${
+          discovery.agents.map((a) => a.name).join(', ') || '(none)'
+        }.`,
       );
     }
-  }
-
-  const parentId = `pi-main-${process.pid}`;
-  writeMeta({
-    v: 1,
-    taskId,
-    parentId,
-    agent: agent.name,
-    task: params.task,
-    startedAt: new Date().toISOString(),
-    endedAt: null,
-    status: 'spawning',
-    mainPid: process.pid,
-    subPid: null,
-    paneId: null,
-    windowId: null,
-    cwd: effectiveCwd,
-    worktreePath: worktreePlan?.path ?? null,
-    placement,
-  });
-
-  // Bind UDS server BEFORE spawning the subagent.
-  const listenPromise = listenForPeer(socketPath(taskId), {
-    timeoutMs: CONNECT_TIMEOUT_MS,
-    signal,
-  });
-
-  let spawn: SpawnedPane;
-  try {
-    spawn = await spawnSubagentPane({
+    const taskId = `task_${newEnvelopeId().replace(/^msg_/, '')}`;
+    const dir = ensureTaskDir(taskId);
+    details.taskId = taskId;
+    details.taskDir = dir;
+    details.worktree.enabled = params.worktree ?? agent.worktree;
+    writeFileSync(systemPromptPath(taskId), buildSystemPromptFile(agent), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+    let cwd = params.cwd ?? ctx.cwd;
+    if (details.worktree.enabled) {
+      worktreePlan = await prepareWorktree(cwd, taskId, agent.name);
+      cwd = worktreePlan.path;
+      try {
+        symlinkSync(cwd, join(dir, 'worktree'));
+      } catch {
+        // The symlink is only an inspection convenience.
+      }
+    }
+    signal.throwIfAborted();
+    const parentId = `pi-main-${process.pid}`;
+    writeMeta({
+      v: 1,
+      taskId,
+      parentId,
+      agent: agent.name,
+      task: params.task,
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      status: 'spawning',
+      mainPid: process.pid,
+      subPid: null,
+      cwd,
+      worktreePath: worktreePlan?.path ?? null,
+      model,
+      thinkingLevel,
+    });
+    const launched = await launchSubagent({
       taskId,
       taskDir: dir,
       task: params.task,
       parentId,
-      cwd: effectiveCwd,
-      agentName: agent.name,
+      cwd,
       model,
+      thinkingLevel,
       toolsWhitelist: agent.tools,
       disallowedTools: agent.disallowedTools,
       systemPromptPath: systemPromptPath(taskId),
-      placement,
+    }, {
+      signal,
+      connectTimeoutMs: CONNECT_TIMEOUT_MS,
+      killGraceMs: SIGKILL_GRACE_MS,
     });
-  } catch (err) {
-    updateMeta(taskId, {
-      status: 'spawn_failed',
-      endedAt: new Date().toISOString(),
-    });
-    return errorResult(
-      params,
-      `failed to spawn tmux pane: ${(err as Error).message}`,
+    const bus = new Bus(
+      launched.transport,
+      new AuditLog(auditLogPath(taskId)),
+      'main',
     );
-  }
-
-  updateMeta(taskId, {
-    paneId: spawn.paneId,
-    windowId: spawn.windowId,
-    subPid: spawn.pid,
-  });
-
-  let transport;
-  try {
-    transport = await listenPromise;
-  } catch (err) {
-    updateMeta(taskId, {
-      status: 'spawn_failed',
-      endedAt: new Date().toISOString(),
-    });
-    return errorResult(
-      params,
-      `subagent did not connect within ${CONNECT_TIMEOUT_MS}ms: ${
-        (err as Error).message
-      }`,
-    );
-  }
-
-  const auditLog = new AuditLog(auditLogPath(taskId));
-  const bus = new Bus(transport, auditLog, 'main');
-  emitLifecycle(pi, 'subagent:connected', {taskId});
-  updateMeta(taskId, {status: 'running'});
-
-  const task: ActiveTask = {
-    taskId,
-    agentName: agent.name,
-    task: params.task,
-    paneId: spawn.paneId,
-    windowId: spawn.windowId,
-    pid: spawn.pid,
-    bus,
-    mode: background ? 'background' : 'sync',
-    worktreePath: worktreePlan?.path ?? null,
-    startedAt: Date.now(),
-    cleanup: [],
-    status: 'running',
-    askPolicy,
-    llmAnswersSinceEscalation: 0,
-    llmAnswersTotal: 0,
-  };
-  register(task);
-
-  emitLifecycle(pi, 'subagent:spawned', {
-    taskId,
-    agent: agent.name,
-    task: params.task,
-    placement,
-    worktree: useWorktree,
-  });
-
-  // Track the bus into the registry (always).
-  trackBus(task);
-
-  // Install the extension-scoped routing for background mode and for late
-  // envelopes that arrive after a sync tool has resolved.
-  installMainRoutingFor(task, {pi, getCtx: () => ctx});
-
-  // If background, return immediately.
-  if (background) {
-    handleBackgroundFinalization(
-      pi,
-      task,
-      worktreePlan,
-      agent,
-      closeOnSuccess,
-      params.task,
-    );
-    return {
-      content: [{
-        type: 'text',
-        text:
-          `Started ${agent.name} in background; task_id=${taskId}, pane=${spawn.paneId}.`,
-      }],
-      details: buildDetails(task, agent, params.task, useWorktree),
+    task = {
+      taskId,
+      agentName: agent.name,
+      task: params.task,
+      process: launched.process,
+      bus,
+      mode: details.mode,
+      worktreePath: worktreePlan?.path ?? null,
+      startedAt: Date.now(),
+      cleanup: [],
+      status: 'running',
+      askPolicy: params.ask_policy ?? agent.askPolicy ?? 'human',
+      llmAnswersSinceEscalation: 0,
+      llmAnswersTotal: 0,
     };
-  }
-
-  // Sync: wait for `done` (or socket close) and produce a final report.
-  return runSyncWait(
-    pi,
-    ctx,
-    signal,
-    onUpdate,
-    task,
-    agent,
-    worktreePlan,
-    closeOnSuccess,
-    askPolicy,
-    params.task,
-    useWorktree,
-  );
-}
-
-function runSyncWait(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  signal: AbortSignal | undefined,
-  onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
-  task: ActiveTask,
-  agent: AgentConfig,
-  worktreePlan: WorktreePlan | null,
-  closeOnSuccess: boolean,
-  askPolicy: AskPolicy,
-  userTask: string,
-  useWorktree: boolean,
-): Promise<AgentToolResult<SubagentDetails>> {
-  return new Promise<AgentToolResult<SubagentDetails>>((resolve) => {
-    let settled = false;
-    const progressMessages: string[] = [];
-    const details: SubagentDetails = buildDetails(
-      task,
-      agent,
-      userTask,
-      useWorktree,
-    );
-
-    const pushUpdate = () => {
-      if (onUpdate) {
-        onUpdate({
-          content: [{
-            type: 'text',
-            text: progressMessages[progressMessages.length - 1] ?? 'running...',
-          }],
-          details: {...details, progress: [...progressMessages]},
-        });
-      }
-    };
-
-    const unsub = task.bus.subscribe((env) => {
+    details.pid = launched.process.pid;
+    details.status = 'running';
+    register(task);
+    trackBus(task);
+    installMainRoutingFor(task, {pi, getCtx: () => ctx});
+    const active = task;
+    const unsubscribe = bus.subscribe((env) => {
       if (env.from !== 'sub') {
         return;
       }
-      switch (env.type) {
-        case 'progress':
-          progressMessages.push(env.payload.text);
-          pushUpdate();
-          break;
-        case 'report':
-          details.finalReport = {
-            summary: env.payload.summary,
-            findings: env.payload.findings,
-            branch: env.payload.branch,
-            commits: env.payload.commits,
-            data: env.payload.data,
-          };
-          progressMessages.push(`report: ${env.payload.summary}`);
-          pushUpdate();
-          break;
-        case 'ask':
-          void handleAsk({
-            pi,
-            ctx,
-            task,
-            askId: env.id,
-            question: env.payload.question,
-            defaultAnswer: env.payload.default,
-            policy: askPolicy,
-          });
-          progressMessages.push(`asked: ${env.payload.question}`);
-          pushUpdate();
-          break;
-        case 'done':
-          details.status = env.payload.status === 'ok'
-            ? 'ok'
-            : env.payload.status === 'aborted'
-            ? 'aborted'
-            : 'failed';
-          if (env.payload.error) {
-            details.error = env.payload.error;
-          }
-          if (env.payload.finalText && !details.finalReport) {
-            details.finalReport = {summary: env.payload.finalText};
-          }
-          void finishSync();
-          break;
-        default:
-          break;
+      if (env.type === 'report') {
+        details.finalReport = {...env.payload};
       }
-    });
-
-    const unsubClose = task.bus.onPeerClose(() => {
-      if (settled) {
+      if (active.mode !== 'sync') {
         return;
       }
-      // Peer closed without `done`: synthesise a crash report.
-      if (
-        !details.finalReport && details.status === 'spawning' ||
-        details.status === 'running'
-      ) {
-        details.status = 'crashed';
-        details.error = details.error ??
-          'subagent process exited without sending done';
-      }
-      void finishSync();
-    });
-
-    const onAbort = () => {
-      if (settled) {
-        return;
-      }
-      void cancelTask(task, {
-        reason: 'aborted by main',
-        graceMs: CANCEL_GRACE_MS,
-      })
-        .finally(() => {
-          details.status = 'aborted';
-          void finishSync();
+      if (env.type === 'ask') {
+        void handleAsk({
+          pi,
+          ctx,
+          task: active,
+          askId: env.id,
+          question: env.payload.question,
+          defaultAnswer: env.payload.default,
+          policy: active.askPolicy,
         });
+      }
+      if (env.type === 'progress' || env.type === 'report') {
+        const text = env.type === 'progress'
+          ? env.payload.text
+          : `report: ${env.payload.summary}`;
+        details.progress.push(text);
+        onUpdate?.({
+          content: [{type: 'text', text}],
+          details: {...details, progress: [...details.progress]},
+        });
+      }
+    });
+    active.cleanup.push(unsubscribe);
+    const outcome = observeTask(active);
+    const onAbort = () => {
+      void cancelTask(active, {
+        reason: 'aborted by controlling agent',
+        graceMs: CANCEL_GRACE_MS,
+      }).catch((error) => {
+        details.error = (error as Error).message;
+      });
     };
-    if (signal) {
-      if (signal.aborted) {
-        onAbort();
-      } else {
-        signal.addEventListener('abort', onAbort, {once: true});
-      }
+    signal.addEventListener('abort', onAbort, {once: true});
+    active.cleanup.push(() => signal.removeEventListener('abort', onAbort));
+    if (signal.aborted) {
+      onAbort();
     }
-
-    const finishSync = async () => {
-      if (settled) {
-        return;
+    updateMeta(taskId, {status: 'running', subPid: launched.process.pid});
+    emitLifecycle(pi, 'subagent:spawned', {
+      taskId,
+      agent: agent.name,
+      task: params.task,
+      worktree: details.worktree.enabled,
+    });
+    emitLifecycle(pi, 'subagent:connected', {taskId});
+    const completion = (async (): Promise<AgentToolResult<SubagentDetails>> => {
+      const result = await outcome;
+      details.status = result.status;
+      details.error = result.error;
+      if (!details.finalReport && result.finalText) {
+        details.finalReport = {summary: result.finalText};
       }
-      settled = true;
       try {
-        unsub();
-      } catch {
-        // ignored
-      }
-      try {
-        unsubClose();
-      } catch {
-        // ignored
-      }
-      try {
-        signal?.removeEventListener('abort', onAbort);
-      } catch {
-        // ignored
-      }
-
-      let worktreeOutcome: SubagentDetails['worktree'] = {enabled: useWorktree};
-      if (worktreePlan) {
-        if (details.status === 'crashed' || details.status === 'failed') {
-          const preserved = preserveWorktreeOnCrash(worktreePlan);
-          worktreeOutcome = {
+        if (worktreePlan) {
+          // Never mutate/prune a worktree until process exit is confirmed, or
+          // auto-commit partial changes from an aborted/failed worker.
+          const finalized = result.status === 'ok' && result.exit
+            ? await finalizeWorktree(worktreePlan, {
+              agentName: agent.name,
+              taskSummary: params.task,
+            })
+            : preserveWorktreeOnCrash(worktreePlan);
+          details.worktree = {enabled: true, ...finalized};
+          if (finalized.branch && details.finalReport) {
+            details.finalReport.branch = finalized.branch;
+            details.finalReport.commits = finalized.commits;
+          }
+        }
+      } catch (error) {
+        details.status = 'failed';
+        details.error = `worktree finalization failed: ${
+          (error as Error).message
+        }`;
+        if (worktreePlan) {
+          details.worktree = {
             enabled: true,
-            branch: preserved.branch,
-            commits: preserved.commits,
-            preservedPath: preserved.preservedPath,
-          };
-        } else {
-          const finalized = await finalizeWorktree(worktreePlan, {
-            agentName: agent.name,
-            taskSummary: userTask,
-          });
-          worktreeOutcome = {
-            enabled: true,
-            branch: finalized.branch,
-            commits: finalized.commits,
-            preservedPath: finalized.preservedPath,
+            ...preserveWorktreeOnCrash(worktreePlan),
           };
         }
+      } finally {
+        signal.removeEventListener('abort', onAbort);
+        try {
+          await bus.close();
+        } catch (error) {
+          details.status = 'failed';
+          details.error = `bus cleanup failed: ${(error as Error).message}`;
+        } finally {
+          remove(taskId);
+        }
       }
-      details.worktree = worktreeOutcome;
-
-      // If the report has a branch (from the subagent), prefer that; the
-      // worktree finalizer's branch is a more authoritative ground truth.
-      if (worktreeOutcome.branch && details.finalReport) {
-        details.finalReport.branch = worktreeOutcome.branch;
-        details.finalReport.commits = worktreeOutcome.commits;
-      }
-
-      emitLifecycle(pi, 'subagent:done', {
-        taskId: task.taskId,
-        status: details.status,
-        durationMs: Date.now() - task.startedAt,
-        llmAnswersTotal: task.llmAnswersTotal,
-      });
-      updateMeta(task.taskId, {
-        status: details.status,
-        endedAt: new Date().toISOString(),
-      });
-
-      await task.bus.close();
-
-      if (closeOnSuccess && details.status === 'ok' && task.paneId) {
-        await killPane(task.paneId);
-      }
-
-      remove(task.taskId);
-
-      const text = details.finalReport?.summary
-        ?? details.error
-        ?? `Subagent ${task.agentName} finished with status=${details.status}.`;
-      resolve({
-        content: [{type: 'text', text}],
-        details,
-      });
-    };
-
-    pushUpdate();
-  });
-}
-
-function handleBackgroundFinalization(
-  pi: ExtensionAPI,
-  task: ActiveTask,
-  worktreePlan: WorktreePlan | null,
-  agent: AgentConfig,
-  closeOnSuccess: boolean,
-  userTask: string,
-): void {
-  const onDoneOrClose = async () => {
-    let worktreeOutcome: SubagentDetails['worktree'] = {
-      enabled: !!worktreePlan,
-    };
-    if (worktreePlan) {
-      if (task.status === 'crashed' || task.status === 'failed') {
-        const preserved = preserveWorktreeOnCrash(worktreePlan);
-        worktreeOutcome = {
-          enabled: true,
-          branch: preserved.branch,
-          commits: preserved.commits,
-          preservedPath: preserved.preservedPath,
-        };
-      } else {
-        const finalized = await finalizeWorktree(worktreePlan, {
-          agentName: agent.name,
-          taskSummary: userTask,
+      try {
+        updateMeta(taskId, {
+          status: details.status,
+          endedAt: new Date().toISOString(),
+          exitCode: result.exit?.code,
+          exitSignal: result.exit?.signal,
         });
-        worktreeOutcome = {
-          enabled: true,
-          branch: finalized.branch,
-          commits: finalized.commits,
-          preservedPath: finalized.preservedPath,
-        };
+      } catch (error) {
+        details.status = 'failed';
+        details.error = `metadata update failed: ${(error as Error).message}`;
+      }
+      active.status = details.status;
+      emitLifecycle(pi, 'subagent:done', {
+        taskId,
+        status: details.status,
+        durationMs: Date.now() - active.startedAt,
+        worktree: details.worktree,
+        llmAnswersTotal: active.llmAnswersTotal,
+      });
+      const text = details.error ?? details.finalReport?.summary ??
+        `Subagent ${agent.name} finished with status=${details.status}.`;
+      if (active.mode === 'background' && !active.ownerClosed) {
+        routeTaskCompletion(
+          pi,
+          ctx,
+          active,
+          text,
+          details.worktree.preservedPath,
+        );
+      }
+      return {content: [{type: 'text', text}], details};
+    })();
+    active.completion = completion;
+    if (params.background) {
+      // Observe unexpected finalizer failures immediately, not just at shutdown.
+      void completion.catch((error) => {
+        active.status = 'failed';
+        emitLifecycle(pi, 'subagent:failed', {
+          taskId,
+          error: (error as Error).message,
+        });
+        process.stderr.write(
+          `[subagent main] finalization failed for ${taskId}: ${
+            (error as Error).message
+          }\n`,
+        );
+        remove(taskId);
+        if (!active.ownerClosed) {
+          routeTaskCompletion(
+            pi,
+            ctx,
+            active,
+            `Finalization failed: ${(error as Error).message}`,
+            worktreePlan?.path,
+          );
+        }
+      });
+      // The turn's signal must not own a task after returning its background handle.
+      signal.removeEventListener('abort', onAbort);
+      return {
+        content: [{
+          type: 'text',
+          text:
+            `Started ${agent.name} in background; task_id=${taskId}, pid=${details.pid}. Logs: ${dir}`,
+        }],
+        details: {...details},
+      };
+    }
+    return await completion;
+  } catch (error) {
+    details.status = signal.aborted ? 'aborted' : 'failed';
+    details.error = (error as Error).message;
+    if (task) {
+      await cancelTask(task, {reason: details.error, graceMs: 0}).catch(
+        () => {},
+      );
+      try {
+        await task.bus.close();
+      } finally {
+        remove(task.taskId);
       }
     }
-
-    emitLifecycle(pi, 'subagent:done', {
-      taskId: task.taskId,
-      status: task.status,
-      durationMs: Date.now() - task.startedAt,
-      worktree: worktreeOutcome,
-      llmAnswersTotal: task.llmAnswersTotal,
-    });
-    updateMeta(task.taskId, {
-      status: task.status,
-      endedAt: new Date().toISOString(),
-    });
-
-    await task.bus.close();
-    if (closeOnSuccess && task.status === 'ok' && task.paneId) {
-      await killPane(task.paneId);
+    if (worktreePlan) {
+      details.worktree = {
+        enabled: true,
+        ...preserveWorktreeOnCrash(worktreePlan),
+      };
     }
-    remove(task.taskId);
-  };
-
-  let resolved = false;
-  const settle = () => {
-    if (resolved) {
-      return;
+    if (details.taskId) {
+      try {
+        updateMeta(details.taskId, {
+          status: 'spawn_failed',
+          endedAt: new Date().toISOString(),
+        });
+      } catch (metadataError) {
+        details.error += `; metadata update failed: ${
+          (metadataError as Error).message
+        }`;
+      }
+      emitLifecycle(pi, 'subagent:failed', {
+        taskId: details.taskId,
+        error: details.error,
+      });
     }
-    resolved = true;
-    void onDoneOrClose();
-  };
-
-  const subDone = task.bus.subscribe((env) => {
-    if (env.from === 'sub' && env.type === 'done') {
-      settle();
-    }
-  });
-  task.cleanup.push(subDone);
-
-  task.bus.onPeerClose(() => settle());
+    return {
+      content: [{type: 'text', text: `error: ${details.error}`}],
+      details,
+    };
+  }
 }
 
-async function cancelTask(
-  task: ActiveTask,
-  options: {reason: string; graceMs: number},
-): Promise<void> {
-  try {
-    task.bus.emit('cancel', {reason: options.reason, graceMs: options.graceMs});
-  } catch {
-    // Bus may already be closed; fall through to signal escalation.
-  }
-
-  await new Promise((resolve) => setTimeout(resolve, options.graceMs));
-
-  if (task.pid !== null) {
-    try {
-      process.kill(task.pid, 'SIGTERM');
-    } catch {
-      // already gone
-    }
-  }
-  await new Promise((resolve) => setTimeout(resolve, SIGKILL_GRACE_MS));
-  if (task.pid !== null) {
-    try {
-      process.kill(task.pid, 'SIGKILL');
-    } catch {
-      // already gone
-    }
-  }
-  if (task.paneId) {
-    await killPane(task.paneId);
-  }
+function textResult(text: string): AgentToolResult<undefined> {
+  return {content: [{type: 'text', text}], details: undefined};
 }
 
 function buildSystemPromptFile(agent: AgentConfig): string {
   return [
     `# Subagent system prompt (${agent.name})`,
     '',
-    'You are running as a subagent spawned by a main pi agent. Communicate',
-    'results back via the `report` tool (final results) and `progress` tool',
-    '(short status updates). Use `ask` only when you genuinely cannot proceed',
-    'without information; the main agent or user will reply via `answer`.',
+    'You are a headless subagent. Use report for results, progress for short updates, and ask when you genuinely need clarification from the controlling agent or user.',
     '',
     `## Soft turn limit: ${MAX_TURNS} (grace: ${GRACE_TURNS})`,
     '',
-    `If you hit the soft limit, wrap up immediately: send a \`report\` summarizing`,
-    'partial work. Hard abort after the grace period.',
+    'Wrap up at the soft limit with a report of partial work. Stop after the grace period.',
     '',
     `## Agent personality: ${agent.name}`,
     '',
     agent.systemPrompt,
     '',
   ].join('\n');
-}
-
-function buildDetails(
-  task: ActiveTask,
-  agent: AgentConfig,
-  userTask: string,
-  useWorktree: boolean,
-): SubagentDetails {
-  return {
-    taskId: task.taskId,
-    agent: agent.name,
-    task: userTask,
-    mode: task.mode,
-    paneId: task.paneId,
-    windowId: task.windowId,
-    worktree: {enabled: useWorktree},
-    status: 'running',
-    progress: [],
-  };
-}
-
-function errorResult(
-  params: {agent: string; task: string},
-  message: string,
-): AgentToolResult<SubagentDetails> {
-  return {
-    content: [{type: 'text', text: `error: ${message}`}],
-    details: {
-      taskId: '',
-      agent: params.agent,
-      task: params.task,
-      mode: 'sync',
-      paneId: null,
-      windowId: null,
-      worktree: {enabled: false},
-      status: 'failed',
-      progress: [],
-      error: message,
-    },
-  };
 }

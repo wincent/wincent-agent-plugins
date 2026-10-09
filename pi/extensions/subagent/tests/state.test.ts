@@ -77,15 +77,17 @@ test('writeMeta / readMeta / updateMeta round-trip', async () => {
       status: 'running',
       mainPid: process.pid,
       subPid: null,
-      paneId: null,
-      windowId: null,
       cwd: TMP,
       worktreePath: null,
-      placement: 'split-right',
+      model: {provider: 'test', id: 'exact-id'},
+      thinkingLevel: 'high',
     });
     const round1 = readMeta('task_beta');
     assert.ok(round1);
     assert.equal(round1!.agent, 'scout');
+    assert.deepEqual(round1!.model, {provider: 'test', id: 'exact-id'});
+    assert.equal(round1!.thinkingLevel, 'high');
+    assert.ok(!('paneId' in round1!));
     const round2 = updateMeta('task_beta', {
       status: 'ok',
       endedAt: new Date().toISOString(),

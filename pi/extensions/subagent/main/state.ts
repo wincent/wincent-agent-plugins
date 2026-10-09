@@ -11,6 +11,8 @@
  *     worktree            # symlink to the actual worktree, when used
  */
 
+import type {SpawnArgs} from './spawn.js';
+
 import {
   existsSync,
   mkdirSync,
@@ -43,11 +45,12 @@ export interface MetaJson {
   status: TaskStatus;
   mainPid: number;
   subPid: number | null;
-  paneId: string | null;
-  windowId: string | null;
   cwd: string;
   worktreePath: string | null;
-  placement: string;
+  model?: SpawnArgs['model'];
+  thinkingLevel?: SpawnArgs['thinkingLevel'];
+  exitCode?: number | null;
+  exitSignal?: NodeJS.Signals | null;
 }
 
 export function stateRoot(): string {

@@ -42,6 +42,7 @@ export class Bus {
   private readonly versionWarn: (line: string) => void;
   private readonly parseWarn: (line: string, err: Error) => void;
   private closed = false;
+  private closing?: Promise<void>;
 
   constructor(
     transport: Transport,
@@ -159,22 +160,22 @@ export class Bus {
    * Close the bus. Sends are no longer permitted. Pending requests reject.
    * Audit log is flushed.
    */
-  async close(): Promise<void> {
-    if (this.closed) {
-      return;
-    }
-    this.closed = true;
-
-    for (const req of this.pending.values()) {
-      if (req.timeoutHandle) {
-        clearTimeout(req.timeoutHandle);
+  close(): Promise<void> {
+    if (!this.closing) {
+      this.closed = true;
+      for (const req of this.pending.values()) {
+        if (req.timeoutHandle) {
+          clearTimeout(req.timeoutHandle);
+        }
+        req.reject(new Error('bus closed before reply arrived'));
       }
-      req.reject(new Error('bus closed before reply arrived'));
+      this.pending.clear();
+      this.closing = (async () => {
+        await this.transport.close();
+        await this.auditLog.flush();
+      })();
     }
-    this.pending.clear();
-
-    await this.transport.close();
-    await this.auditLog.flush();
+    return this.closing;
   }
 
   private onIncoming(env: Envelope): void {
