@@ -15,7 +15,6 @@ import {
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {test} from 'node:test';
-import {fileURLToPath} from 'node:url';
 
 import {AuditLog} from '../bus/audit-log.js';
 import {Bus} from '../bus/bus.js';
@@ -23,14 +22,11 @@ import {allocateTaskSocket, validateSocketPath} from '../bus/socket-path.js';
 import {connectToPeer, listenForPeer} from '../bus/transport-uds.js';
 import {launchSubagent} from '../main/launch.js';
 import {terminateProcess, waitForExit} from '../main/spawn.js';
+import {spawnFakeChild} from './fixtures/runtime.js';
 
 async function withRoot(fn: (root: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'ss-'));
-  const keys = [
-    'PI_SUBAGENT_SOCKET_ROOT',
-    'PI_SUBAGENT_LAUNCHER',
-    'PI_SUBAGENT_SOCKET_PATH',
-  ];
+  const keys = ['PI_SUBAGENT_SOCKET_ROOT', 'PI_SUBAGENT_SOCKET_PATH'];
   const values = keys.map((key) => process.env[key]);
   process.env.PI_SUBAGENT_SOCKET_ROOT = root;
   try {
@@ -57,15 +53,6 @@ function launchArgs(dir: string, task = 'normal') {
     toolsWhitelist: [],
     systemPromptPath: join(dir, 'system.md'),
   };
-}
-
-function useFakeChild() {
-  const fixture = fileURLToPath(
-    new URL('./fixtures/fake-child.mjs', import.meta.url),
-  );
-  process.env.PI_SUBAGENT_LAUNCHER = [process.execPath, fixture].map((arg) =>
-    `'${arg.replace(/'/g, "'\\''")}'`
-  ).join(' ');
 }
 
 test('path validation counts UTF-8 bytes and reserves the terminating NUL', () => {
@@ -174,7 +161,6 @@ test(
   {timeout: 10_000},
   async () => {
     await withRoot(async (root) => {
-      useFakeChild();
       process.env.PI_SUBAGENT_SOCKET_PATH = '/stale-parent-path';
       const artifacts = join(root, 'artifacts-' + 'x'.repeat(110));
       await mkdir(artifacts);
@@ -184,7 +170,7 @@ test(
         const launched = await launchSubagent(launchArgs(dir), {
           connectTimeoutMs: 3000,
           killGraceMs: 100,
-        });
+        }, spawnFakeChild);
         return {dir, launched};
       }));
       try {
@@ -223,7 +209,6 @@ for (const mode of ['exit-early', 'no-connect', 'aborted', 'spawn-failure']) {
     timeout: 10_000,
   }, async () => {
     await withRoot(async (root) => {
-      useFakeChild();
       const sibling = await allocateTaskSocket();
       const dir = join(root, 'artifacts');
       await mkdir(dir);
@@ -236,7 +221,7 @@ for (const mode of ['exit-early', 'no-connect', 'aborted', 'spawn-failure']) {
         connectTimeoutMs: 150,
         killGraceMs: 100,
         signal: controller.signal,
-      });
+      }, spawnFakeChild);
       const timer = mode === 'aborted'
         ? setTimeout(() => controller.abort(), 30)
         : undefined;
@@ -255,14 +240,15 @@ for (const mode of ['exit-early', 'no-connect', 'aborted', 'spawn-failure']) {
   });
 }
 
-test('configured allocation failure never starts the launcher', async () => {
+test('configured allocation failure never starts a child', async () => {
   await withRoot(async (root) => {
-    useFakeChild();
     process.env.PI_SUBAGENT_SOCKET_ROOT = join(root, 'missing');
     await assert.rejects(
       launchSubagent(launchArgs(root), {
         connectTimeoutMs: 100,
         killGraceMs: 100,
+      }, () => {
+        assert.fail('allocation failure must prevent child launch');
       }),
       /no fallback/,
     );
@@ -272,13 +258,12 @@ test('configured allocation failure never starts the launcher', async () => {
 
 test('socket cleanup failures preserve unexpected files and still flush audit logs', async () => {
   await withRoot(async (root) => {
-    useFakeChild();
     const artifacts = join(root, 'artifacts');
     await mkdir(artifacts);
     const launched = await launchSubagent(launchArgs(artifacts), {
       connectTimeoutMs: 3000,
       killGraceMs: 100,
-    });
+    }, spawnFakeChild);
     const audit = new AuditLog(join(artifacts, 'bus.jsonl'));
     const flush = audit.flush.bind(audit);
     let flushCalls = 0;

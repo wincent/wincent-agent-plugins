@@ -41,11 +41,13 @@ Each subagent inherits the main agent's active provider, model, and thinking lev
 
 Generic extension state and approval delegation are not implemented yet. In particular, OCR approvals remain local to the controlling session; headless children cannot inherit them yet.
 
-## Launcher
+## Runtime and inherited environment
 
-Subagents exec `pi -p` by default, with stdin closed and stdout/stderr redirected to private task logs. If `PI_SUBAGENT_LAUNCHER` is set in the main agent's environment, its value is used instead; it may be a path or a trusted command with arguments. A configured launcher failure never falls back to bare `pi`.
+Subagents invoke the controlling process's interpreter and canonical installed Pi CLI with `-p`, with stdin closed and stdout/stderr redirected to private task logs. The entrypoint must match the Pi package's declared CLI; runtime identification or execution failure stops launch without a PATH fallback. Installed Node/Bun CLI distributions are supported; SDK hosts, source entrypoints not declared in the package manifest, and standalone compiled binaries are not supported by this resolver.
 
-Sandbox/proxy wrappers should set this to their own launcher so each child acquires its own lease. They must permit the task-specific bus connection, task files, and execution of the launcher inside the parent sandbox. Removing tmux eliminates the need for a tmux socket grant, but does not itself validate a nono profile or change its filesystem/network permissions. Required v0 configurations are unsandboxed parent/child and sandboxed parent/child; full nono parent/child validation remains pending.
+Direct children inherit the controller's environment and OS sandbox, even though each child has its own process group. A sandboxed controller produces sandboxed children; an unsandboxed controller produces unsandboxed children. Children do not rerun nono or proxy bootstrap wrappers, obtain independent proxy leases, or escape the parent's restrictions. The parent wrapper must authorize the task-specific socket subtree, task files, worktree paths, and installed runtime. No tmux socket grant or additional wrapper execution grant is needed.
+
+Both sandboxed and `pi-naked` children share the controller's proxy environment and lease lifetime. The controller owns their lifetime and cancels them at shutdown; a background subagent is not an independently leased session. Proxy access cannot be revoked separately for one child through this shared transport. Environment inheritance is not generic extension-state or approval delegation, which remains unimplemented. Start a fresh updated controller after changing these wrappers or the extension; old tmux-based controllers do not provide these inheritance guarantees.
 
 ### Socket placement
 
@@ -57,9 +59,9 @@ Without that variable, unsandboxed and Linux launches allocate private per-task 
 
 ### Wrapper smoke test
 
-Run `node pi/extensions/subagent/tests/sandbox-smoke.mjs /absolute/path/to/bin/pi` explicitly. It uses an isolated temporary Pi configuration and a deterministic provider, with no paid model calls. Both controller and child use the real wrapper; the test checks progress/clarification/report delivery, process-group exit, socket cleanup, and retained results. Logs and task artifacts are kept for diagnosis. It does not alter sandbox permissions or substitute a launcher after failure.
+Run `node pi/extensions/subagent/tests/sandbox-smoke.mjs /absolute/path/to/bin/pi` explicitly (or pass `bin/pi-naked` for an unsandboxed controller). It uses an isolated temporary Pi configuration and a deterministic provider, with no paid model calls. Only the controller uses the real wrapper; the test checks that its direct child uses the same installed runtime and socket root, plus progress/clarification/report delivery, process-group exit, socket cleanup, and retained results. Logs and task artifacts are kept for diagnosis. It does not alter sandbox permissions or substitute a runtime after failure; it does not itself test sandbox denial or proxy endpoint access.
 
-The initial macOS run with the socket-root policy passed allocation/binding and launch-failure cleanup, then the sandbox denied execution of the configured `bin/pi` child launcher (exit 126, `Operation not permitted`). This is a separate policy/launcher-access blocker, not a socket-path failure. Child connection and full sandboxed task completion remain unverified.
+The initial recursive-wrapper macOS smoke bound the socket successfully but failed at child wrapper access, then at nested nono policy reconstruction. Direct inherited children avoid that bootstrap. Subsequent manual macOS checks passed scout execution, worker commit retention, cancellation, denied access, and normal controller shutdown with a child and tool descendant. The retained worker branch, commit contents, saved result, and absent worktree directory/registration were independently checked. Forced SIGKILL/crash recovery and the broader sandboxed linked-worktree/subdirectory matrix remain unverified.
 
 Children exit after their task settles. Cancellation sends a bus message, then escalates to SIGTERM/SIGKILL for the child process group if needed. Completion waits for process exit before finalizing worktrees. Controlling-session shutdown cancels remaining children.
 

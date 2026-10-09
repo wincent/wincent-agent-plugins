@@ -3,12 +3,13 @@ import {writeFileSync} from 'node:fs';
 import {createConnection} from 'node:net';
 
 const mode = process.argv.at(-1);
+writeFileSync(`${process.env.PI_SUBAGENT_BUS_DIR}/pid`, String(process.pid));
 writeFileSync(`${process.env.PI_SUBAGENT_BUS_DIR}/socket-env.json`, JSON.stringify({
   busDir: process.env.PI_SUBAGENT_BUS_DIR,
   socketPath: process.env.PI_SUBAGENT_SOCKET_PATH,
 }));
 if (mode === 'exit-early') {
-  process.stderr.write('launcher failure\n');
+  process.stderr.write('runtime failure\n');
   process.exit(23);
 }
 if (mode === 'no-connect') {

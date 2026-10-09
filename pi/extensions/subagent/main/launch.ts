@@ -14,6 +14,7 @@ export async function launchSubagent(
     connectTimeoutMs: number;
     killGraceMs: number;
   },
+  startProcess: typeof spawnSubagent = spawnSubagent,
 ): Promise<
   {process: SpawnedProcess; transport: Transport; socketPath: string}
 > {
@@ -33,7 +34,7 @@ export async function launchSubagent(
     });
     // Binding may fail while spawn is still pending; observe rejection immediately.
     void connection.catch(() => {});
-    child = await spawnSubagent({...args, socketPath: socket.path});
+    child = await startProcess({...args, socketPath: socket.path});
     const transport = await Promise.race([
       connection,
       child.exited.then((exit) => {

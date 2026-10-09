@@ -20,7 +20,7 @@ import {Bus} from '../bus/bus.js';
 import type {Envelope} from '../bus/envelope.js';
 import {launchSubagent} from '../main/launch.js';
 import {readTaskResult, resultText} from '../main/result.js';
-import {terminateProcess, waitForExit} from '../main/spawn.js';
+import {spawnSubagent, terminateProcess, waitForExit} from '../main/spawn.js';
 
 const entry = realpathSync(
   execFileSync('/bin/bash', ['-c', 'command -v pi'], {encoding: 'utf8'})
@@ -50,7 +50,7 @@ function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'sa-'));
   const keys = [
     'PI_CODING_AGENT_DIR',
-    'PI_SUBAGENT_LAUNCHER',
+    'PI_OFFLINE',
     'PI_SUBAGENT_SOCKET_ROOT',
     'XDG_STATE_HOME',
     'TMUX',
@@ -58,11 +58,21 @@ function setup() {
   const previous = keys.map((key) => process.env[key]);
   process.env.PI_CODING_AGENT_DIR = join(dir, 'agent');
   process.env.XDG_STATE_HOME = dir;
+  process.env.PI_OFFLINE = '1';
   delete process.env.TMUX;
   mkdirSync(process.env.PI_CODING_AGENT_DIR);
   writeFileSync(
     join(process.env.PI_CODING_AGENT_DIR, 'settings.json'),
     JSON.stringify({
+      extensions: [
+        extension,
+        provider,
+        '-builtin:mcp',
+        '-builtin:llama.cpp',
+        '-builtin:codemode',
+        '-builtin:tool-search',
+      ],
+      defaultProjectTrust: 'never',
       defaultProvider: 'wrong-default',
       defaultModel: 'wrong-default',
       defaultThinkingLevel: 'off',
@@ -71,9 +81,6 @@ function setup() {
       retry: {enabled: false},
     }),
   );
-  process.env.PI_SUBAGENT_LAUNCHER = [process.execPath, ...cliArgs].map((arg) =>
-    `'${arg.replace(/'/g, "'\\''")}'`
-  ).join(' ');
   writeFileSync(join(dir, 'system.md'), 'You are a deterministic test agent.');
   return {
     dir,
@@ -98,17 +105,22 @@ for (
     let launched: Awaited<ReturnType<typeof launchSubagent>> | undefined;
     let bus: Bus | undefined;
     try {
-      launched = await launchSubagent({
-        taskId: 'test_headless',
-        taskDir: dir,
-        parentId: 'test_parent',
-        cwd: dir,
-        task: scenario,
-        model,
-        thinkingLevel: 'high',
-        toolsWhitelist: [],
-        systemPromptPath: join(dir, 'system.md'),
-      }, {connectTimeoutMs: 15_000, killGraceMs: 500});
+      launched = await launchSubagent(
+        {
+          taskId: 'test_headless',
+          taskDir: dir,
+          parentId: 'test_parent',
+          cwd: dir,
+          task: scenario,
+          model,
+          thinkingLevel: 'high',
+          toolsWhitelist: [],
+          systemPromptPath: join(dir, 'system.md'),
+        },
+        {connectTimeoutMs: 15_000, killGraceMs: 500},
+        (args) =>
+          spawnSubagent(args, {executable: process.execPath, args: cliArgs}),
+      );
       bus = new Bus(
         launched.transport,
         new AuditLog(join(dir, 'main.jsonl')),
@@ -250,6 +262,10 @@ test('real controller keeps long state paths separate from socket allocation', {
       readFileSync(join(result.taskDir, 'observed.json'), 'utf8'),
     );
     assert.equal(observed.busDir, result.taskDir);
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(result.taskDir, 'runtime.json'), 'utf8')),
+      JSON.parse(readFileSync(join(dir, 'runtime.json'), 'utf8')),
+    );
     assert.ok(observed.socketPath.startsWith(socketRoot + '/'));
     assert.ok(existsSync(result.resultPath));
     assert.ok(existsSync(join(result.taskDir, 'bus.jsonl')));

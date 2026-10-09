@@ -3,6 +3,8 @@ import {spawn} from 'node:child_process';
 import {closeSync, openSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 
+import {type PiRuntime, runningPiRuntime} from './runtime.js';
+
 export interface SpawnArgs {
   taskId: string;
   taskDir: string;
@@ -34,13 +36,16 @@ export interface SpawnedProcess {
 
 const BUS_TOOL_NAMES = ['report', 'progress', 'ask'] as const;
 
-export async function spawnSubagent(args: SpawnArgs): Promise<SpawnedProcess> {
+export async function spawnSubagent(
+  args: SpawnArgs,
+  runtime: PiRuntime = runningPiRuntime(),
+): Promise<SpawnedProcess> {
   writeFileSync(join(args.taskDir, 'task.txt'), args.task, {
     encoding: 'utf-8',
     mode: 0o600,
   });
   const wrapperPath = join(args.taskDir, 'run.sh');
-  writeFileSync(wrapperPath, renderWrapper(args), {
+  writeFileSync(wrapperPath, renderWrapper(args, runtime), {
     encoding: 'utf-8',
     mode: 0o700,
   });
@@ -181,15 +186,19 @@ export async function terminateProcess(
   return exit;
 }
 
-export function renderWrapper(args: SpawnArgs): string {
+export function renderWrapper(
+  args: SpawnArgs,
+  runtime: PiRuntime = runningPiRuntime(),
+): string {
   const exports = [
     `export PI_SUBAGENT_TASK_ID=${shellQuote(args.taskId)}`,
     `export PI_SUBAGENT_BUS_DIR=${shellQuote(args.taskDir)}`,
     `export PI_SUBAGENT_SOCKET_PATH=${shellQuote(args.socketPath)}`,
     `export PI_SUBAGENT_PARENT_ID=${shellQuote(args.parentId)}`,
   ];
-  // This is trusted launcher configuration, not model-supplied shell text.
-  const launcher = process.env.PI_SUBAGENT_LAUNCHER || 'pi';
+  const command = [runtime.executable, ...runtime.args].map(shellQuote).join(
+    ' ',
+  );
   const piArgs = [
     '-p',
     '--append-system-prompt',
@@ -229,7 +238,7 @@ export function renderWrapper(args: SpawnArgs): string {
     'set -e',
     ...exports,
     `cd ${shellQuote(args.cwd)}`,
-    `exec ${launcher} ` + piArgs.join(' '),
+    `exec ${command} ` + piArgs.join(' '),
     '',
   ].join('\n');
 }

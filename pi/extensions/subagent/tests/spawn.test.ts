@@ -11,7 +11,6 @@ import {
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {test} from 'node:test';
-import {fileURLToPath} from 'node:url';
 
 import {AuditLog} from '../bus/audit-log.js';
 import {Bus} from '../bus/bus.js';
@@ -25,6 +24,7 @@ import {
   spawnSubagent,
   terminateProcess,
 } from '../main/spawn.js';
+import {spawnFakeChild} from './fixtures/runtime.js';
 
 function argsFor(dir: string, task = 'Inspect the code'): SpawnArgs {
   return {
@@ -41,31 +41,30 @@ function argsFor(dir: string, task = 'Inspect the code'): SpawnArgs {
 
 function capturePiArgs(
   overrides: Partial<SpawnArgs> = {},
-  launcher?: string,
 ): string[] {
   const dir = mkdtempSync(join(tmpdir(), 'sa-'));
-  const previous = process.env.PI_SUBAGENT_LAUNCHER;
   try {
     writeFileSync(
-      join(dir, launcher ?? 'pi'),
+      join(dir, "Pi runtime's executable"),
       '#!/bin/sh\nprintf \'%s\\0\' "$@"\n',
       {mode: 0o700},
     );
-    if (launcher) {
-      process.env.PI_SUBAGENT_LAUNCHER = launcher;
-    } else {
-      delete process.env.PI_SUBAGENT_LAUNCHER;
-    }
+    writeFileSync(join(dir, 'pi'), '#!/bin/sh\nexit 93\n', {mode: 0o700});
     const args = {...argsFor(dir), ...overrides};
     writeFileSync(join(dir, 'task.txt'), args.task);
     const wrapperPath = join(dir, 'run.sh');
-    writeFileSync(wrapperPath, renderWrapper(args));
+    writeFileSync(
+      wrapperPath,
+      renderWrapper(args, {
+        executable: join(dir, "Pi runtime's executable"),
+        args: [],
+      }),
+    );
     return execFileSync('bash', [wrapperPath], {
       encoding: 'utf-8',
       env: {...process.env, PATH: `${dir}:${process.env.PATH}`},
     }).split('\0').slice(0, -1);
   } finally {
-    restoreEnv('PI_SUBAGENT_LAUNCHER', previous);
     rmSync(dir, {recursive: true, force: true});
   }
 }
@@ -120,8 +119,8 @@ test('wrapper leaves model selection to Pi if no model is provided', () => {
   assert.ok(!args.includes('--model'));
 });
 
-test('wrapper execs the launcher named by PI_SUBAGENT_LAUNCHER', () => {
-  assert.equal(capturePiArgs({}, 'pi-naked').at(-1), 'Inspect the code');
+test('wrapper quotes the selected executable and ignores PATH shims', () => {
+  assert.equal(capturePiArgs().at(-1), 'Inspect the code');
 });
 
 test('wrapper applies the denylist without excluding runtime bus tools', () => {
@@ -138,11 +137,7 @@ async function withChild(
   fn: (dir: string, task: ActiveTask) => Promise<void>,
 ): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'sa-'));
-  const previous = process.env.PI_SUBAGENT_LAUNCHER;
   const previousTmux = process.env.TMUX;
-  process.env.PI_SUBAGENT_LAUNCHER = `${process.execPath} '${
-    fileURLToPath(new URL('./fixtures/fake-child.mjs', import.meta.url))
-  }'`;
   delete process.env.TMUX;
   let child: SpawnedProcess | undefined;
   let bus: Bus | undefined;
@@ -150,7 +145,7 @@ async function withChild(
     const launched = await launchSubagent(argsFor(dir, mode), {
       connectTimeoutMs: 3_000,
       killGraceMs: 100,
-    });
+    }, spawnFakeChild);
     child = launched.process;
     bus = new Bus(
       launched.transport,
@@ -178,7 +173,6 @@ async function withChild(
       await terminateProcess(child, 0, 100);
     }
     await bus?.close();
-    restoreEnv('PI_SUBAGENT_LAUNCHER', previous);
     restoreEnv('TMUX', previousTmux);
     rmSync(dir, {recursive: true, force: true});
   }
@@ -341,18 +335,6 @@ for (const mode of ['exit-early', 'no-connect', 'aborted']) {
     timeout: 5_000,
   }, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sa-'));
-    const previous = process.env.PI_SUBAGENT_LAUNCHER;
-    const launcher = join(dir, 'launcher.sh');
-    writeFileSync(
-      launcher,
-      `#!/bin/sh\necho $$ > '${
-        join(dir, 'pid')
-      }'\nexec '${process.execPath}' '${
-        fileURLToPath(new URL('./fixtures/fake-child.mjs', import.meta.url))
-      }' "$@"\n`,
-      {mode: 0o700},
-    );
-    process.env.PI_SUBAGENT_LAUNCHER = launcher;
     try {
       const controller = new AbortController();
       const timer = mode === 'aborted'
@@ -363,7 +345,7 @@ for (const mode of ['exit-early', 'no-connect', 'aborted']) {
           connectTimeoutMs: 2_000,
           killGraceMs: 100,
           signal: controller.signal,
-        }),
+        }, spawnFakeChild),
       );
       clearTimeout(timer);
       const {socketPath} = JSON.parse(
@@ -377,22 +359,58 @@ for (const mode of ['exit-early', 'no-connect', 'aborted']) {
       const pid = Number(readFileSync(join(dir, 'pid'), 'utf8'));
       assert.throws(() => process.kill(pid, 0), /ESRCH/);
     } finally {
-      restoreEnv('PI_SUBAGENT_LAUNCHER', previous);
       rmSync(dir, {recursive: true, force: true});
     }
   });
 }
 
-test('configured launcher failure does not fall back to pi', async () => {
+test('runtime execution failure does not fall back to pi', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'sa-'));
-  const previous = process.env.PI_SUBAGENT_LAUNCHER;
-  process.env.PI_SUBAGENT_LAUNCHER = join(dir, 'missing-launcher');
   try {
-    const child = await spawnSubagent(argsFor(dir));
+    const child = await spawnSubagent(argsFor(dir), {
+      executable: join(dir, 'missing-runtime'),
+      args: [],
+    });
     assert.equal((await child.exited).code, 127);
-    assert.match(readFileSync(child.stderrPath, 'utf8'), /missing-launcher/);
+    assert.match(readFileSync(child.stderrPath, 'utf8'), /missing-runtime/);
   } finally {
-    restoreEnv('PI_SUBAGENT_LAUNCHER', previous);
+    rmSync(dir, {recursive: true, force: true});
+  }
+});
+
+test('direct children inherit proxy, CA, and ordinary environment without logging them in the wrapper', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sa-'));
+  const values = {
+    HTTP_PROXY: 'http://fixture:dummy@127.0.0.1:1',
+    HTTPS_PROXY: 'http://fixture:dummy@127.0.0.1:1',
+    SSL_CERT_FILE: '/fixture/ca.pem',
+    SUBAGENT_INHERIT_TEST: 'inherited value',
+  };
+  const previous = Object.keys(values).map((key) => process.env[key]);
+  try {
+    Object.assign(process.env, values);
+    const script = join(dir, 'environment.mjs');
+    writeFileSync(
+      script,
+      `console.log(JSON.stringify(Object.fromEntries(${
+        JSON.stringify(Object.keys(values))
+      }.map(key => [key, process.env[key]]))))`,
+    );
+    const child = await spawnSubagent(argsFor(dir), {
+      executable: process.execPath,
+      args: [script],
+    });
+    assert.equal((await child.exited).code, 0);
+    assert.deepEqual(
+      JSON.parse(readFileSync(child.stdoutPath, 'utf8')),
+      values,
+    );
+    const wrapper = readFileSync(join(dir, 'run.sh'), 'utf8');
+    for (const value of Object.values(values)) {
+      assert.ok(!wrapper.includes(value));
+    }
+  } finally {
+    Object.keys(values).forEach((key, i) => restoreEnv(key, previous[i]));
     rmSync(dir, {recursive: true, force: true});
   }
 });

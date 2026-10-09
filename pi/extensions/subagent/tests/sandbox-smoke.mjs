@@ -57,8 +57,11 @@ const observed = JSON.parse(readFileSync(join(result.taskDir, 'observed.json'), 
 assert.equal(observed.busDir, result.taskDir);
 assert.ok(!existsSync(dirname(observed.socketPath)), 'Task socket directory was not removed');
 assert.ok(existsSync(result.resultPath), 'Retained result is missing');
-assert.ok(readFileSync(join(result.taskDir, 'run.sh'), 'utf8').includes(`exec ${launcher} `), 'Child did not use the requested launcher');
-if (process.platform === 'darwin') {
-  assert.equal(dirname(dirname(observed.socketPath)), join(tmpdir(), 'pi-sockets'));
+const runtime = JSON.parse(readFileSync(join(dir, 'runtime.json'), 'utf8'));
+assert.deepEqual(JSON.parse(readFileSync(join(result.taskDir, 'runtime.json'), 'utf8')), runtime, 'Child did not inherit the controller runtime and socket root');
+const quote = (value) => "'" + value.replace(/'/g, "'\\''") + "'";
+assert.ok(readFileSync(join(result.taskDir, 'run.sh'), 'utf8').includes(`exec ${quote(runtime.executable)} ${quote(runtime.entrypoint)} `), 'Child did not invoke the controlling Pi runtime directly');
+if (runtime.socketRoot) {
+  assert.equal(dirname(dirname(observed.socketPath)), runtime.socketRoot);
 }
-console.log(`PASS: wrapper parent and child exchanged progress, clarification, report, and completion. Socket: ${observed.socketPath}`);
+console.log(`PASS: wrapper controller and direct child exchanged progress, clarification, report, and completion. Socket: ${observed.socketPath}`);

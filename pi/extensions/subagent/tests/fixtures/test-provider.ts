@@ -11,6 +11,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from 'node:fs';
 import {join} from 'node:path';
@@ -28,6 +29,18 @@ export default function (pi: ExtensionAPI): void {
     }
   });
   pi.on('before_agent_start', (_event, ctx) => {
+    writeFileSync(
+      join(
+        isChild ? process.env.PI_SUBAGENT_BUS_DIR! : ctx.cwd,
+        'runtime.json',
+      ),
+      JSON.stringify({
+        executable: realpathSync(process.execPath),
+        entrypoint: realpathSync(process.argv[1]),
+        socketRoot: process.env.PI_SUBAGENT_SOCKET_ROOT ?? null,
+      }),
+      {mode: 0o600},
+    );
     if (isChild) {
       writeFileSync(
         join(process.env.PI_SUBAGENT_BUS_DIR!, 'observed.json'),
