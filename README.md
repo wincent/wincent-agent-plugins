@@ -105,3 +105,5 @@ Run all extension, subagent, and Atlassian tests from the repository root:
 ```bash
 bin/test
 ```
+
+The Pi tests require `pi` on `PATH` and discover runtime dependencies by following its executable's symlinks to the package directory. They do not require an npm-global installation.

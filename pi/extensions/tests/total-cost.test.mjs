@@ -1,10 +1,9 @@
 /**
- * Requires globally installed Pi (no provider requests).
+ * Requires Pi on PATH (no provider requests).
  * Run: node --experimental-transform-types --test pi/extensions/tests/total-cost.test.mjs
  * Uses temporary sessions and Pi's real rendering and width helpers.
  */
 import {strict as assert} from 'node:assert';
-import {execFileSync} from 'node:child_process';
 import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {registerHooks} from 'node:module';
 import {tmpdir} from 'node:os';
@@ -13,10 +12,9 @@ import {test} from 'node:test';
 
 import {pathToFileURL} from 'node:url';
 
-const piDir = process.env.PI_TEST_PACKAGE_DIR ?? join(
-  execFileSync('npm', ['root', '-g'], {encoding: 'utf8'}).trim(),
-  '@earendil-works/pi-coding-agent',
-);
+import {locatePiPackage} from './pi-package.mjs';
+
+const piDir = locatePiPackage();
 const imports = new Map([
   ['@earendil-works/pi-coding-agent', piDir],
   ['@earendil-works/pi-tui', join(piDir, 'node_modules/@earendil-works/pi-tui')],

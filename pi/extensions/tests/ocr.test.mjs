@@ -1,5 +1,4 @@
 import {strict as assert} from 'node:assert';
-import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import {mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile} from 'node:fs/promises';
 import {createRequire, registerHooks, syncBuiltinESMExports} from 'node:module';
@@ -19,8 +18,10 @@ import {
   saveArtifacts,
 } from '../ocr/client.ts';
 
+import {locatePiPackage} from './pi-package.mjs';
+
 // Use Pi's runtime TypeBox, just as the extension loader does (no npm install).
-const piDir = process.env.PI_TEST_PACKAGE_DIR ?? join(execFileSync('npm', ['root', '-g'], {encoding: 'utf8'}).trim(), '@earendil-works/pi-coding-agent');
+const piDir = locatePiPackage();
 const requirePi = createRequire(join(piDir, 'package.json'));
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {

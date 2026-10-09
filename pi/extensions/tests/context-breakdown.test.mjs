@@ -1,9 +1,8 @@
 /**
- * Requires globally installed Pi 0.87.1 or newer (no provider requests).
+ * Requires Pi 0.87.1 or newer on PATH (no provider requests).
  * Run: node --experimental-transform-types --test pi/extensions/tests/context-breakdown.test.mjs
  */
 import {strict as assert} from 'node:assert';
-import {execFileSync} from 'node:child_process';
 import {
   mkdir,
   mkdtemp,
@@ -18,10 +17,9 @@ import {join} from 'node:path';
 import {test} from 'node:test';
 import {pathToFileURL} from 'node:url';
 
-const piDir = process.env.PI_TEST_PACKAGE_DIR ?? join(
-  execFileSync('npm', ['root', '-g'], {encoding: 'utf8'}).trim(),
-  '@earendil-works/pi-coding-agent',
-);
+import {locatePiPackage} from './pi-package.mjs';
+
+const piDir = locatePiPackage();
 const packages = new Set([
   '@earendil-works/pi-coding-agent',
   '@earendil-works/pi-ai',

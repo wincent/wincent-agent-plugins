@@ -59,11 +59,9 @@ An agent with shell access can call the allowed OCR endpoint without using this 
 
 ## Tests
 
-From the plugin repository root:
+From the plugin repository root, with `pi` on `PATH`:
 
 ```sh
-# For the dotfiles-managed Pi (omit for a normal global npm installation):
-export PI_TEST_PACKAGE_DIR="$HOME/n/pi/node_modules/@earendil-works/pi-coding-agent"
 node --experimental-transform-types --test pi/extensions/tests/ocr.test.mjs
 NONO_PROXY_INTEGRATION=1 node --experimental-transform-types --test pi/extensions/tests/ocr-nono.test.mjs
 bin/typecheck
