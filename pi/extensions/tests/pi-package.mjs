@@ -1,13 +1,33 @@
 import {readFileSync, realpathSync} from 'node:fs';
 import {homedir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
 const packageName = '@earendil-works/pi-coding-agent';
 
 // Deliberately ignore PATH: `pi` there may be the nono launcher or a stale
-// global installation. Tests must use the dotfiles-managed runtime only.
+// global installation. Honor an explicit real executable, otherwise use the
+// dotfiles-managed runtime. A broken override must not silently select another.
 export function locatePiPackage(env = process.env) {
+  if (env.PI_REAL_BIN) {
+    let entry;
+    try {
+      entry = realpathSync(env.PI_REAL_BIN);
+    } catch {
+      throw new Error(`Cannot resolve PI_REAL_BIN: ${env.PI_REAL_BIN}`);
+    }
+    for (let dir = dirname(entry);; dir = dirname(dir)) {
+      try {
+        if (JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).name === packageName) {
+          return dir;
+        }
+      } catch {
+        // Only a valid coding-agent manifest identifies the package root.
+      }
+      if (dirname(dir) === dir) break;
+    }
+    throw new Error(`Cannot find ${packageName} for PI_REAL_BIN: ${env.PI_REAL_BIN}. Point it at Pi's real executable, not a wrapper.`);
+  }
   const dir = join(env.HOME ?? homedir(), 'n/pi/node_modules', packageName);
   try {
     if (JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).name === packageName) {

@@ -22,8 +22,10 @@ import {launchSubagent} from '../main/launch.js';
 import {readTaskResult, resultText} from '../main/result.js';
 import {spawnSubagent, terminateProcess, waitForExit} from '../main/spawn.js';
 
-// Never execute the nono wrapper or a leftover global Pi selected by PATH.
-const entry = realpathSync(join(homedir(), 'n/pi/node_modules/.bin/pi'));
+// Match locatePiPackage(): prefer the explicit real executable, never PATH.
+const entry = realpathSync(
+  process.env.PI_REAL_BIN || join(homedir(), 'n/pi/node_modules/.bin/pi'),
+);
 const extension = fileURLToPath(new URL('../index.ts', import.meta.url));
 const provider = fileURLToPath(
   new URL('./fixtures/test-provider.ts', import.meta.url),

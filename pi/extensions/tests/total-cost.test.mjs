@@ -1,5 +1,5 @@
 /**
- * Requires the managed Pi in ~/n/pi (no provider requests).
+ * Requires Pi via PI_REAL_BIN or the managed ~/n/pi (no provider requests).
  * Run: node --experimental-transform-types --test pi/extensions/tests/total-cost.test.mjs
  * Uses temporary sessions and Pi's real rendering and width helpers.
  */

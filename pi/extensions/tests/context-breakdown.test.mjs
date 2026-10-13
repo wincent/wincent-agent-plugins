@@ -1,5 +1,5 @@
 /**
- * Targets Pi 1.0.4 in ~/n/pi (no provider requests).
+ * Targets Pi 1.0.4 via PI_REAL_BIN or ~/n/pi (no provider requests).
  * Explicit native fixtures test accounting policy, not Anthropic serialization;
  * passing with an older runtime is not target-runtime validation.
  * Run: node --experimental-transform-types --test pi/extensions/tests/context-breakdown.test.mjs

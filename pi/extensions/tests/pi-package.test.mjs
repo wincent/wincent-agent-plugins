@@ -1,8 +1,8 @@
 import {strict as assert} from 'node:assert';
-import {mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync} from 'node:fs';
+import {mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
 import {registerHooks} from 'node:module';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join, relative} from 'node:path';
 import {test} from 'node:test';
 import {pathToFileURL} from 'node:url';
 import {locatePiPackage, piPackageImports} from './pi-package.mjs';
@@ -48,6 +48,51 @@ test('locates the managed package regardless of a wrapper or missing Pi on PATH'
   const {pkg, env} = fixture(t);
   assert.equal(locatePiPackage(env), pkg);
   assert.equal(locatePiPackage({...env, PATH: ''}), pkg);
+  assert.equal(locatePiPackage({...env, PI_REAL_BIN: ''}), pkg);
+});
+
+test('PI_REAL_BIN takes precedence and follows chained relative symlinks without executing Pi', (t) => {
+  const {root, env, pkg: managed} = fixture(t);
+  const pkg = join(root, 'explicit runtime/node_modules', packageName);
+  packageAt(pkg, packageName);
+  const bundle = join(pkg, 'dist/bundle');
+  mkdirSync(bundle);
+  const cli = join(bundle, 'cli.js');
+  writeFileSync(cli, 'throw new Error("Do not run Pi to discover its package");\n');
+  const shim = join(root, 'explicit runtime/node_modules/.bin');
+  mkdirSync(shim);
+  symlinkSync(relative(shim, cli), join(shim, 'pi'));
+  const entry = join(root, 'real-pi');
+  symlinkSync(relative(root, join(shim, 'pi')), entry);
+  const selected = {...env, PI_REAL_BIN: entry};
+  assert.equal(locatePiPackage(selected), pkg);
+  rmSync(managed, {recursive: true});
+  assert.equal(locatePiPackage(selected), pkg);
+  const ai = join(root, 'explicit runtime/node_modules/@earendil-works/pi-ai');
+  packageAt(ai, '@earendil-works/pi-ai');
+  assert.equal(resolveImports(['@earendil-works/pi-ai'], locatePiPackage(selected)).get('@earendil-works/pi-ai'), pathToFileURL(join(ai, 'dist/index.js')).href);
+});
+
+test('invalid PI_REAL_BIN never falls back to the available managed runtime', (t) => {
+  const {root, env} = fixture(t);
+  assert.throws(
+    () => locatePiPackage({...env, PI_REAL_BIN: join(root, 'missing')}),
+    /Cannot resolve PI_REAL_BIN/,
+  );
+  assert.throws(
+    () => locatePiPackage({...env, PI_REAL_BIN: join(env.PATH, 'pi')}),
+    /Cannot find.*for PI_REAL_BIN.*real executable, not a wrapper/,
+  );
+});
+
+test('PI_REAL_BIN rejects unrelated and malformed package manifests', (t) => {
+  const {root, env} = fixture(t);
+  const pkg = join(root, 'not-pi');
+  packageAt(pkg, 'not-pi');
+  const selected = {...env, PI_REAL_BIN: join(pkg, 'dist/index.js')};
+  assert.throws(() => locatePiPackage(selected), /Cannot find.*for PI_REAL_BIN/);
+  writeFileSync(join(pkg, 'package.json'), '{');
+  assert.throws(() => locatePiPackage(selected), /Cannot find.*for PI_REAL_BIN/);
 });
 
 test('missing managed Pi never falls back to a global installation', (t) => {
