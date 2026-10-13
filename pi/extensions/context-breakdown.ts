@@ -45,10 +45,8 @@ import type {AgentMessage} from '@earendil-works/pi-agent-core';
 import type {SystemMessage, Tool} from '@earendil-works/pi-ai';
 import {
   getCurrentSystemMessage,
-  getDeclaredTools,
   getInitialSystemMessage,
   getSystemMessageText,
-  hasToolRedefinitions,
   renderSystemMessageUpdate,
 } from '@earendil-works/pi-ai';
 import type {
@@ -153,6 +151,8 @@ interface ConversationTally {
   customChars: number;
   summaryChars: number;
   systemUpdateChars: number;
+  inlineToolChars: number;
+  toolRemovalChars: number;
   byTool: Map<string, {chars: number; count: number}>;
   items: Item[];
   /**
@@ -221,9 +221,9 @@ type PromptSnapshots = WeakMap<AgentMessage, PromptSnapshot>;
  * for.
  *
  * The fixed part of the prompt (base instructions, context files, the skills
- * catalogue, and the tool schemas, all resent unchanged every turn) is mostly
- * prose and tokenizes lighter than conversation content, which is mostly code
- * and tool output, so the two get separate rates.
+ * catalogue, and request-level tool schemas) is mostly prose and tokenizes
+ * lighter than conversation content, which includes native inline tool
+ * definitions as well as code and tool output, so the two get separate rates.
  */
 interface Density {
   fixed: number;
@@ -439,8 +439,8 @@ function clampRatio(ratio: number): number {
  * The provider gives us the answer for free. Split the prompt into the two
  * parts that tokenize differently and give each its own unknown rate:
  *
- *   - the fixed part: the system prompt and the tool schemas, which pi resends
- *     unchanged every turn. Rate `rf`, character count `fixedChars`.
+ *   - the fixed part: the leading system prompt and request-level tool schemas,
+ *     unchanged across comparable turns. Rate `rf`, character count `fixedChars`.
  *   - the conversation. Rate `rm`, character count `messageChars`.
  *
  * Dividing characters by a rate gives tokens, so for any turn the prompt the
@@ -642,11 +642,23 @@ function toolGroup(tool: ContextTool): string {
   return name;
 }
 
-/**
- * Tool definitions travel alongside the prompt rather than inside it, so they
- * are estimated from the JSON size of what gets serialized for the provider:
- * name, description, and parameter schema.
- */
+/** Approximate schema size, before provider-specific conversion and framing. */
+function toolChars(
+  tool: Pick<Tool, 'name' | 'description' | 'parameters'>,
+): number {
+  try {
+    return JSON.stringify({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    }).length;
+  } catch {
+    // Unserializable schema: do not silently treat the tool as free.
+    return tool.name.length + tool.description.length;
+  }
+}
+
+/** Request-level definitions only; native inline definitions are conversation. */
 function analyzeTools(all: ContextTool[], active: string[]): ToolTally {
   const activeSet = new Set(active);
   const items: Item[] = [];
@@ -654,18 +666,7 @@ function analyzeTools(all: ContextTool[], active: string[]): ToolTally {
   let activeCount = 0;
 
   for (const tool of all) {
-    let size: number;
-    try {
-      size = JSON.stringify({
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.parameters,
-      }).length;
-    } catch {
-      // Unserializable schema (cyclic, exotic values): fall back to the parts
-      // we can measure so the tool is not silently free.
-      size = tool.name.length + tool.description.length;
-    }
+    const size = toolChars(tool);
     // Inactive tools are still listed, because "what would it cost me to turn
     // this back on" is the question their presence raises, but they are not
     // sent to the model and so are excluded from every total.
@@ -695,6 +696,7 @@ function analyzeTools(all: ContextTool[], active: string[]): ToolTally {
 function analyzeConversation(
   messages: AgentMessage[],
   cwd: string,
+  nativeToolChanges: boolean,
 ): ConversationTally {
   const tally: ConversationTally = {
     messages: 0,
@@ -708,6 +710,8 @@ function analyzeConversation(
     customChars: 0,
     summaryChars: 0,
     systemUpdateChars: 0,
+    inlineToolChars: 0,
+    toolRemovalChars: 0,
     byTool: new Map(),
     items: [],
     perMessage: messages.map(() => 0),
@@ -737,17 +741,46 @@ function analyzeConversation(
 
     switch (message.role) {
       case 'system': {
-        // The leading prompt is counted in SystemTally, never a second time
-        // here. Only native mid-conversation text patches are conversation.
+        // The leading prompt and request-level schemas are counted elsewhere.
         if (index === 0) {
           return;
         }
         chars = renderSystemMessageUpdate(message).length;
-        if (chars === 0) {
-          return; // Tool declarations are counted once in ToolTally instead.
-        }
         tally.systemUpdateChars += chars;
         label += ' prompt update';
+        if (nativeToolChanges) {
+          const added = message.toolsAdded ?? [];
+          // Pi 1.0.4 sends every addition by value, even a repeated definition
+          // under the same name. Keep it at its transcript position so density
+          // calibration sees schema growth, not an inflated fixed prefix.
+          const definitions = added.reduce(
+            (sum, tool) => sum + toolChars(tool),
+            0,
+          );
+          const redefined = new Set(added.map((tool) => tool.name));
+          const removed = (message.toolsRemoved ?? [])
+            .filter((tool) => !redefined.has(tool.name));
+          // Removals reference names, not schemas. Same-update additions
+          // replace their old definitions without a separate removal block.
+          const references = removed.reduce(
+            (sum, tool) => sum + JSON.stringify({name: tool.name}).length,
+            0,
+          );
+          tally.inlineToolChars += definitions;
+          tally.toolRemovalChars += references;
+          chars += definitions + references;
+          if (added.length > 0 || removed.length > 0) {
+            label += ` / tools ${
+              [
+                ...added.map((tool) => `+${tool.name}`),
+                ...removed.map((tool) => `-${tool.name}`),
+              ].join(', ')
+            }`;
+          }
+        }
+        if (chars === 0) {
+          return;
+        }
         break;
       }
       case 'user': {
@@ -882,8 +915,10 @@ function projectTranscript(
   tools: ToolTally;
   prompt: string;
   notes: string[];
+  nativeToolChanges: boolean;
 } {
   const notes: string[] = [];
+  let nativeToolChanges = false;
   const current = getCurrentSystemMessage(original);
   const forced = snapshot?.forcedPrompt;
   const model = ctx.model;
@@ -931,22 +966,32 @@ function projectTranscript(
   } else {
     messages = original;
     sentTools = current.toolsAdded ?? [];
-    const initial = getInitialSystemMessage(messages);
-    // Anthropic keeps removed tools declared for native tool-state history.
-    // Other built-in paths either add schemas once or fall back to current
-    // tools on removal/redefinition, so their schema total is the current set.
+    const initialTools = getInitialSystemMessage(messages)?.toolsAdded ?? [];
+    // Verified against @earendil-works/pi-ai@1.0.4's
+    // dist/api/anthropic-messages.js (buildParams/convertMessages), not main.
+    // Its Anthropic serializer fixes the request-level list to the
+    // initial definitions (plus a deferred placeholder). Every later addition,
+    // including same-name redefinitions, carries its schema inline instead.
+    // Other paths retain their current-set schema estimate.
     if (
       model.api === 'anthropic-messages' &&
       'supportsMidConvoToolChanges' in compat &&
       compat.supportsMidConvoToolChanges === true &&
-      (initial?.toolsAdded?.length ?? 0) > 0 &&
-      !hasToolRedefinitions(messages)
+      initialTools.length > 0
     ) {
-      sentTools = getDeclaredTools(messages);
+      nativeToolChanges = true;
+      sentTools = initialTools;
     }
     notes.push(
-      'Native transcript projection: initial prompt plus later text patches; schemas counted once.',
+      nativeToolChanges
+        ? 'Native Anthropic: initial schemas under Tool definitions; each later inline definition and removal reference under Conversation.'
+        : 'Native prompt updates; tool schemas estimated from the current tool set.',
     );
+    if (nativeToolChanges) {
+      notes.push(
+        'The deferred placeholder and provider tool framing are not separately estimated.',
+      );
+    }
   }
   if (!snapshot) {
     notes.push(
@@ -954,6 +999,18 @@ function projectTranscript(
     );
   }
   const sentNames = new Set(sentTools.map((tool) => tool.name));
+  // Inline-only tools are already represented in Conversation, not inactive
+  // registrations or additional request-level schemas.
+  const representedNames = new Set([
+    ...sentNames,
+    ...(nativeToolChanges
+      ? messages.slice(1).flatMap((message) =>
+        message.role === 'system'
+          ? (message.toolsAdded ?? []).map((tool) => tool.name)
+          : []
+      )
+      : []),
+  ]);
   const all: ContextTool[] = [
     ...sentTools.map((tool): ContextTool => ({
       ...tool,
@@ -965,7 +1022,7 @@ function projectTranscript(
         origin: 'top-level',
       },
     })),
-    ...registered.filter((tool) => !sentNames.has(tool.name)),
+    ...registered.filter((tool) => !representedNames.has(tool.name)),
   ];
   const head = getInitialSystemMessage(messages);
   return {
@@ -973,6 +1030,7 @@ function projectTranscript(
     prompt: head ? getSystemMessageText(head) : '',
     tools: analyzeTools(all, [...sentNames]),
     notes,
+    nativeToolChanges,
   };
 }
 
@@ -1018,7 +1076,11 @@ function analyze(
   const measured = reportedTokens === null
     ? undefined
     : lastAssistantUsage(messages);
-  const conversation = analyzeConversation(messages, ctx.cwd);
+  const conversation = analyzeConversation(
+    messages,
+    ctx.cwd,
+    projection.nativeToolChanges,
+  );
   const measuredTokens = measured?.tokens ?? 0;
   const trailingTokens = measured
     ? Math.max(0, reportedTokens! - measuredTokens)
@@ -1243,9 +1305,17 @@ function buildGrid(
 ): Array<{glyph: string; color: ThemeColor}> {
   const perCell = windowTokens / GRID_CELLS;
   const bounds: Array<{end: number; category: Category}> = [];
+  // The map's occupied region follows Pi's total even when category estimates
+  // overshoot it. Only the map proportions are scaled; legend values remain
+  // explicitly approximate and the report warns about the discrepancy.
+  const attributed = categories.reduce(
+    (sum, category) => sum + (category.used ? category.tokens : 0),
+    0,
+  );
+  const scale = attributed > 0 ? usedTokens / attributed : 1;
   let cursor = 0;
   for (const category of categories) {
-    cursor += category.tokens;
+    cursor += category.tokens * (category.used ? scale : 1);
     bounds.push({end: cursor, category});
   }
   const last = bounds[bounds.length - 1];
@@ -1337,7 +1407,7 @@ class Report {
 /**
  * `3 files / 3.3k tokens / 0.3%` for a section or group heading. `total`, when
  * it differs from `count`, marks a partial population: tools that are
- * registered but not currently sent to the model.
+ * registered but not included in the projected request.
  */
 function meta(options: {
   count: number;
@@ -1350,7 +1420,7 @@ function meta(options: {
   const {count, total, noun, chars, window, ratio} = options;
   const plural = (total ?? count) === 1 ? noun : `${noun}s`;
   const population = total !== undefined && total !== count
-    ? `${count} of ${total} ${plural} active`
+    ? `${count} of ${total} ${plural} included`
     : `${count} ${plural}`;
   const value = tokens(chars, ratio);
   return `${population} / ${fmtTokens(value)} tokens / ${
@@ -1358,7 +1428,7 @@ function meta(options: {
   }`;
 }
 
-/** Marker showing whether a tool is currently sent to the model. */
+/** Marker for a represented schema, not whether its tool is still callable. */
 function activityMarker(report: Report, item: Item): string {
   if (item.inactive === undefined) {
     return '';
@@ -1523,7 +1593,9 @@ function buildReport(
     conversation.shellChars +
     conversation.customChars +
     conversation.summaryChars +
-    conversation.systemUpdateChars;
+    conversation.systemUpdateChars +
+    conversation.inlineToolChars +
+    conversation.toolRemovalChars;
   // The fixed part of the prompt and the conversation tokenize at different
   // densities, so each is converted with its own calibrated rate.
   const {fixed, message} = analysis.density;
@@ -1532,10 +1604,10 @@ function buildReport(
 
   // The provider count is authoritative where it exists, but it is a single
   // opaque total, so the categories are estimates and "Unaccounted" carries
-  // the difference. If the estimate overshoots the provider count there is
-  // nothing to attribute, and the estimate becomes the total.
-  const used = Math.max(estimated, analysis.reportedTokens ?? 0);
-  const unaccounted = used - estimated;
+  // the difference. An overshoot warns about attribution; it must not replace
+  // the authoritative total with our larger category estimate.
+  const used = analysis.reportedTokens ?? estimated;
+  const unaccounted = Math.max(0, used - estimated);
   const window = analysis.contextWindow;
   const reserve = Math.min(analysis.reserveTokens, Math.max(0, window - used));
   const free = Math.max(0, window - used - reserve);
@@ -1707,6 +1779,8 @@ function buildReport(
     {label: 'Extension messages', chars: conversation.customChars},
     {label: 'Compaction summaries', chars: conversation.summaryChars},
     {label: 'System prompt updates', chars: conversation.systemUpdateChars},
+    {label: 'Inline tool definitions', chars: conversation.inlineToolChars},
+    {label: 'Tool removal references', chars: conversation.toolRemovalChars},
   ]
     .filter((part) => part.chars > 0)
     .sort((a, b) => b.chars - a.chars);
@@ -1797,7 +1871,7 @@ function buildReport(
     report.note(
       `conversation and ${
         fixed.toFixed(2)
-      } for the system prompt and tool schemas, both`,
+      } for the initial prompt and request-level tool schemas, both`,
     );
     report.note(
       "measured against this session's own provider counts, since code and tool",

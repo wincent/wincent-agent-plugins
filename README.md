@@ -107,4 +107,4 @@ Run all extension, subagent, and Atlassian tests from the repository root:
 bin/test
 ```
 
-The Pi tests require `pi` on `PATH` and discover runtime dependencies by following its executable's symlinks to the package directory. They do not require an npm-global installation.
+The Pi tests use the managed runtime at `~/n/pi`, not `pi` on `PATH` (which may be a launcher). Platform dependencies and the subagent test loader are resolved from its coding-agent package, supporting both nested and hoisted layouts. Tests never fall back to an npm-global Pi installation. The context-accounting fixtures target Pi 1.0.4; passing them on an older runtime does not validate the target serializer.

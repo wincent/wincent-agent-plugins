@@ -10,7 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import {tmpdir} from 'node:os';
+import {homedir, tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
 import {fileURLToPath} from 'node:url';
@@ -22,10 +22,8 @@ import {launchSubagent} from '../main/launch.js';
 import {readTaskResult, resultText} from '../main/result.js';
 import {spawnSubagent, terminateProcess, waitForExit} from '../main/spawn.js';
 
-const entry = realpathSync(
-  execFileSync('/bin/bash', ['-c', 'command -v pi'], {encoding: 'utf8'})
-    .trim(),
-);
+// Never execute the nono wrapper or a leftover global Pi selected by PATH.
+const entry = realpathSync(join(homedir(), 'n/pi/node_modules/.bin/pi'));
 const extension = fileURLToPath(new URL('../index.ts', import.meta.url));
 const provider = fileURLToPath(
   new URL('./fixtures/test-provider.ts', import.meta.url),

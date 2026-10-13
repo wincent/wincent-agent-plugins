@@ -1,5 +1,7 @@
 /**
- * Requires Pi 0.87.1 or newer on PATH (no provider requests).
+ * Targets Pi 1.0.4 in ~/n/pi (no provider requests).
+ * Explicit native fixtures test accounting policy, not Anthropic serialization;
+ * passing with an older runtime is not target-runtime validation.
  * Run: node --experimental-transform-types --test pi/extensions/tests/context-breakdown.test.mjs
  */
 import {strict as assert} from 'node:assert';
@@ -15,31 +17,14 @@ import {registerHooks} from 'node:module';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
-import {pathToFileURL} from 'node:url';
+import {piPackageImports} from './pi-package.mjs';
 
-import {locatePiPackage} from './pi-package.mjs';
-
-const piDir = locatePiPackage();
-const packages = new Set([
+const hooks = registerHooks(piPackageImports([
   '@earendil-works/pi-coding-agent',
   '@earendil-works/pi-ai',
   '@earendil-works/pi-agent-core',
   '@earendil-works/pi-tui',
-]);
-const hooks = registerHooks({
-  resolve(specifier, context, nextResolve) {
-    if (!packages.has(specifier)) {
-      return nextResolve(specifier, context);
-    }
-    const dir = specifier === '@earendil-works/pi-coding-agent'
-      ? piDir
-      : join(piDir, 'node_modules', specifier);
-    return {
-      url: pathToFileURL(join(dir, 'dist/index.js')).href,
-      shortCircuit: true,
-    };
-  },
-});
+]));
 let extension;
 let buildContextEntries;
 let buildSessionProjection;
@@ -61,8 +46,48 @@ function system(content, extra = {}) {
   return {role: 'system', content, timestamp: 0, ...extra};
 }
 
-function tool(name, description = 'Tool description') {
-  return {name, description, parameters: {type: 'object', properties: {}}};
+function tool(name, description = 'Tool description', parameters = {type: 'object', properties: {}}) {
+  return {name, description, parameters};
+}
+
+// Do not load model-info: its intentional forced prompt bypasses native history.
+const nativeAnthropic = {
+  api: 'anthropic-messages',
+  compat: {
+    supportsMidConvoSystemMessages: true,
+    supportsMidConvoToolChanges: true,
+  },
+};
+
+const schemaChars = (tools) => tools.reduce((sum, tool) => sum + JSON.stringify(tool).length, 0);
+const referenceChars = (names) => names.reduce((sum, name) => sum + JSON.stringify({name}).length, 0);
+
+function assertCategory(text, label, chars) {
+  assert.ok(text.includes(`${label}: ${Math.ceil(chars / 4)} tokens`), text);
+}
+
+// Uncalibrated fixtures assert additive character estimates, not wire tokens.
+function assertNativeAccounting(text, initial, inline, removals = [], patches = []) {
+  assertCategory(text, 'Tool definitions', schemaChars(initial));
+  if (inline.length > 0) {
+    assertCategory(text, 'Inline tool definitions', schemaChars(inline));
+  } else {
+    assert.doesNotMatch(text, /Inline tool definitions:/);
+  }
+  if (removals.length > 0) {
+    assertCategory(text, 'Tool removal references', referenceChars(removals));
+  } else {
+    assert.doesNotMatch(text, /Tool removal references:/);
+  }
+  const promptChars = patches.reduce((sum, patch) => sum + renderSystemMessageUpdate(patch).length, 0);
+  if (promptChars > 0) {
+    assertCategory(text, 'System prompt updates', promptChars);
+  } else {
+    assert.doesNotMatch(text, /System prompt updates:/);
+  }
+  assertCategory(text, 'Conversation', schemaChars(inline) + referenceChars(removals) + promptChars);
+  assert.match(text, /Estimated usage by category/);
+  assert.match(text, /deferred placeholder.*not separately estimated/);
 }
 
 function assistant(input = 100) {
@@ -322,6 +347,21 @@ test('non-native model collapses patches and replaces same-name schemas', async 
   assert.match(text, /Tool definitions.*1 tool/);
 });
 
+test('non-Anthropic native prompt updates retain current-set schema accounting', async (t) => {
+  const current = tool('read', 'Current schema');
+  const patch = system('Later', {toolsAdded: [current], toolsRemoved: [{name: 'read'}, {name: 'write'}]});
+  const f = await fixture(t, {
+    model: {api: 'openai-responses', compat: nativeAnthropic.compat},
+    messages: [system('Initial', {toolsAdded: [tool('read'), tool('write')]}), patch],
+    tools: [current],
+  });
+  const {text, error} = await f.run();
+  assert.equal(error, '');
+  assertCategory(text, 'Tool definitions', schemaChars([current]));
+  assertCategory(text, 'System prompt updates', renderSystemMessageUpdate(patch).length);
+  assert.doesNotMatch(text, /Inline tool definitions:|Tool removal references:|deferred placeholder/);
+});
+
 test('observed forced prompt collapses history even when equal to replayed prompt', async (t) => {
   const reply = assistant();
   const messages = [
@@ -359,27 +399,206 @@ test('forced prompts do not charge omitted files and skills', async (t) => {
   assert.doesNotMatch(text, /\/private\//);
 });
 
-test('native Anthropic retains removed tool declarations exactly once', async (t) => {
+test('native Anthropic initial tools without changes stay request-level', async (t) => {
+  const initial = [tool('read'), tool('write')];
+  const f = await fixture(t, {
+    model: nativeAnthropic,
+    messages: [system('Initial', {toolsAdded: initial})],
+    tools: initial,
+  });
+  const {text, error} = await f.run();
+  assert.equal(error, '');
+  assertNativeAccounting(text, initial, []);
+  assert.match(text, /Tool definitions.*\(2 tools/);
+  assert.doesNotMatch(text, /Conversation \(/);
+});
+
+test('native Anthropic addition, removal and re-addition retain each represented schema', async (t) => {
+  const read = tool('read', 'Historical read description');
+  const write = tool('write');
+  const messages = [
+    system('Initial', {toolsAdded: [read]}),
+    system('', {toolsAdded: [write]}),
+    system('', {toolsRemoved: [{name: 'read'}]}),
+    system('', {toolsAdded: [read]}),
+    system('', {toolsRemoved: [{name: 'write'}, {name: 'read'}]}),
+  ];
+  const original = structuredClone(messages);
+  const f = await fixture(t, {model: nativeAnthropic, messages, tools: []});
+  const {text, error} = await f.run();
+  assert.equal(error, '');
+  assertNativeAccounting(text, [read], [write, read], ['read', 'write', 'read']);
+  assert.match(text, /Tool definitions.*\(1 tool/);
+  assert.match(text, /Transcript/);
+  assert.match(text, /Conversation \(4 messages/);
+  assert.match(text, /tools \+write/);
+  assert.deepEqual(messages, original);
+});
+
+test('native Anthropic same-name redefinition counts old and new schemas, not a removal', async (t) => {
+  const old = tool('read', 'Old description retained in the request');
+  const replacement = tool('read', 'Replacement description', {
+    type: 'object',
+    properties: {path: {type: 'string', description: 'New required path'}},
+    required: ['path'],
+  });
+  const f = await fixture(t, {
+    model: nativeAnthropic,
+    messages: [
+      system('Initial', {toolsAdded: [old]}),
+      system('', {toolsRemoved: [{name: 'read'}], toolsAdded: [replacement]}),
+    ],
+    tools: [replacement],
+  });
+  const {text, error} = await f.run();
+  assert.equal(error, '');
+  assertNativeAccounting(text, [old], [replacement]);
+  assert.match(text, /Tool definitions.*\(1 tool/);
+  assert.match(text, /Conversation \(1 message/);
+  assert.doesNotMatch(text, /-read/);
+});
+
+test('native Anthropic repeated definitions across updates are never deduplicated by name or value', async (t) => {
+  const initial = tool('read');
+  const changed = tool('read', 'Different definition');
+  const f = await fixture(t, {
+    model: nativeAnthropic,
+    messages: [
+      system('Initial', {toolsAdded: [initial]}),
+      system('', {toolsAdded: [initial]}),
+      system('', {toolsAdded: [changed]}),
+      system('', {toolsAdded: [changed]}),
+      system('', {toolsAdded: [initial]}),
+    ],
+    tools: [initial],
+  });
+  const {text, error} = await f.run();
+  assert.equal(error, '');
+  assertNativeAccounting(text, [initial], [initial, changed, changed, initial]);
+  assert.match(text, /Conversation \(4 messages/);
+});
+
+test('native Anthropic mixed text and tool updates account each component once', async (t) => {
   const read = tool('read');
   const write = tool('write');
+  const replacement = tool('read', 'New description');
+  const patches = [
+    system('New guidance', {sections: {instructions: 'Updated'}, toolsAdded: [write]}),
+    system('', {
+      sections: {instructions: null},
+      toolsAdded: [replacement],
+      toolsRemoved: [{name: 'read'}, {name: 'write'}],
+    }),
+  ];
   const f = await fixture(t, {
-    model: {
-      api: 'anthropic-messages',
-      compat: {
-        supportsMidConvoSystemMessages: true,
-        supportsMidConvoToolChanges: true,
-      },
-    },
-    messages: [
-      system('Initial', {toolsAdded: [read]}),
-      system('', {toolsAdded: [write]}),
-      system('', {toolsRemoved: [{name: 'read'}]}),
-    ],
-    tools: [write],
+    model: nativeAnthropic,
+    messages: [system('Initial', {toolsAdded: [read]}), ...patches],
+    tools: [replacement, write, tool('unused')],
+    active: ['read'],
   });
-  const {text} = await f.run();
-  assert.match(text, /Tool definitions \(2 tools/);
-  assert.match(text, /Transcript/);
+  const {text, error} = await f.run();
+  assert.equal(error, '');
+  assertNativeAccounting(text, [read], [write, replacement], ['write'], patches);
+  assertCategory(text, 'System prompt', 'Initial'.length);
+  assert.match(text, /Tool definitions.*\(1 of 2 tools included/);
+  assert.match(text, /unused: .*tokens if enabled/);
+  assert.doesNotMatch(text, /write: .*tokens if enabled/);
+  assert.match(text, /Conversation \(2 messages/);
+});
+
+for (const toolsAdded of [undefined, []]) {
+  test(`native Anthropic falls back to current tools with ${toolsAdded ? 'empty' : 'absent'} initial tools`, async (t) => {
+    const old = tool('read');
+    const current = tool('read', 'Current schema');
+    const patch = system('Later text', {toolsAdded: [current], toolsRemoved: [{name: 'read'}]});
+    const f = await fixture(t, {
+      model: nativeAnthropic,
+      messages: [system('Initial', {toolsAdded}), system('', {toolsAdded: [old]}), patch],
+      tools: [current],
+    });
+    const {text, error} = await f.run();
+    assert.equal(error, '');
+    assertCategory(text, 'Tool definitions', schemaChars([current]));
+    assertCategory(text, 'System prompt updates', renderSystemMessageUpdate(patch).length);
+    assert.doesNotMatch(text, /Inline tool definitions:|Tool removal references:|deferred placeholder/);
+  });
+}
+
+for (const compat of [
+  {supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: false},
+  {supportsMidConvoSystemMessages: true},
+  {supportsMidConvoSystemMessages: false, supportsMidConvoToolChanges: true},
+  {supportsMidConvoToolChanges: true},
+  {},
+]) {
+  test(`Anthropic disabled capabilities use current schemas: ${JSON.stringify(compat)}`, async (t) => {
+    const old = tool('read');
+    const current = tool('read', 'Current schema');
+    const patch = system('Later text', {toolsAdded: [current], toolsRemoved: [{name: 'read'}]});
+    const messages = [system('Initial', {toolsAdded: [old]}), patch];
+    const f = await fixture(t, {
+      model: {...nativeAnthropic, compat},
+      messages,
+      tools: [current],
+    });
+    const {text, error} = await f.run();
+    assert.equal(error, '');
+    assertCategory(text, 'Tool definitions', schemaChars([current]));
+    assert.doesNotMatch(text, /Inline tool definitions:|Tool removal references:|deferred placeholder/);
+    if (compat.supportsMidConvoSystemMessages) {
+      assertCategory(text, 'System prompt updates', renderSystemMessageUpdate(patch).length);
+    } else {
+      assertCategory(text, 'System prompt', getCurrentSystemPrompt(messages).length);
+      assert.doesNotMatch(text, /System prompt updates:/);
+    }
+  });
+}
+
+test('forced Anthropic prompt collapses tool history despite native capabilities', async (t) => {
+  const old = tool('read');
+  const current = tool('read', 'Replacement schema');
+  const reply = {...assistant(), api: 'anthropic-messages'};
+  const f = await fixture(t, {
+    model: nativeAnthropic,
+    messages: [
+      system('Initial', {toolsAdded: [old]}),
+      system('Later', {toolsAdded: [tool('write')]}),
+      system('', {toolsAdded: [current], toolsRemoved: [{name: 'read'}, {name: 'write'}]}),
+      reply,
+    ],
+    tools: [current],
+  });
+  await f.observe(reply, 'Forced instructions');
+  const {text, error} = await f.run();
+  assert.equal(error, '');
+  assertCategory(text, 'Tool definitions', schemaChars([current]));
+  assertCategory(text, 'System prompt', 'Forced instructions'.length);
+  assertCategory(text, 'Conversation', 'answer'.length);
+  assert.match(text, /Observed forced prompt/);
+  assert.doesNotMatch(text, /System prompt updates:|Inline tool definitions:|Tool removal references:|deferred placeholder/);
+});
+
+test('native inline schemas contribute to conversation growth during calibration', async (t) => {
+  const read = tool('read', 'R'.repeat(2400));
+  const prompt = 'Initial prompt';
+  const user = {role: 'user', content: 'Hi'};
+  const firstInput = (prompt.length + schemaChars([read])) / 4 + user.content.length / 2;
+  const first = {...assistant(firstInput), api: 'anthropic-messages'};
+  const secondInput = firstInput + ('answer'.length + schemaChars([read])) / 2;
+  const second = {...assistant(secondInput), api: 'anthropic-messages'};
+  const f = await fixture(t, {
+    model: nativeAnthropic,
+    messages: [system(prompt, {toolsAdded: [read]}), user, first, system('', {toolsAdded: [read]}), second],
+    tools: [read],
+    tokens: secondInput + 2,
+  });
+  await f.observe(first);
+  await f.observe(second);
+  const {text, error} = await f.run();
+  assert.equal(error, '');
+  assert.match(text, /2\.00 chars\/token for\nconversation and 4\.00/);
+  assertCategory(text, 'Tool definitions', schemaChars([read]));
+  assert.ok(text.includes(`Inline tool definitions: ${(Math.ceil(schemaChars([read]) / 2) / 1000).toFixed(1)}k tokens`), text);
 });
 
 test('transcript tool descriptions do not require live registration metadata', async (t) => {
@@ -717,4 +936,10 @@ test('real measured discrepancies still produce the warning', async (t) => {
     text,
     /Attribution estimate exceeds Pi's context estimate \(3 tokens\)/,
   );
+  assert.match(text, /3\/100k tokens/);
+  assert.match(text, /Free space: 83\.6k tokens/);
+  assert.match(text, /Estimated usage by category/);
+  const grid = text.split('\n').slice(2, 12).map((line) => line.slice(0, 19)).join('').replaceAll(' ', '');
+  assert.equal(grid.length, 100);
+  assert.equal((grid.match(/[pctmk?]/g) ?? []).length, 1, 'only the partial provider-usage cell is occupied');
 });

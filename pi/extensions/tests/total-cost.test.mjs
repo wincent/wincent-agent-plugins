@@ -1,5 +1,5 @@
 /**
- * Requires Pi on PATH (no provider requests).
+ * Requires the managed Pi in ~/n/pi (no provider requests).
  * Run: node --experimental-transform-types --test pi/extensions/tests/total-cost.test.mjs
  * Uses temporary sessions and Pi's real rendering and width helpers.
  */
@@ -10,26 +10,12 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
 
-import {pathToFileURL} from 'node:url';
+import {piPackageImports} from './pi-package.mjs';
 
-import {locatePiPackage} from './pi-package.mjs';
-
-const piDir = locatePiPackage();
-const imports = new Map([
-  ['@earendil-works/pi-coding-agent', piDir],
-  ['@earendil-works/pi-tui', join(piDir, 'node_modules/@earendil-works/pi-tui')],
-]);
-const hooks = registerHooks({
-  resolve(specifier, context, nextResolve) {
-    const dir = imports.get(specifier);
-    return dir === undefined
-      ? nextResolve(specifier, context)
-      : {
-        url: pathToFileURL(join(dir, 'dist/index.js')).href,
-        shortCircuit: true,
-      };
-  },
-});
+const hooks = registerHooks(piPackageImports([
+  '@earendil-works/pi-coding-agent',
+  '@earendil-works/pi-tui',
+]));
 let extension;
 let visibleWidth;
 let stripTerminalSequences;

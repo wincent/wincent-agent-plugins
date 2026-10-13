@@ -14,21 +14,22 @@
  */
 
 import {spawnSync} from 'node:child_process';
-import {existsSync, readdirSync} from 'node:fs';
-import {dirname, join, resolve} from 'node:path';
+import {readdirSync} from 'node:fs';
+import {registerHooks} from 'node:module';
+import {dirname, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {locatePiPackage} from '../../tests/pi-package.mjs';
+import {piPackageImports} from '../../tests/pi-package.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 function locateJitiRegister() {
-  const piPkgRoot = locatePiPackage();
-  const candidate = join(piPkgRoot, 'node_modules', 'jiti', 'lib', 'jiti-register.mjs');
-  if (!existsSync(candidate)) {
-    throw new Error(`jiti not found at expected path: ${candidate}`);
+  const hooks = registerHooks(piPackageImports(['jiti/register']));
+  try {
+    return fileURLToPath(import.meta.resolve('jiti/register'));
+  } finally {
+    hooks.deregister();
   }
-  return candidate;
 }
 
 const jitiRegister = locateJitiRegister();
