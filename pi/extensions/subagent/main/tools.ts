@@ -74,7 +74,7 @@ const SubagentParams = Type.Object({
   background: Type.Optional(
     Type.Boolean({
       description:
-        'Return after connecting; deliver the final result later. Default false.',
+        'Return after connecting; deliver the final result later. Default true. Set false only when the user explicitly requests synchronous execution.',
     }),
   ),
   ask_policy: Type.Optional(
@@ -136,7 +136,8 @@ export function registerMainTools({pi}: {pi: ExtensionAPI}): void {
     description: [
       'Delegate a task to a specialized subagent in its own headless Pi process.',
       'The system prompt, tool whitelist, and worktree default come from an agent .md file.',
-      'Use synchronously (default) or background: true for a later result.',
+      'Runs in the background by default so the conversation stays available. Set background: false only when the user explicitly requests synchronous execution, not merely because the next step needs the result.',
+      'After dispatch, continue independent work or yield the turn; completion is delivered automatically. Do not busy-poll. Background children are cancelled when the controlling session ends, including one-shot headless controllers.',
       "Subagents inherit the controlling agent's active provider, model, and thinking level.",
       'Progress appears in the controlling UI; logs remain in the task directory.',
       'Final results separate lifecycle status from taskOutcome and include resultDescription, artifacts, and verification. status=ok alone does not mean the request was fulfilled.',
@@ -264,6 +265,8 @@ async function runSubagentTool(
   onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
   ctx: ExtensionContext,
 ): Promise<AgentToolResult<SubagentDetails>> {
+  const background = params.background ?? true;
+  const mode = background ? 'background' : 'sync';
   // Snapshot before asynchronous worktree/launcher setup or a parent model switch.
   const model = ctx.model
     ? {provider: ctx.model.provider, id: ctx.model.id}
@@ -274,7 +277,7 @@ async function runSubagentTool(
     taskId: '',
     agent: params.agent,
     task: params.task,
-    mode: params.background ? 'background' : 'sync',
+    mode,
     pid: null,
     taskDir: '',
     cwd: params.cwd ?? ctx.cwd,
@@ -337,7 +340,7 @@ async function runSubagentTool(
       cwd,
       worktreePath: worktreePlan?.path ?? null,
       worktreeBaseCommit: worktreePlan?.baseCommit,
-      mode: params.background ? 'background' : 'sync',
+      mode,
       model,
       thinkingLevel,
     });
@@ -369,7 +372,7 @@ async function runSubagentTool(
       task: params.task,
       process: launched.process,
       bus,
-      mode: params.background ? 'background' : 'sync',
+      mode,
       worktreePath: worktreePlan?.path ?? null,
       startedAt: Date.now(),
       cleanup: [],
@@ -537,7 +540,7 @@ async function runSubagentTool(
       return taskResult(details);
     })();
     active.completion = completion;
-    if (params.background) {
+    if (background) {
       // Observe unexpected finalizer failures immediately, not just at shutdown.
       void completion.catch((error) => {
         active.status = 'failed';
@@ -572,7 +575,7 @@ async function runSubagentTool(
         content: [{
           type: 'text',
           text:
-            `Started ${agent.name} in background; task_id=${taskId}, pid=${details.pid}. Logs: ${dir}`,
+            `Started ${agent.name} in background; task_id=${taskId}, pid=${details.pid}. Logs: ${dir}. Continue independent work or yield the turn; completion will arrive automatically. Keep the controlling session open: shutdown cancels this task, including in one-shot headless mode.`,
         }],
         details: {...details},
       };

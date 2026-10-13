@@ -18,12 +18,12 @@ The companion skill at [`pi/skills/subagent/`](../../skills/subagent/) and the p
 
 When loaded in main mode (no `PI_SUBAGENT_TASK_ID` in the environment), the extension registers four tools:
 
-| Tool              | Purpose                                                              |
-| ----------------- | -------------------------------------------------------------------- |
-| `subagent`        | Spawn a subagent and (by default) wait synchronously for its report. |
-| `subagent_steer`  | Send a steering message to a running subagent.                       |
-| `subagent_cancel` | Cancel a running subagent (graceful, then SIGTERM, then SIGKILL).    |
-| `subagent_status` | List active/recent completed tasks or retrieve a task's full report. |
+| Tool              | Purpose                                                                  |
+| ----------------- | ------------------------------------------------------------------------ |
+| `subagent`        | Spawn a subagent in the background by default; deliver its report later. |
+| `subagent_steer`  | Send a steering message to a running subagent.                           |
+| `subagent_cancel` | Cancel a running subagent (graceful, then SIGTERM, then SIGKILL).        |
+| `subagent_status` | List active/recent completed tasks or retrieve a task's full report.     |
 
 When loaded in sub mode (env vars set by the spawner), the extension registers three tools:
 
@@ -34,6 +34,14 @@ When loaded in sub mode (env vars set by the spawner), the extension registers t
 | `ask`      | Ask the main agent (or watching user) a clarifying question. |
 
 It also emits lifecycle events on `pi.events`: `subagent:spawned`, `subagent:connected`, `subagent:progress`, `subagent:report`, `subagent:finalizing`, `subagent:asked`, `subagent:answered`, `subagent:steered`, `subagent:done`, `subagent:failed`. The namespace is singular to coexist with `@tintinweb/pi-subagents`' plural `subagents:*` namespace.
+
+## Execution mode
+
+`background` defaults to `true`: the tool returns a task handle after connection, and completion arrives later. Set `background: false` only when the user explicitly requests synchronous execution. Needing the report for a subsequent step is not a reason to block the conversation. Continue independent work or yield the turn; do not busy-poll for completion.
+
+Background execution and concurrent scheduling are independent. A sequential campaign can launch one background worker at a time, starting the next after completion while leaving the conversation available. Overlap only independent work and avoid concurrent writes to shared files.
+
+This default also applies to headless controllers; there is no mode-dependent synchronous fallback. A one-shot `pi -p` controller cancels unfinished children when it exits. Its caller must keep the session alive until completion or explicitly request synchronous delegation (`background: false`); otherwise, avoid delegation. Background dispatch results include a reminder of this lifetime constraint.
 
 ## Model selection
 
@@ -198,7 +206,7 @@ The lifetime total of LLM-answered questions is surfaced as `llmAnswersTotal` on
 
 - Reconnection on a dropped UDS is not supported; a closed socket terminates the task.
 - Hard bash denylists for soft-control agents (e.g. blocking `git commit` for the `formatter`) are not enforced; the agent's system prompt is the only constraint.
-- A headless controlling `pi -p` does not keep running for background subagents; session shutdown cancels them. Use synchronous calls from a one-shot controller.
+- A headless controlling `pi -p` does not keep running for background subagents; session shutdown cancels them. Keep the controller alive or explicitly request `background: false`; the default remains background even in headless mode.
 - Recursive spawning is not registered in sub mode.
 
 ## Tests

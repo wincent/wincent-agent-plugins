@@ -551,6 +551,8 @@ for (
   const scenario of [
     'ask',
     'background',
+    'background-default',
+    'background-default-shutdown',
     'metadata-failure',
     'history',
     'result-failure',
@@ -568,6 +570,17 @@ for (
         // Inspect only the tool's content sent to the provider, never UI details.
         const visible = JSON.parse(toolTexts(requests, 'subagent')[0]);
         assert.equal(visible.status, 'ok');
+        assert.equal(
+          visible.mode,
+          'sync',
+          'explicit false waits for completion',
+        );
+        assert.equal(visible.finalized, true);
+        assert.equal(
+          JSON.parse(readFileSync(join(visible.taskDir, 'meta.json'), 'utf8'))
+            .mode,
+          'sync',
+        );
         assert.match(visible.taskId, /^task_/);
         assert.equal(visible.finalReport.summary, 'headless report');
         assert.equal(visible.finalReport.data.commits.length, 5);
@@ -617,13 +630,16 @@ for (
             visible.finalReport,
           );
         }
-      } else if (scenario === 'background') {
+      } else if (
+        scenario === 'background' || scenario === 'background-default-shutdown'
+      ) {
         assert.equal(
           requests.trim().split('\n').length,
           2,
           'shutdown must not start another model turn',
         );
         assert.match(requests, /Started scout in background/);
+        assert.match(requests, /shutdown cancels this task/);
         const root = join(dir, 'pi', 'subagent');
         const tasks = readdirSync(root);
         assert.equal(tasks.length, 1);
@@ -631,7 +647,38 @@ for (
           readFileSync(join(root, tasks[0], 'meta.json'), 'utf8'),
         );
         assert.equal(meta.status, 'aborted');
+        assert.equal(meta.mode, 'background');
+        const saved = JSON.parse(
+          readFileSync(join(root, tasks[0], 'result.json'), 'utf8'),
+        );
+        assert.equal(saved.details.mode, 'background');
+        assert.equal(saved.details.status, 'aborted');
         assert.throws(() => process.kill(meta.subPid, 0), /ESRCH/);
+      } else if (scenario === 'background-default') {
+        const handle = toolTexts(requests, 'subagent')[0];
+        assert.match(handle, /Started scout in background/);
+        assert.match(handle, /completion will arrive automatically/);
+        assert.match(requests, /Full report: subagent_status/);
+        const taskId = handle.match(/task_id=(task_[^,]+)/)![1];
+        const retrieved = JSON.parse(
+          resultText((await readTaskResult(taskId))!),
+        );
+        assert.equal(retrieved.mode, 'background');
+        assert.equal(retrieved.status, 'ok');
+        assert.equal(retrieved.finalized, true);
+        assert.equal(retrieved.execution.processExited, true);
+        assert.equal(retrieved.finalReport.summary, 'headless report');
+        assert.equal(retrieved.finalReport.data.commits.length, 5);
+        assert.equal(
+          JSON.parse(readFileSync(join(retrieved.taskDir, 'meta.json'), 'utf8'))
+            .mode,
+          'background',
+        );
+        assert.doesNotMatch(
+          requests,
+          /commit summary 4/,
+          'default background completion should be a digest',
+        );
       } else {
         assert.match(requests, /metadata update failed/);
         assert.doesNotMatch(

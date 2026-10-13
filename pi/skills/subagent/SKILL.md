@@ -9,6 +9,14 @@ Delegate work to a focused subagent. Each subagent is a separate headless pi pro
 
 The `subagent` tool spawns a subagent; `subagent_steer` and `subagent_cancel` manage in-flight tasks. `subagent_status` lists active/recent completed tasks and retrieves their reports.
 
+## Execution mode: background by default
+
+**Always launch subagents in the background unless the user explicitly requests synchronous execution.** Omit `background` (the runtime default is `true`) or set `background: true`. Set `background: false` only in response to that explicit instruction. This applies to every agent, including a single helper and each worker in a sweep. A short task, a dependency on its result, or a request to run workers sequentially is not an instruction to block the conversation.
+
+After dispatch, continue independent work or yield the turn so the user can keep talking. Completion arrives automatically; do not busy-poll `subagent_status`, sleep-loop, or otherwise block merely to wait. When the next step depends on a subagent, leave that step pending until its completion notification, then retrieve the report and continue. Acknowledge that work is still running rather than implying it is complete.
+
+Background execution is separate from concurrency. For sequential work, launch one background task and start the next after its predecessor finishes. Only overlap independent work, and avoid editing files that a shared-cwd formatter or other writing helper is modifying. Do not change the code under review or test while relying on that helper's results as validation of the same snapshot.
+
 ## When to delegate
 
 Use a subagent when ALL of:
@@ -33,13 +41,13 @@ The main agent (you) is working on a single change. You delegate side tasks to s
 
 Default: `worktree: false`. All built-in case-1 agents (`scout`, `linter`, `tester`, `reviewer`, `formatter`) already set this. Children exit when finished; logs are retained. There are no `placement` or `close_on_success` parameters.
 
-Useful fan-out idiom: launch several case-1 helpers in a single assistant turn. When the active model supports parallel tool calls, multiple `subagent` calls emitted in the same response run concurrently, each in its own process.
+Useful fan-out idiom: launch several independent case-1 helpers in a single assistant turn. Background calls return after startup, so helpers can overlap even when the tool calls themselves are dispatched sequentially. Each helper runs in its own process.
 
 ### Case 2: worktree per worker
 
 The user wants the same kind of change made in many places, each producing its own commit and (later) its own PR. The `worker` agent handles this. Workers are commit-producing agents; `worktree: false` disables isolation but does not enable a no-commit mode. For untracked-only edits, use the main agent or a custom non-committing agent. Default: `worktree: true`. The extension provisions an isolated worktree per call under `<source-worktree-root>/.agent-worktrees/<task_id>/`, lets the worker commit, and binds the commits to a branch named `subagent/worker/<task_id>` in the shared repository. Configure `.agent-worktrees/` in your global Git ignore file; the harness does not modify ignore settings. The worker starts on detached HEAD and commits there; an empty `git branch --show-current` is normal. The harness creates the retained branch only after the worker exits. Do not treat the empty branch name as a failure or ask the worker to create a branch to fix it. The worktree itself is pruned; the branch is the artefact.
 
-For a campaign of multiple workers, see the `/sweep` workflow prompt: scout out targets, confirm with the user, then call `subagent` once per target. Sequential (default) is safer; add `background: true` per call if the user explicitly wants parallelism.
+For a campaign of multiple workers, see the `/sweep` workflow prompt: scout out targets, confirm with the user, then call `subagent` once per target. Launch each worker in the background. Sequential scheduling remains the default for a campaign: start the next worker after the previous one completes, without blocking the conversation. If the user requests parallel workers, overlap independent targets; this is separate from the `background` setting.
 
 ## Picking an agent
 
@@ -116,7 +124,7 @@ The controlling UI shows a compact progress widget; there is no interactive chil
 
 Extensions can opt into spawn-time state snapshots. OCR session approval is inherited by subsequently launched children when OCR is loaded and allowed by the child's tool configuration. Later grants or revocations do not reach existing children. Other approvals are not inherited unless their extension explicitly supports it; a headless tool requiring local UI approval may still fail. An LLM answer to `ask` is not authorization, and inherited state must never be forged.
 
-A one-shot headless controller cancels background children when its session ends. Use synchronous delegation there.
+A one-shot headless controller cancels background children when its session ends; background dispatch does not keep it alive. There is no automatic synchronous fallback. The caller must keep the controlling session alive until completion or explicitly request synchronous delegation (`background: false`). Without either arrangement, do the work in the main agent or explain the limitation rather than spawning a task that will be cancelled at exit. Do not infer permission for synchronous execution merely from headless mode.
 
 ## Steering and cancellation
 

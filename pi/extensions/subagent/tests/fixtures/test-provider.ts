@@ -214,15 +214,18 @@ export default function (pi: ExtensionAPI): void {
             arguments: {
               agent: scenario.startsWith('worker-') ? 'worker' : 'scout',
               ...(scenario === 'worker-declined' ? {worktree: false} : {}),
-              task: scenario === 'background'
+              task: scenario === 'background' ||
+                  scenario === 'background-default-shutdown'
                 ? 'wait'
                 : scenario === 'metadata-failure'
                 ? 'ask'
                 : scenario,
               ask_policy: 'deny',
-              background: scenario === 'background' ||
-                scenario === 'metadata-failure' ||
-                scenario === 'worker-background',
+              ...(scenario.startsWith('background-default') ? {} : {
+                background: scenario === 'background' ||
+                  scenario === 'metadata-failure' ||
+                  scenario === 'worker-background',
+              }),
             },
           };
         } else if (isChild && current === 0) {
@@ -370,7 +373,12 @@ export default function (pi: ExtensionAPI): void {
         }
         stream.end();
       };
-      if (!isChild && scenario === 'worker-background' && turn === 1) {
+      if (
+        !isChild && turn === 1 &&
+        (scenario === 'worker-background' || scenario === 'background-default')
+      ) {
+        // These scenarios deliberately keep the one-shot controller alive
+        // until completion. The shutdown scenarios do not.
         const wait = () =>
           backgroundFinished ? respond() : setTimeout(wait, 10);
         wait();
