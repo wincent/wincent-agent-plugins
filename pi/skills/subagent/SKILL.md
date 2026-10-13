@@ -13,7 +13,7 @@ The `subagent` tool spawns a subagent; `subagent_steer` and `subagent_cancel` ma
 
 **Always launch subagents in the background unless the user explicitly requests synchronous execution.** Omit `background` (the runtime default is `true`) or set `background: true`. Set `background: false` only in response to that explicit instruction. This applies to every agent, including a single helper and each worker in a sweep. A short task, a dependency on its result, or a request to run workers sequentially is not an instruction to block the conversation.
 
-After dispatch, continue independent work or yield the turn so the user can keep talking. Completion arrives automatically; do not busy-poll `subagent_status`, sleep-loop, or otherwise block merely to wait. When the next step depends on a subagent, leave that step pending until its completion notification, then retrieve the report and continue. Acknowledge that work is still running rather than implying it is complete.
+After dispatch, continue independent work or yield the turn so the user can keep talking. Completion arrives automatically; do not busy-poll `subagent_status`, sleep-loop, or otherwise block merely to wait. When the next step depends on a subagent, leave that step pending until its completion notification, then retrieve any needed report details and continue. Acknowledge that work is still running rather than implying it is complete.
 
 Background execution is separate from concurrency. For sequential work, launch one background task and start the next after its predecessor finishes. Only overlap independent work, and avoid editing files that a shared-cwd formatter or other writing helper is modifying. Do not change the code under review or test while relying on that helper's results as validation of the same snapshot.
 
@@ -89,7 +89,9 @@ The `llm` policy is gated by a per-task budget of 10 successful LLM-answered que
 
 ## Reading the report
 
-The final tool result includes model-visible JSON. Read that content, not just the UI's `details` object, which is not necessarily sent to the model. Background completion is a short digest with task ID and result path; retrieve the full report through `subagent_status` when needed. A late notification after you already retrieved the finalized result needs no further action.
+The final tool result includes model-visible JSON. Read that content, not just the UI's `details` object, which is not necessarily sent to the model. Background completion is a short digest with task ID and result path; retrieve the full report through `subagent_status` when needed for findings, verification, artifacts, or deliverables. Do not retrieve it merely to acknowledge a self-contained diagnostic result. If you already retrieved the finalized result, do not fetch it again because a notification arrived.
+
+Background progress and provisional reports update the UI and logs, not the conversation. Only finalized completion notifies the main model. Pending completions may be batched, and retrieving a task's finalized saved result suppresses its still-pending notice. A history listing or interim result does not suppress completion. Summarize the substantive outcome once: do not separately acknowledge report receipt, finalization, or clean process exit. A late or duplicate notification for an outcome already handled needs no response unless it adds new actionable information.
 
 - `taskId`, `status`, and `finalized`: identify the task and harness lifecycle. `running` and `finalizing` are nonterminal. Only the controller's final result is authoritative about retention and cleanup. A background dispatch initially returns a handle, not a completed report. `status: "ok"` alone does not mean the user's request was fulfilled.
 - `taskOutcome`: the child's explicit final outcome: `completed`, `partial`, `blocked`, `declined`, `failed`, or `unknown`. Missing or interim-only outcomes remain `unknown`, even with a normal exit or success-sounding summary.
@@ -137,6 +139,6 @@ Don't cancel impatiently: subagents are real processes consuming real tokens, an
 ## Etiquette
 
 - **Confirm before launching a `worker`.** Workers commit. The user should know what you're about to commit on their behalf.
-- **Summarize after subagent reports.** Don't just hand the raw findings to the user; synthesize.
+- **Summarize substantive completion once.** Don't just hand the raw findings to the user; synthesize. Avoid lifecycle acknowledgments and repeated summaries. Surface intermediate information only when the user asks or it requires action.
 - **One subagent per task scope.** Don't load multiple unrelated tasks into one subagent's prompt; the LLM context is the constraint.
 - **Watch for `status` other than `ok`.** Crashes and aborts deserve a sentence to the user explaining what happened.

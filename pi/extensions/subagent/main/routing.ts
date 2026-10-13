@@ -1,19 +1,8 @@
 /**
- * Routing of incoming bus envelopes on the main side, for any task that
- * is NOT currently being awaited by a synchronous tool call.
- *
- * The synchronous `subagent` tool installs its own subscriber for the
- * duration of the call and routes through `onUpdate`. Once the tool
- * returns (or for `background: true` tasks), this extension-scoped
- * subscriber takes over and routes envelopes into the main agent's
- * session as synthetic user messages.
- *
- * `ask` envelopes are a special case: they need a reply on the bus, not
- * a one-way user-message injection. Both sync and background paths
- * delegate to `handleAsk`, which honours the task's resolved
- * `askPolicy`. Sync mode wires this directly inside the tool's
- * subscriber; background mode wires it here so the policy still
- * applies after the original tool call has returned.
+ * Route bus envelopes to lifecycle/UI events and answer background asks.
+ * Reports are provisional even when the child marks them final. Only the
+ * controller's finalized completion is delivered to the main model, via
+ * notifications.ts. Sync tools stream their own progress through onUpdate.
  */
 
 import type {
@@ -29,12 +18,6 @@ import type {ActiveTask} from './registry.js';
 export interface MainRoutingOptions {
   pi: ExtensionAPI;
   getCtx: () => ExtensionContext | undefined;
-  /**
-   * If true (default), envelopes from background-mode tasks are injected
-   * as user messages into the main session. Sync-mode tasks suppress this
-   * via their own per-call subscriber.
-   */
-  injectForBackground?: boolean;
 }
 
 export function installMainRoutingFor(
@@ -42,46 +25,32 @@ export function installMainRoutingFor(
   options: MainRoutingOptions,
 ): () => void {
   const {pi, getCtx} = options;
-  const inject = options.injectForBackground ?? true;
   const unsub = task.bus.subscribe((env) => {
     if (env.from !== 'sub' || task.ownerClosed) {
       return;
     }
-    if (!inject || task.mode !== 'background') {
-      // Sync tasks: the in-flight tool call handles surfacing.
-      // Lifecycle events fire regardless. `ask` is handled inline by
-      // the synchronous tool subscriber, not here, to avoid double replies.
-      if (env.type !== 'ask') {
-        emitLifecycleFromEnvelope(pi, task, env);
+    if (env.type === 'ask') {
+      // Sync mode answers in its per-call subscriber, never twice.
+      if (task.mode === 'background') {
+        void handleAsk({
+          pi,
+          ctx: getCtx(),
+          task,
+          askId: env.id,
+          question: env.payload.question,
+          defaultAnswer: env.payload.default,
+          policy: task.askPolicy,
+        });
       }
       return;
     }
-    // Background mode.
-    if (env.type === 'ask') {
-      void handleAsk({
-        pi,
-        ctx: getCtx(),
-        task,
-        askId: env.id,
-        question: env.payload.question,
-        defaultAnswer: env.payload.default,
-        policy: task.askPolicy,
-      });
-      return;
-    }
     emitLifecycleFromEnvelope(pi, task, env);
-    routeEnvelopeAsUserMessage(pi, getCtx(), task, env);
   });
   task.cleanup.push(unsub);
   return unsub;
 }
 
-/**
- * Note: `ask` envelopes are intentionally not handled here. The
- * `subagent:asked` and `subagent:answered` lifecycle events are emitted
- * by `handleAsk()` (which is the single place that produces a reply on
- * the bus). Calling this function for an `ask` envelope is a no-op.
- */
+/** Ask lifecycle events are emitted by handleAsk, alongside the bus reply. */
 function emitLifecycleFromEnvelope(
   pi: ExtensionAPI,
   task: ActiveTask,
@@ -106,71 +75,4 @@ function emitLifecycleFromEnvelope(
     default:
       break;
   }
-}
-
-function routeEnvelopeAsUserMessage(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext | undefined,
-  task: ActiveTask,
-  env: Envelope,
-): void {
-  const prefix = `[subagent ${task.agentName}:${task.taskId}]`;
-  let text: string | null = null;
-  switch (env.type) {
-    case 'progress':
-      // Skip individual progress for background to avoid spam; reports are
-      // the meaningful boundary.
-      return;
-    case 'report':
-      text = `${prefix} report received (not finalized): ${
-        describeReport(env.payload.summary, env.payload.branch)
-      }`;
-      break;
-    default:
-      // `ask` is handled by handleAsk(); everything else is uninteresting.
-      return;
-  }
-  if (!text) {
-    return;
-  }
-  try {
-    if (!ctx || ctx.isIdle()) {
-      pi.sendUserMessage(text);
-    } else {
-      pi.sendUserMessage(text, {deliverAs: 'followUp'});
-    }
-  } catch (err) {
-    process.stderr.write(
-      `[subagent main] sendUserMessage failed: ${(err as Error).message}\n`,
-    );
-  }
-}
-
-export function routeTaskCompletion(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext | undefined,
-  task: ActiveTask,
-  result: string,
-): void {
-  const text = `[subagent ${task.agentName}:${task.taskId}] ${result}`;
-  try {
-    pi.sendUserMessage(
-      text,
-      ctx && !ctx.isIdle() ? {deliverAs: 'followUp'} : undefined,
-    );
-  } catch (error) {
-    process.stderr.write(
-      `[subagent main] completion delivery failed: ${
-        (error as Error).message
-      }\n`,
-    );
-  }
-}
-
-function describeReport(summary: string, branch?: string): string {
-  const parts: string[] = [summary];
-  if (branch) {
-    parts.push(`(reported branch: ${branch})`);
-  }
-  return parts.join(' ');
 }

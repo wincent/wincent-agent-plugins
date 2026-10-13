@@ -6,9 +6,8 @@
  *   - The synchronous `subagent` tool to manage its own task while it waits.
  *   - The `subagent_steer` / `subagent_cancel` / `subagent_status` tools to
  *     find an existing task.
- *   - The background routing path so envelopes from a still-running
- *     subagent can be injected into the main agent's session as user
- *     messages.
+ *   - Background routing for lifecycle/UI events and clarification requests.
+ *     Only controller-finalized completion is sent to the main model.
  */
 
 import type {Bus} from '../bus/bus.js';

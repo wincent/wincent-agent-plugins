@@ -24,6 +24,10 @@ import {
   observeTask,
 } from './lifecycle.js';
 import {
+  type CompletionNotifications,
+  installCompletionNotifications,
+} from './notifications.js';
+import {
   type ActiveTask,
   listActive,
   lookup,
@@ -39,7 +43,7 @@ import {
   saveResult,
   taskResult,
 } from './result.js';
-import {installMainRoutingFor, routeTaskCompletion} from './routing.js';
+import {installMainRoutingFor} from './routing.js';
 import {
   auditLogPath,
   ensureTaskDir,
@@ -107,6 +111,7 @@ const StatusParams = Type.Object({
 });
 
 export function registerMainTools({pi}: {pi: ExtensionAPI}): void {
+  const notifications = installCompletionNotifications(pi);
   let session = new AbortController();
   const pending = new Set<Promise<unknown>>();
   pi.on('session_start', () => {
@@ -139,7 +144,7 @@ export function registerMainTools({pi}: {pi: ExtensionAPI}): void {
       'Runs in the background by default so the conversation stays available. Set background: false only when the user explicitly requests synchronous execution, not merely because the next step needs the result.',
       'After dispatch, continue independent work or yield the turn; completion is delivered automatically. Do not busy-poll. Background children are cancelled when the controlling session ends, including one-shot headless controllers.',
       "Subagents inherit the controlling agent's active provider, model, and thinking level.",
-      'Progress appears in the controlling UI; logs remain in the task directory.',
+      'Progress and provisional reports stay in the UI and task logs. Only finalized completion notifies the model; summarize the substantive outcome once, not each lifecycle event.',
       'Final results separate lifecycle status from taskOutcome and include resultDescription, artifacts, and verification. status=ok alone does not mean the request was fulfilled.',
     ].join(' '),
     parameters: SubagentParams,
@@ -147,7 +152,14 @@ export function registerMainTools({pi}: {pi: ExtensionAPI}): void {
       const combined = signal
         ? AbortSignal.any([signal, session.signal])
         : session.signal;
-      const run = runSubagentTool(pi, params, combined, onUpdate, ctx);
+      const run = runSubagentTool(
+        pi,
+        params,
+        combined,
+        onUpdate,
+        ctx,
+        notifications,
+      );
       pending.add(run);
       try {
         return await run;
@@ -215,11 +227,14 @@ export function registerMainTools({pi}: {pi: ExtensionAPI}): void {
         const details = active
           ? activeDetails(active)
           : await readTaskResult(params.task_id);
-        return details
-          ? taskResult(details)
-          : textResult(
-            `No active or saved subagent with task_id=${params.task_id}.`,
-          );
+        if (details) {
+          const result = taskResult(details);
+          notifications.retrieved(details);
+          return result;
+        }
+        return textResult(
+          `No active or saved subagent with task_id=${params.task_id}.`,
+        );
       }
       const active = listActive();
       const completed = recentCompletedTasks(
@@ -264,6 +279,7 @@ async function runSubagentTool(
   signal: AbortSignal,
   onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
   ctx: ExtensionContext,
+  notifications: CompletionNotifications,
 ): Promise<AgentToolResult<SubagentDetails>> {
   const background = params.background ?? true;
   const mode = background ? 'background' : 'sync';
@@ -535,7 +551,7 @@ async function runSubagentTool(
         llmAnswersTotal: active.llmAnswersTotal,
       });
       if (active.mode === 'background' && !active.ownerClosed) {
-        routeTaskCompletion(pi, ctx, active, completionText(details));
+        notifications.enqueue(active, completionText(details), ctx);
       }
       return taskResult(details);
     })();
@@ -561,12 +577,7 @@ async function runSubagentTool(
         );
         remove(taskId);
         if (!active.ownerClosed) {
-          routeTaskCompletion(
-            pi,
-            ctx,
-            active,
-            completionText(details),
-          );
+          notifications.enqueue(active, completionText(details), ctx);
         }
       });
       // The turn's signal must not own a task after returning its background handle.

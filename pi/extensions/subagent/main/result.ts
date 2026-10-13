@@ -203,7 +203,7 @@ export function completionText(details: SubagentDetails): string {
     })
   }\nFull report: subagent_status({task_id: ${
     JSON.stringify(details.taskId)
-  }}). If the finalized result was already retrieved, no further action is needed.`;
+  }}). Retrieve details only as needed and summarize the substantive outcome once. If this outcome was already handled, do not respond again unless there is new actionable information.`;
 }
 
 export function taskResult(

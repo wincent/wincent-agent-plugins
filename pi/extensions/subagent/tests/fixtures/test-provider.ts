@@ -115,6 +115,19 @@ export default function (pi: ExtensionAPI): void {
       );
     }
   });
+  pi.events.on('subagent:report', (data) => {
+    const {taskId} = data as {taskId: string};
+    appendFileSync(
+      join(
+        process.env.XDG_STATE_HOME!,
+        'pi',
+        'subagent',
+        taskId,
+        'reports-observed.jsonl',
+      ),
+      JSON.stringify(data) + '\n',
+    );
+  });
   pi.events.on('subagent:finalizing', (data) => {
     const {taskId} = data as {taskId: string};
     const dir = join(process.env.XDG_STATE_HOME!, 'pi', 'subagent', taskId);
@@ -194,6 +207,26 @@ export default function (pi: ExtensionAPI): void {
           call = {
             name: 'subagent_status',
             arguments: {task_id: scenario.slice('retrieve:'.length)},
+          };
+        } else if (
+          !isChild && current === 1 &&
+          (scenario === 'background-default-retrieved' ||
+            scenario === 'background-default-listed')
+        ) {
+          const result = context.messages.find((message) =>
+            message.role === 'toolResult' && message.toolName === 'subagent'
+          );
+          const text = result?.role === 'toolResult'
+            ? result.content.find((part) => part.type === 'text')
+            : undefined;
+          const taskId = text?.type === 'text'
+            ? text.text.match(/task_id=(task_[^,]+)/)![1]
+            : 'missing';
+          call = {
+            name: 'subagent_status',
+            arguments: scenario === 'background-default-retrieved'
+              ? {task_id: taskId}
+              : {},
           };
         } else if (!isChild && scenario === 'history' && current === 1) {
           call = {name: 'subagent_status', arguments: {}};
@@ -375,7 +408,9 @@ export default function (pi: ExtensionAPI): void {
       };
       if (
         !isChild && turn === 1 &&
-        (scenario === 'worker-background' || scenario === 'background-default')
+        (scenario === 'worker-background' ||
+          (scenario.startsWith('background-default') &&
+            scenario !== 'background-default-shutdown'))
       ) {
         // These scenarios deliberately keep the one-shot controller alive
         // until completion. The shutdown scenarios do not.

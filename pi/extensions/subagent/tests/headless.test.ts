@@ -449,7 +449,8 @@ for (
         {status: 'finalizing', hasSavedResult: false},
       );
       if (scenario === 'worker-background') {
-        assert.match(requests, /report received \(not finalized\)/);
+        assert.doesNotMatch(requests, /report received \(not finalized\)/);
+        assert.equal(completionNotices(requests).length, 1);
         assert.match(requests, /Agent reports task completion/);
         assert.doesNotMatch(
           requests,
@@ -514,6 +515,25 @@ function toolTexts(requests: string, toolName: string): string[] {
   return texts;
 }
 
+function completionNotices(requests: string): string[] {
+  // Count messages in the final context, not repeated copies across requests.
+  const last = JSON.parse(requests.trim().split('\n').at(-1)!);
+  return last.messages.flatMap((message: {
+    role: string;
+    content: string | {type: string; text?: string}[];
+  }) => {
+    if (message.role !== 'user') {
+      return [];
+    }
+    const texts = typeof message.content === 'string'
+      ? [message.content]
+      : message.content.flatMap((part) =>
+        part.type === 'text' ? [part.text ?? ''] : []
+      );
+    return texts.filter((text) => text.startsWith('[subagent '));
+  });
+}
+
 async function runController(dir: string, scenario: string): Promise<void> {
   const child = spawn(process.execPath, [
     ...cliArgs,
@@ -552,6 +572,8 @@ for (
     'ask',
     'background',
     'background-default',
+    'background-default-retrieved',
+    'background-default-listed',
     'background-default-shutdown',
     'metadata-failure',
     'history',
@@ -563,6 +585,7 @@ for (
     try {
       await runController(dir, scenario);
       const requests = readFileSync(join(dir, 'requests.jsonl'), 'utf8');
+      assert.doesNotMatch(requests, /report received \(not finalized\)/);
       if (
         scenario === 'ask' || scenario === 'history' ||
         scenario === 'result-failure'
@@ -654,11 +677,27 @@ for (
         assert.equal(saved.details.mode, 'background');
         assert.equal(saved.details.status, 'aborted');
         assert.throws(() => process.kill(meta.subPid, 0), /ESRCH/);
-      } else if (scenario === 'background-default') {
+      } else if (scenario.startsWith('background-default')) {
         const handle = toolTexts(requests, 'subagent')[0];
         assert.match(handle, /Started scout in background/);
         assert.match(handle, /completion will arrive automatically/);
-        assert.match(requests, /Full report: subagent_status/);
+        assert.equal(
+          completionNotices(requests).length,
+          scenario === 'background-default-retrieved' ? 0 : 1,
+          'only a finalized per-task retrieval suppresses the pending notification',
+        );
+        if (scenario === 'background-default-retrieved') {
+          const status = JSON.parse(toolTexts(requests, 'subagent_status')[0]);
+          assert.equal(status.finalized, true);
+          assert.equal(status.finalReport.data.commits.length, 5);
+          assert.equal(
+            requests.trim().split('\n').length,
+            3,
+            'retrieval must not leave an extra acknowledgment turn',
+          );
+        } else {
+          assert.match(requests, /Full report: subagent_status/);
+        }
         const taskId = handle.match(/task_id=(task_[^,]+)/)![1];
         const retrieved = JSON.parse(
           resultText((await readTaskResult(taskId))!),
@@ -674,11 +713,21 @@ for (
             .mode,
           'background',
         );
-        assert.doesNotMatch(
-          requests,
-          /commit summary 4/,
-          'default background completion should be a digest',
+        assert.match(
+          readFileSync(
+            join(retrieved.taskDir, 'reports-observed.jsonl'),
+            'utf8',
+          ),
+          /headless report/,
+          'provisional reports still reach lifecycle/UI subscribers',
         );
+        if (scenario !== 'background-default-retrieved') {
+          assert.doesNotMatch(
+            requests,
+            /commit summary 4/,
+            'default background completion should be a digest',
+          );
+        }
       } else {
         assert.match(requests, /metadata update failed/);
         assert.doesNotMatch(

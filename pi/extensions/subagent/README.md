@@ -132,13 +132,17 @@ Children can report `outcome` as `completed`, `partial`, `blocked`, `declined`, 
 
 Artifacts have `kind`, `location`, and optional `description`. Verification entries have `check`, `result` (`passed`, `failed`, or `not_run`), and optional `details`. Results separate `artifacts.reported` from `artifacts.retained`, and `verification.reported` from `verification.harness`. The controller verifies process completion, Git inventory, branch retention, and worktree cleanup; it does not independently rerun the child's checks. A completed testing task can legitimately report failing tests. Saved snapshots retain the raw `details` and derived `result` description.
 
-Background report notifications are marked not finalized. Completion notifications lead with a bounded result description, followed by lifecycle/outcome, retained branch or preserved path when available, and a retrieval pointer. They do not repeat the full artifacts and verification tables. Already-queued notifications are not retracted when a status query observes completion first.
+Background progress and reports remain available through lifecycle events, the progress widget, task logs, and explicit status inspection; they do not inject provisional report messages or trigger model turns. Clarification requests still follow `ask_policy` immediately. Only controller-finalized completion notifies the main model, with a bounded result description, lifecycle/outcome, retained branch or preserved path when available, and a retrieval pointer. Saved-result digests do not repeat the full artifacts and verification tables.
+
+Completion delivery is session-local and deduplicated per task. While the controller is busy, notices stay in an extension-owned queue until a turn or pre-settlement boundary; pending completions share one hidden custom message and request one continuation. A per-task `subagent_status` retrieval of the finalized saved result suppresses its pending notice. Listings, interim reports, and legacy audit reconstructions do not count as observing the authoritative result. An idle controller receives the completion immediately. A notice already delivered to model context cannot be retracted; do not acknowledge it again if the outcome has already been handled. Hidden messages remain in session/model context without rendering a synthetic user-message bubble; the agent should summarize the substantive result once.
+
+Pending notices do not restart an aborted or failed run, and shutdown discards the queue without starting another turn. Reports remain on disk for later inspection; delivery state resets with the session.
 
 Workers remain commit-producing agents even with `worktree: false`. A no-commit request should be declined without edits and with an explicit reason; use the main agent or a custom non-committing agent instead.
 
 ## Watching progress
 
-The controlling UI shows a running-task count and a compact progress widget. Synchronous calls also stream progress/report updates in the tool result; background reports and completion arrive as user messages. `subagent_status` exposes each active task's pid and log paths.
+The controlling UI shows a running-task count and a compact progress widget. Synchronous calls also stream progress/report updates in the tool result. Background reports update lifecycle/UI state without conversational notifications; finalized completion reaches the model for one substantive response. `subagent_status` exposes each active task's pid and log paths.
 
 For inspection outside Pi, use `tail -F` on the task's `bus.jsonl`, `stdout.log`, or `stderr.log`. Logs remain after the child exits, including on failure. There is no interactive child TUI or attach viewer in this increment.
 
@@ -180,7 +184,8 @@ pi/extensions/subagent/
     registry.ts             # in-process map of active tasks
     result.ts               # model-visible results, persistence, completed history
     description.ts          # task fulfillment, result narrative, artifacts/evidence
-    routing.ts              # extension-scoped routing for background tasks
+    routing.ts              # bus-to-lifecycle/UI events and background asks
+    notifications.ts        # finalized completion batching and deduplication
     spawn.ts                # direct headless spawn, logs, process signals
     launch.ts               # connection/startup race and failed-spawn cleanup
     lifecycle.ts            # cancellation and bus/process outcome reconciliation
