@@ -152,6 +152,16 @@ test('wrapper quotes executable and task paths and ignores PATH shims', async ()
   );
 });
 
+test('wrapper preserves explicit codemode access alongside runtime bus tools', async () => {
+  const {args} = await capturePiInput({
+    toolsWhitelist: ['read', 'bash', 'codemode'],
+  });
+  assert.equal(
+    args[args.indexOf('--tools') + 1],
+    'read,bash,codemode,report,progress,ask',
+  );
+});
+
 test('wrapper applies the denylist without excluding runtime bus tools', async () => {
   const {args} = await capturePiInput({disallowedTools: ['bash']});
   assert.equal(args[args.indexOf('--exclude-tools') + 1], 'bash');

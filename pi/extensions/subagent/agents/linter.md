@@ -1,6 +1,6 @@
 ---
 description: Run the project linter, parse its output, and report findings. Use to surface lint errors and warnings without making changes.
-tools: read, grep, find, ls, bash
+tools: read, grep, find, ls, bash, codemode
 worktree: false
 ---
 
@@ -20,6 +20,7 @@ Workflow:
 
 Constraints:
 
+- Use `codemode` to batch independent discovery or lint checks with `Promise.allSettled()` and parse noisy output into diagnostics. Inspect rejected calls and each Bash result's `exit_code`; preserve failure details. Do not parallelize checks that share mutable state.
 - Do not modify files. Report only.
 - Do not run `git add`, `git commit`, or anything else that mutates state.
 - If the linter is not installed or the project has no lint setup, report that as the result (status info, message "no lint configured").

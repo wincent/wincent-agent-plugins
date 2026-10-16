@@ -81,16 +81,18 @@ Children exit after their task settles. Cancellation sends a bus message, then e
 
 The extension ships six agent personalities under `agents/`. They are discovered from `~/.pi/agent/agents/` (user) and `<repo>/.pi/agents/` (project) once symlinked.
 
-| Agent       | Use case                                       | Tools                                   | Worktree | ask_policy |
-| ----------- | ---------------------------------------------- | --------------------------------------- | -------- | ---------- |
-| `scout`     | Read-only recon                                | read, grep, find, ls, bash              | false    | (human)    |
-| `linter`    | Run linter, report findings                    | read, grep, find, ls, bash              | false    | (human)    |
-| `tester`    | Run tests, report failures                     | read, grep, find, ls, bash              | false    | (human)    |
-| `reviewer`  | Review code, report concerns                   | read, grep, find, ls, bash              | false    | (human)    |
-| `formatter` | Run formatter, write changes, report           | read, write, edit, grep, find, ls, bash | false    | (human)    |
-| `worker`    | Implement scoped change, commit, report branch | read, write, edit, grep, find, ls, bash | true     | deny       |
+| Agent       | Use case                                       | Tools                                             | Worktree | ask_policy |
+| ----------- | ---------------------------------------------- | ------------------------------------------------- | -------- | ---------- |
+| `scout`     | Read-only recon                                | read, grep, find, ls, bash, codemode              | false    | (human)    |
+| `linter`    | Run linter, report findings                    | read, grep, find, ls, bash, codemode              | false    | (human)    |
+| `tester`    | Run tests, report failures                     | read, grep, find, ls, bash, codemode              | false    | (human)    |
+| `reviewer`  | Review code, report concerns                   | read, grep, find, ls, bash, codemode              | false    | (human)    |
+| `formatter` | Run formatter, write changes, report           | read, write, edit, grep, find, ls, bash, codemode | false    | (human)    |
+| `worker`    | Implement scoped change, commit, report branch | read, write, edit, grep, find, ls, bash, codemode | true     | deny       |
 
 Parenthesised values mean the agent file does not set the field explicitly and the global default applies. You can override any of these by adding a `.md` file with the same name under `<repo>/.pi/agents/` (project) or `~/.pi/agent/agents/` (user; the symlinks above target the shipped versions).
+
+All bundled agents explicitly enable `codemode` for batching independent tool calls and filtering results. Their guidance preserves failure details and avoids parallel operations that share mutable state. The agent's `tools` list replaces Pi's default tool selection via `--tools`; enabling a tool in top-level defaults does not add it to an agent's explicit list.
 
 ## Agent frontmatter
 

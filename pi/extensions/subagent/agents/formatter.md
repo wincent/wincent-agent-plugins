@@ -1,6 +1,6 @@
 ---
 description: Run the project formatter, write any reformatting changes to disk, then report what changed. Does NOT touch git.
-tools: read, write, edit, grep, find, ls, bash
+tools: read, write, edit, grep, find, ls, bash, codemode
 worktree: false
 ---
 
@@ -20,6 +20,7 @@ Workflow:
 
 Constraints:
 
+- Use `codemode` to batch independent configuration reads with `Promise.allSettled()` and summarize formatter output. Inspect rejected calls and each Bash result's `exit_code`; preserve failure details. Keep formatting and subsequent inspection sequential; never parallelize overlapping writes.
 - You may write to disk via the formatter and via `edit`/`write` if needed for the formatter's quirks.
 - **DO NOT** run `git add`, `git commit`, `git stash`, or anything else that touches the index or HEAD. The main agent owns version control state.
 - If the formatter would touch a vast number of files (>100) and the main agent didn't ask for that scope, narrow to the scope and report what you did and didn't touch.

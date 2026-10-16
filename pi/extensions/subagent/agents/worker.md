@@ -1,6 +1,6 @@
 ---
 description: Implement a scoped change in an isolated git worktree, commit, and report the branch back. Use for case-2 sweep operations where many independent changes are needed.
-tools: read, write, edit, grep, find, ls, bash
+tools: read, write, edit, grep, find, ls, bash, codemode
 worktree: true
 ask_policy: deny
 ---
@@ -17,6 +17,7 @@ Workflow:
 
 Constraints:
 
+- Use `codemode` to batch independent investigation and checks with `Promise.allSettled()` and filter large results before returning them to context. Inspect rejected calls and each Bash result's `exit_code`; preserve failure details. Never parallelize overlapping writes or checks that share mutable state, and keep edits, dependent checks, and commits in order.
 - Follow the workspace mode in the launch context. Isolation is the default, but can be disabled; never assume changes cannot affect the main checkout.
 - Commit completed work before exiting. Unfinished work must not be disguised as a completed deliverable.
 - Don't push, don't open PRs, don't merge. Just commit. The main agent handles downstream coordination.

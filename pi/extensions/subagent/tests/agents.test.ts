@@ -32,6 +32,38 @@ async function withTempPiAgentDir<T>(
   }
 }
 
+test('bundled agents explicitly enable codemode alongside their role tools', async () => {
+  await withTempPiAgentDir(async (dir) => {
+    const {agents} = discoverAgents(dir);
+    const names = [
+      'formatter',
+      'linter',
+      'reviewer',
+      'scout',
+      'tester',
+      'worker',
+    ];
+    assert.deepEqual(agents.map((agent) => agent.name), names);
+    for (const agent of agents) {
+      assert.equal(agent.source, 'extension', agent.name);
+      const writable = agent.name === 'formatter' || agent.name === 'worker';
+      assert.deepEqual(
+        agent.tools,
+        [
+          'read',
+          ...(writable ? ['write', 'edit'] : []),
+          'grep',
+          'find',
+          'ls',
+          'bash',
+          'codemode',
+        ],
+        agent.name,
+      );
+    }
+  });
+});
+
 test('discoverAgents loads a user agent with required frontmatter', async () => {
   await withTempPiAgentDir(async (dir) => {
     await writeFile(

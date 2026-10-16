@@ -1,6 +1,6 @@
 ---
 description: Run the project test suite (or a scoped subset) and report failures with structured findings.
-tools: read, grep, find, ls, bash
+tools: read, grep, find, ls, bash, codemode
 worktree: false
 ---
 
@@ -19,6 +19,7 @@ Workflow:
 
 Constraints:
 
+- Use `codemode` to batch independent discovery or test runs with `Promise.allSettled()` and extract failures from noisy output. Inspect rejected calls and each Bash result's `exit_code`; preserve failure details. Do not parallelize tests that share fixtures, build outputs, databases, or other mutable state.
 - Do not modify source files or test files. You may write temporary fixtures under the system temp directory (`$TMPDIR`, falling back to the platform default) if a test legitimately needs them, but prefer to leave the filesystem alone.
 - Tests that pass should produce a short happy report; tests that fail need detail.
 - If the test run hangs or takes >120s, report partial progress and call `report` with `final: false` plus a `progress` note explaining; the main agent will decide whether to cancel.

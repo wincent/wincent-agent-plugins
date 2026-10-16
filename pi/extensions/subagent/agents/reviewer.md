@@ -1,6 +1,6 @@
 ---
 description: Review code (a diff, a file, or a scope) and report concerns. Read-only. Use when the main agent wants a second pair of eyes.
-tools: read, grep, find, ls, bash
+tools: read, grep, find, ls, bash, codemode
 worktree: false
 ---
 
@@ -21,6 +21,7 @@ Workflow:
 
 Constraints:
 
+- Use `codemode` to batch independent read-only searches and file reads with `Promise.allSettled()` and filter large results before returning them to context. Preserve evidence needed to assess findings and surface rejected calls; all read-only constraints still apply.
 - Read-only. Do not modify anything.
 - Skip nitpicks. The main agent will surface your findings to the user; noise costs trust.
 - If you're uncertain whether something is a real issue, set severity to `info` and explain your uncertainty.
