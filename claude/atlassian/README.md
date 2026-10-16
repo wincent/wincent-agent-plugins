@@ -7,7 +7,7 @@ Access Jira and Confluence Cloud through one shared REST wrapper, using curl and
 - `/atlassian:jira`: View issues, search with JQL, read comments, and discover assignments/transitions using Jira REST APIs.
 - `/atlassian:confluence`: Search with CQL, read full page bodies, and list pages/spaces using Confluence REST APIs.
 
-Both skills work unchanged in Claude and Pi. The Pi skill directories are compatibility symlinks; the Jira wrapper symlinks to [the shared implementation](skills/confluence/scripts/atlassian-curl.sh).
+Both skills work unchanged in Claude and Pi.
 
 ## Proxied setup
 
@@ -38,9 +38,9 @@ Start with only the documented read endpoints. Permit both GET and POST on `/res
 
 ## Wrapper contract
 
-Invoke `"$SKILL_DIR/scripts/atlassian-curl.sh" <path-or-url> [curl options...]` with `$SKILL_DIR` resolved to the absolute skill directory. Relative API paths are appended to the configured HTTPS tenant. Pagination URLs are supported only on that exact origin. The configured site must be one DNS label or that label plus `.atlassian.net`; other hosts, userinfo, explicit ports (including `:443`), URL schemes in configuration, network-path references (`//host/...`), whitespace, backslashes, and fragments are rejected. Absolute-origin matching is literal; use the configured spelling or a root-relative path.
+Invoke `"$SKILL_DIR/scripts/atlassian-curl.sh" <path-or-url> [curl options...]` with `$SKILL_DIR` resolved to the absolute skill directory. Configure `ATLASSIAN_SITE` as a tenant subdomain or `TENANT.atlassian.net`, without a scheme or port. Use root-relative API paths or absolute URLs on that exact HTTPS origin, including for pagination.
 
-Compatibility changes: the old wildcard acceptance of other `*.atlassian.net` tenants and arbitrary dotted site hosts is removed. Curl's default config is ignored (`--disable` first) and URL globbing is off so one target does not implicitly expand into multiple requests. The wrapper does not follow redirects. It keeps Basic auth, the environment variable names, and verbatim forwarding of caller options, including query/body arguments and stdin. It preserves curl failures and prints HTTP error bodies; `--fail-with-body` fails on HTTP 4xx/5xx, not all non-2xx statuses.
+Caller options and stdin pass through to curl, but its default config is ignored, URL globbing is off, and redirects are not followed. Curl failures are preserved; HTTP 4xx/5xx responses fail while still printing their bodies.
 
 Arbitrary curl options remain available, so target checks are convenience/accident prevention, not an authorization boundary. Do not supply additional destinations, redirect options, auth overrides, verbose/trace flags, or proxy/TLS overrides. The agent can also invoke curl independently; the proxy's exact-host and endpoint policy is the actual authorization boundary.
 

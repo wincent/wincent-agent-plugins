@@ -5,7 +5,7 @@ description: Delegate focused work to specialized subagents (scout, linter, test
 
 # subagent
 
-Delegate work to a focused subagent. Each subagent is a separate headless pi process with its own narrower system prompt and tool whitelist. Provider, model, and thinking level are inherited at dispatch time. Progress appears in the controlling UI; structured reports and private task logs remain available without tmux.
+Delegate focused work to a headless Pi subagent with its own prompt and tool whitelist. Provider, model, and thinking level are inherited at dispatch. Progress appears in the controlling UI; reports and private logs remain available after completion.
 
 The `subagent` tool spawns a subagent; `subagent_steer` and `subagent_cancel` manage in-flight tasks. `subagent_status` lists active/recent completed tasks and retrieves their reports.
 
@@ -39,7 +39,7 @@ The main agent (you) is working on a single change. You delegate side tasks to s
 
 > "Use the `reviewer` to look at my changes against main and report any concerns. Then use the `linter` to make sure lint is clean. If either reports issues, fix them and continue."
 
-Default: `worktree: false`. All built-in case-1 agents (`scout`, `linter`, `tester`, `reviewer`, `formatter`) already set this. Children exit when finished; logs are retained. There are no `placement` or `close_on_success` parameters.
+All built-in case-1 agents (`scout`, `linter`, `tester`, `reviewer`, `formatter`) use `worktree: false`. Children exit when finished; logs are retained.
 
 Useful fan-out idiom: launch several independent case-1 helpers in a single assistant turn. Background calls return after startup, so helpers can overlap even when the tool calls themselves are dispatched sequentially. Each helper runs in its own process.
 
@@ -81,34 +81,29 @@ Practical guidance for choosing:
 - `background: true` task you launched while the user is doing something else: prefer `deny` unless the work is high-value enough to justify `llm` round-trips.
 - You want the subagent to clarify with "the same brain that delegated the task" rather than the user: `llm`.
 
-If you set `llm` and the main agent has no model configured or the API call fails, the system falls back to the `deny` behaviour automatically (and emits `subagent:answered` with `source: "llm-fallback"`).
-
-### Budget and human escalation
-
-The `llm` policy is gated by a per-task budget of 10 successful LLM-answered questions. On the 11th question, the next ask is escalated to a `human` prompt regardless of policy: the user gets a TUI input dialog so they can sanity-check that the subagent has not drifted. The counter then resets, and the subagent gets another 10 LLM-answered questions before the next check-in. If the user dismisses the escalation (Esc / empty input / no UI available), the subagent receives the deny-style canned reply (`source: "policy-escalated"`) and the counter still resets, so the user is not re-prompted on every subsequent question. Only successful `'llm'`-answered asks count toward the budget; fallbacks (`source: "llm-fallback"`) do not.
+Unavailable LLM answers fall back to `deny`. After 10 successful LLM answers per task, the next question goes to the user, then the budget resets. Dismissed or unavailable escalation prompts fall back to `deny` too; `llm` is not a guarantee of unattended execution.
 
 ## Reading the report
 
 The final tool result includes model-visible JSON. Read that content, not just the UI's `details` object, which is not necessarily sent to the model. Background completion is a short digest with task ID and result path; retrieve the full report through `subagent_status` when needed for findings, verification, artifacts, or deliverables. Do not retrieve it merely to acknowledge a self-contained diagnostic result. If you already retrieved the finalized result, do not fetch it again because a notification arrived.
 
-Background progress and provisional reports update the UI and logs, not the conversation. Only finalized completion notifies the main model. Pending completions may be batched, and retrieving a task's finalized saved result suppresses its still-pending notice. A history listing or interim result does not suppress completion. Summarize the substantive outcome once: do not separately acknowledge report receipt, finalization, or clean process exit. A late or duplicate notification for an outcome already handled needs no response unless it adds new actionable information.
+Progress and provisional reports stay in the UI and logs; only finalized completion notifies the main model. Summarize the substantive outcome once, not each lifecycle event. Ignore late or duplicate notifications unless they add actionable information.
 
 - `taskId`, `status`, and `finalized`: identify the task and harness lifecycle. `running` and `finalizing` are nonterminal. Only the controller's final result is authoritative about retention and cleanup. A background dispatch initially returns a handle, not a completed report. `status: "ok"` alone does not mean the user's request was fulfilled.
 - `taskOutcome`: the child's explicit final outcome: `completed`, `partial`, `blocked`, `declined`, `failed`, or `unknown`. Missing or interim-only outcomes remain `unknown`, even with a normal exit or success-sounding summary.
 - `resultDescription`, `remaining`, and `blockers`: what was delivered, what is still missing, and why work stopped. Lead the user-facing summary with this information, not a bare `ok`.
 - `artifacts.reported` versus `artifacts.retained`: child-reported output locations versus harness-observed retained branches, commits, or preserved worktrees. A reported file inside a removed worktree is not necessarily a live filesystem path; use its retained commit/branch to inspect it.
 - `verification.reported` versus `verification.harness`: child-reported checks versus checks the controller actually performed. Each has `check`, `result` (`passed`, `failed`, or `not_run`), and optional evidence in `details`. Do not promote a child claim into independent verification. A testing task can be completed while reporting failing tests.
-- `execution`: reconciled child completion and process exit, separate from subsequent harness finalization. `processExited` records observed child exit, and `processGroupExited` records whether the owned group passed the disappearance check; inspect exit code and signal separately.
-- `worktree.hasCommittedChanges` and `worktree.hadUncommittedChanges`: respectively, commits since the starting commit and dirty files observed at finalization start. They are not current-directory existence flags. `null` means not established; older snapshots may still contain the ambiguous `hasChanges` instead.
-- `worktree.cleanup.directoryRemoved` and `worktree.cleanup.registrationRemoved`: independent directory and Git-registration observations. `false` can be intentional preservation, not a cleanup failure; `null` means unverified. Do not infer registration removal from an absent directory.
+- `execution` and `worktree.cleanup`: inspect process exit, retained work, and cleanup separately. An absent directory does not prove Git-registration removal; preserved work is not necessarily a cleanup failure. `null` means unverified.
+- `worktree.hasCommittedChanges` and `worktree.hadUncommittedChanges`: commits since launch and dirty files at finalization, not whether a worktree currently exists.
 - `finalReport.summary`: the subagent's short summary. It is not necessarily the complete answer.
 - `finalReport.findings`: structured items (file, line, severity, message). For lint/test/review, act on these.
 - `finalReport.branch` + `finalReport.commits`: the child's original claims. For isolated workers, `worktree.branch` and `worktree.commits` contain the controller's detected/retained output; discrepancies are explicit failures, not silently rewritten reports.
-- `finalReport.data`: arbitrary task-specific structured output. Inspect it before answering: it may hold the actual deliverable, such as `data.commits` containing five detailed commit summaries even when the top-level summary is only one sentence. Do not confuse these arbitrary records with `finalReport.commits`, which describes worker-produced commits.
+- `finalReport.data`: inspect this before answering; it may hold the actual deliverable rather than the summary. Do not confuse arbitrary records here with `finalReport.commits`, which describes worker-produced commits.
 - `worktree.preservedPath`: if a worker failed mid-task, the worktree was kept for inspection at this path.
 - `taskDir`, `resultPath`, `stdoutPath`, `stderrPath`, and `auditLogPath`: artifact locations for later inspection.
 
-The complete result is retained in private `result.json` when saving succeeds, with raw `details` and a derived `result` description. Reports received while a task is running are provisional: a final agent report is not proof that output retention or cleanup has finished. Large model-visible results have an explicit truncation notice and artifact path; read the artifact to obtain omitted data rather than treating the preview as the full report. Storage/retrieval failures are reported in `retrievalNote`.
+Large results include a truncation notice and artifact path; read the artifact for omitted data. Storage/retrieval failures appear in `retrievalNote`. A child's final report is not proof that retention or cleanup has finished.
 
 When a subagent reports findings, decide whether to:
 
@@ -120,19 +115,17 @@ When a subagent reports findings, decide whether to:
 
 Call `subagent_status` without arguments to list this controller's active tasks and the ten most recent completed tasks in the local state directory, including tasks from previous sessions. Use `limit` (0 to 50) to change the number of completed tasks; `limit: 0` lists only active tasks. Listings contain IDs, short summaries, and artifact paths, not every report's full contents.
 
-Call `subagent_status` with `task_id` to retrieve the full result, including `finalReport.data`, after completion or a session restart. For older tasks without `result.json`, it recovers reports from `bus.jsonl` when available and explains missing artifacts. Do not search the parent session transcript to recover report data.
+Call `subagent_status` with `task_id` to retrieve the full result, including `finalReport.data`, after completion or a session restart. Do not search the parent session transcript to recover report data. Task artifacts remain unless explicitly pruned; there is no interactive child pane.
 
-The controlling UI shows a compact progress widget; there is no interactive child pane. Task artifacts remain after completion unless explicitly pruned. Sockets are separate: `PI_SUBAGENT_SOCKET_ROOT` selects a launcher-prepared private directory, and `PI_SUBAGENT_SOCKET_PATH` passes the exact short per-task socket path to the child. `PI_SUBAGENT_BUS_DIR` still points to retained artifacts. An explicitly configured socket root never falls back elsewhere. Children invoke the same installed Pi runtime directly and inherit the controller's environment, sandbox, and proxy lifetime; they do not rerun wrappers or acquire independent leases. Sandbox launchers must authorize the socket subtree, task/worktree files, and runtime, not child-wrapper execution or the tmux socket. The controller owns child cleanup, so background tasks cannot outlive its session.
+Children inherit the controller's environment, sandbox, and proxy lifetime, not independent permissions or leases. See the [extension README](../../extensions/subagent/README.md#sandbox-setup) for sandbox setup and troubleshooting.
 
-Extensions can opt into spawn-time state snapshots. OCR session approval is inherited by subsequently launched children when OCR is loaded and allowed by the child's tool configuration. Later grants or revocations do not reach existing children. Other approvals are not inherited unless their extension explicitly supports it; a headless tool requiring local UI approval may still fail. An LLM answer to `ask` is not authorization, and inherited state must never be forged.
+OCR approval is inherited by subsequently launched children when OCR is loaded and allowed. Later grants/revocations do not reach existing children. Other approvals require explicit extension support; headless tools needing local UI approval may fail. An LLM answer to `ask` is not authorization, and inherited state must never be forged.
 
 A one-shot headless controller cancels background children when its session ends; background dispatch does not keep it alive. There is no automatic synchronous fallback. The caller must keep the controlling session alive until completion or explicitly request synchronous delegation (`background: false`). Without either arrangement, do the work in the main agent or explain the limitation rather than spawning a task that will be cancelled at exit. Do not infer permission for synchronous execution merely from headless mode.
 
 ## Steering and cancellation
 
-If a subagent is going off course, use `subagent_steer` with `text` containing a redirection ("focus on src/auth/ only", "ignore deprecated callers"). The steer is injected into the subagent's session as a synthetic user message.
-
-If a subagent is stuck or wrong-headed, use `subagent_cancel`. Graceful by default (sends a cancel envelope, gives the subagent a chance to wrap up), escalates to SIGTERM then SIGKILL.
+Use `subagent_steer` with a `text` redirection if a subagent goes off course. Use `subagent_cancel` if it is stuck or wrong-headed; cancellation starts gracefully, then escalates to SIGTERM/SIGKILL.
 
 Don't cancel impatiently: subagents are real processes consuming real tokens, and a partial report is more useful than a hard kill.
 

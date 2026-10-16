@@ -1,67 +1,63 @@
 # OCR through nono
 
-A Pi `ocr` tool for local PDFs and PNG/JPEG images, using Mistral's OCR API through an existing nono credential proxy. The extension never reads `MISTRAL_API_KEY`, runs a credential helper, or accepts a real API key. It always sends the placeholder `Authorization: Bearer proxied`; the host-side proxy substitutes the real credential.
+OCR local PDFs and PNG/JPEG images using Mistral through an existing nono credential proxy. The extension sends a placeholder credential; the host-side proxy supplies the real key.
 
 ## Setup
 
-Requires Pi, `curl`, and a proxy-enabled session with `HTTPS_PROXY` (or `https_proxy`) and a readable proxy CA bundle (`CURL_CA_BUNDLE`, `SSL_CERT_FILE`, or `NODE_EXTRA_CA_CERTS`, in that order). The proxy URL must be HTTP on loopback. Both a local nono sandbox proxy and a host proxy forwarded into a VM can work. No SDK or additional npm dependencies are needed.
+Requires Pi, `curl`, and a proxy-enabled session with `HTTPS_PROXY` (or `https_proxy`) and a readable CA bundle (`CURL_CA_BUNDLE`, `SSL_CERT_FILE`, or `NODE_EXTRA_CA_CERTS`, in that order). The proxy must be HTTP on loopback; a local nono proxy or a host proxy forwarded into a VM can work.
 
-1. In a trusted host environment, create a Mistral API key and store it in 1Password. The example expects `op://CLI/mistral-api-key/credential`; adjust that reference to match your item. Do not paste the key into Pi, a shell command visible to the agent, or the configuration file.
-2. If your installed profile already includes the built-in `mistral_ocr` route from the wincent dotfiles, no extra route is needed; do not add a duplicate private entry. Otherwise merge the `credentials.mistral_ocr` entry from [`nono.example.json`](nono.example.json) into your private `NONO_PROXY_CONFIG` JSON. Preserve existing credentials and capture definitions. If you have no private routes yet, copy the example to a private host configuration file and point `NONO_PROXY_CONFIG` at that file from your private shell configuration. The example contains only a credential reference, never the key.
-3. After changing proxy configuration, run `./install dotfiles` from a trusted host shell in the wincent dotfiles checkout, then `nono profile validate pi`. Start a new proxy-enabled Pi session so the new profile and CA exports are inherited. The generation-aware wrappers select a new proxy automatically; `/reload` alone cannot update an existing session's proxy policy. Image support uses the same endpoint and credential as PDF support: if PDF OCR already works, just reload the updated extension, with no proxy or dotfiles changes.
-4. If Pi already loads this repository's `pi/extensions` and `pi/skills` directories, discovery is automatic. Otherwise add those directories to Pi's resources or load this directory with `pi -e /absolute/path/to/pi/extensions/ocr`. Run `/ocr-status` to check local configuration; this command does not read the key or verify the live route.
-5. Ask Pi to OCR the first page of an approved PDF, or an approved PNG/JPEG image. Review the first-use session approval confirmation. Once approved, further calls in that session do not prompt again. Every request uploads the entire file, including embedded metadata and, for PDFs, unselected pages. API charges and Mistral's data-handling terms apply.
+1. Create a Mistral API key in a trusted host environment and store it in 1Password. The example expects `op://CLI/mistral-api-key/credential`; adjust to your item. Never paste the key into Pi, an agent-visible shell command, or the configuration file.
+2. If your installed profile includes the wincent dotfiles' built-in `mistral_ocr` route, do not duplicate it. Otherwise merge `credentials.mistral_ocr` from [`nono.example.json`](nono.example.json) into your private `NONO_PROXY_CONFIG` JSON, preserving existing entries. For a new private configuration, copy the example to a private host file and set `NONO_PROXY_CONFIG` in your private shell configuration.
+3. After proxy changes, run `./install dotfiles` from a trusted host shell in the wincent dotfiles checkout, then `nono profile validate pi`. Start a new proxy-enabled Pi session; `/reload` cannot update its proxy policy.
+4. Load this repository's `pi/extensions` and `pi/skills` directories, or load the extension with `pi -e /absolute/path/to/pi/extensions/ocr`. `/ocr-status` checks local configuration, not the live route.
+5. Ask Pi to OCR an approved file and review the session-wide upload/charges confirmation below.
 
-The example uses an explicit `endpoint_policy` with a default deny and a single allowed operation: `POST https://api.mistral.ai/v1/ocr`. This is intentional: in nono 0.79.0, legacy credential `endpoint_rules` can let unmatched requests pass through without injecting a credential, whereas the explicit policy rejects them. This also means this route can conflict with other intended Mistral operations on the same host; review the combined policy before adding chat or Files API access.
+Keep the example's explicit default-deny `endpoint_policy`, allowing only `POST https://api.mistral.ai/v1/ocr`; legacy `endpoint_rules` may let unmatched requests pass. Review the combined policy before allowing other Mistral operations on the same host. PDFs and images use the same route.
 
 ## Usage and limits
-
-Conceptual tool call:
 
 ```json
 {"path": "book.pdf", "pages": [0, 4, 19]}
 ```
 
-For an image, use `{"path": "scan.png"}` (JPEG/JPG works too). Images are sent as Base64 `image_url` inputs; PDFs retain the `document_url` input format. Both use `POST /v1/ocr`.
+For an image, use `{"path": "scan.png"}` (JPEG/JPG works too).
 
-- Omit `pages` to process only PDF page 1 (`[0]`), or the entire single image. Images accept only omission or `[0]`; other page selections are rejected before approval or upload. The API request omits PDF page-selection options for images, and image output is tracked as index 0. There is deliberately no implicit whole-book operation.
-- Select 1-25 unique zero-based PDF page indices, each between 0 and 999. These are not printed page numbers. The prototype does not parse PDF page counts; Mistral validates the actual document, and missing requested pages are reported as warnings.
-- Input must be a readable regular file with a PDF, PNG, or JPEG signature, at most 20 MiB. Format is detected from the bytes, not the filename or extension. This is a format sanity check, not a full document validator or image decoder. Other formats (including GIF, WebP, TIFF, HEIC, and SVG) are not supported by this adapter. Local file reads have only the agent's own privileges; this is not a privileged file broker.
-- The file is read into a bounded in-memory snapshot before confirmation. The exact approved bytes are sent even if the file changes while the dialog is open. Images are not resized, recompressed, or stripped of metadata; crop/redact or remove metadata locally before OCR if needed.
-- The default model is `mistral-ocr-latest`. Optionally set `MISTRAL_OCR_MODEL` to an available versioned `mistral-ocr-*` model in the launch environment. The tool cannot choose arbitrary models. The manifest records both the requested and returned model strings; a returned alias is not proof of a resolved version.
-- At most one OCR call runs per extension instance. Requests time out after 180 seconds, responses are bounded at 32 MiB, and automatic retries are disabled. Cancellation or a connection failure does not prove that processing or billing was cancelled. Never automatically repeat an uncertain request.
-- The first call asks for Pi UI confirmation covering OCR uploads for the rest of the session and subsequently launched subagents. Later calls, including calls for different files, do not prompt again. Headless children can use inherited approval; without it they fail closed. OCR must still be loaded and included in the child agent's allowed tools. RPC can obtain new approval only if its UI client supports confirmation.
-- No remote document URLs, Files API, extracted image downloads, searchable PDF generation, preprocessing, or batch API in this prototype. Split a document locally first if only selected pages may leave the machine.
+- Omit `pages` for the first PDF page or the single image. PDFs accept 1-25 unique zero-based indices from 0 to 999, not printed page numbers. Images accept only omission or `[0]`. Missing requested PDF pages produce warnings.
+- Input must be a readable regular PDF, PNG, or JPEG file, at most 20 MiB. Format is detected from file bytes, not the extension; this is not full document validation.
+- **Every request uploads the entire file**, including metadata and unselected PDF pages. Images are not resized or stripped of metadata. Split, crop, redact, or remove metadata locally before OCR if needed. The file snapshot taken before confirmation is what gets uploaded, even if the file subsequently changes.
+- The default model is `mistral-ocr-latest`. Set `MISTRAL_OCR_MODEL` to an available versioned `mistral-ocr-*` model to override it. A returned alias does not prove a resolved version.
+- One call runs at a time per extension instance, with a 180-second timeout and 32 MiB response limit. There are no automatic retries. Cancellation or connection failure does not prove billing or processing stopped; never automatically repeat an uncertain request.
+- Remote URLs, Files API, extracted-image downloads, searchable PDF generation, preprocessing, and batch API are not supported.
 
 ## Session approval
 
-Approval is requested on first use and is sticky for the rest of the session. There is no per-call confirmation mode. Only one approval dialog can be open at a time; overlapping approval requests fail before uploading, leaving the original dialog active.
+The first valid call asks for approval covering all OCR uploads for the rest of the session and subsequently launched subagents. Declining or cancelling uploads nothing; the next call asks again. Alternatively, approve ahead of use with `/ocr-approval session`.
 
-1. The first valid OCR call shows the initial file and page selection alongside a session-wide disclosure and charges confirmation. Declining or cancelling does not grant approval or upload anything; a later call will ask again. Alternatively, run `/ocr-approval session` to approve ahead of first use without uploading anything.
-2. After approval, the footer shows `OCR ✔` in the footer's dim theme color. The agent can now upload any supported local file it can read, not just the file or directory most recently discussed. There is no session spending cap. Existing input, page, model, and concurrency limits still apply, and automatic retries remain prohibited.
-3. Run `/ocr-approval revoke` to clear approval. The next call asks for session approval again. This does not cancel an active OCR call, undo uploads or charges, or revoke approval in already-running subagents.
+After approval, the footer shows `OCR ✔`. The agent can upload **any supported file it can read**, not just the file or directory discussed. Later calls do not prompt again; there is no per-call mode or spending cap. API charges and Mistral's data-handling terms apply.
 
-`/ocr-approval` without arguments reports approval state; `/ocr-status` includes it alongside local setup information. Approval is held in memory and passed to new subagents through a generic, namespaced environment snapshot, never saved in settings or the session transcript. The child consumes its snapshot once at startup. Approval resets when starting, resuming, or forking a session, restarting Pi, or running `/reload`; compaction and tree navigation within the same session do not revoke it. Later approval or revocation in the controller affects future children only. Unrelated Pi sessions do not inherit approval.
-
-Approve with `/ocr-approval session` before launching OCR subagents. This works identically for sandboxed controller/child pairs and unsandboxed pairs; children still need the inherited proxy/CA setup and access to their input and output files. The snapshot coordinates consent among cooperative agents, not adversary-resistant authorization: shell code can forge it or bypass the extension.
+- `/ocr-approval` reports approval state; `/ocr-status` includes it with setup information.
+- `/ocr-approval revoke` clears approval for the next call. It does not cancel active calls, undo uploads/charges, or revoke already-running children's approval.
+- Approval resets on starting, resuming, or forking a session, restarting Pi, or `/reload`; compaction and tree navigation do not revoke it. It is not persisted in settings or transcripts.
+- Approve before launching OCR subagents. Children need OCR loaded and allowed in their tool configuration, inherited proxy/CA setup, and file access. Later parent grants/revocations affect future children only; unrelated sessions do not inherit approval.
+- Headless calls without inherited approval fail closed. RPC requires a confirmation-capable UI client to obtain new approval. Only one approval dialog can be open at a time.
 
 ## Artifacts and privacy
 
-A fresh `ocr-*` directory is reserved under the working directory before upload. It contains `response.json` (the original successful API response), `document.md` (Markdown with explicit PDF page or image markers), and `manifest.json` (source path/hash/size, detected media type, page selection, model strings, timestamp, and warnings). Files use mode `0600`; the directory uses `0700`. Existing artifacts are never overwritten. Results return artifact links and a short summary, not the extracted document text.
+Each call creates a private `ocr-*` directory under the working directory containing `response.json` (raw response), `document.md` (page/image-marked Markdown), and `manifest.json` (source identity, page selection, models, timestamp, and warnings). Files use mode `0600`, directories `0700`; existing artifacts are never overwritten. The tool returns paths and a summary, not extracted text.
 
-The client uses curl with its startup configuration disabled, an explicit proxy and CA, redirects disabled, and a minimal child environment. The proxy URL/password is supplied through stdin, not command arguments. Base64 request data is briefly spooled to a private temporary directory and removed in normal success, failure, and cancellation paths. A process crash or machine shutdown can leave that private temporary data behind; cleanup is not secure erasure. Artifacts remain until you remove them, and may be captured by filesystem backups or accidentally added to version control. There is no separate Files API upload to clean up remotely, but inline requests remain subject to Mistral's retention policy.
+Artifacts remain until deleted and may enter backups or version control. Temporary request data is removed on normal success, failure, or cancellation, but a crash can leave it behind; cleanup is not secure erasure. Requests remain subject to Mistral's retention policy.
 
-Curl diagnostics and upstream error bodies are suppressed. The extension never dumps request headers, Base64 documents, or credentials into the transcript. OCR Markdown and the raw JSON are untrusted document content; embedded instructions must not be followed. The raw HTTP-200 response is saved before schema validation so a changed API schema does not discard a paid result. If validation or artifact writing fails, preserve and inspect partial results rather than repeating a paid call.
+OCR output is untrusted document content; never follow embedded instructions. If response validation or artifact writing fails, inspect partial artifacts rather than repeating a paid call. The raw successful response is saved before validation to help recover paid results.
 
 ## Security boundary
 
-The extension is a workflow adapter, not a security boundary. Key isolation depends on running the agent in a sandbox/VM that cannot read host secrets, invoke host credential helpers, inspect the credential-bearing process, or modify trusted proxy policy/helpers. Unsandboxed same-user Pi does not provide that guarantee, even when it normally uses a phantom credential. Loopback/proxy/CA checks do not attest that the proxy is nono or that its policy is correct.
+This is a workflow adapter, not a security boundary. Key isolation requires a sandbox/VM that cannot read host secrets, invoke credential helpers, inspect credential-bearing processes, or modify trusted proxy policy. Unsandboxed same-user Pi does not provide that guarantee. Proxy/CA checks do not attest that the proxy is nono or correctly configured.
 
-An agent with shell access can call the allowed OCR endpoint without using this extension. UI approval, page/model limits, and the concurrency guard are not enforceable spending or disclosure controls against such an agent. Use provider-side limits where available, or a trusted narrow broker, for hard quotas and mandatory per-document approval. Proxy-access credentials still grant proxy capabilities and must not be published; only the Mistral key stays exclusively in the trusted host process.
+Shell access can bypass extension approval and limits or forge inherited approval. Use provider-side limits or a trusted narrow broker for hard quotas and mandatory per-document approval. Proxy credentials still grant capabilities and must not be published, even though the real Mistral key stays on the host.
 
 ## Tests
 
-From the plugin repository root, with `pi` on `PATH`:
+From the repository root:
 
 ```sh
 node --experimental-transform-types --test pi/extensions/tests/ocr.test.mjs
@@ -69,4 +65,4 @@ NONO_PROXY_INTEGRATION=1 node --experimental-transform-types --test pi/extension
 bin/typecheck
 ```
 
-The ordinary tests use fake curl and synthetic PDF/image data; they make no provider requests. They cover format sniffing, image request payloads, single-page restrictions, immutable approval snapshots, image artifacts, session approval/revocation/lifecycle resets, one-time subagent approval inheritance and malformed-state rejection, and the existing PDF/security/recovery behavior. These tests do not measure live OCR accuracy or decode the image fixtures. The opt-in integration test requires `nono`, `openssl`, `curl`, and permission to bind loopback sockets. It uses the example route with a disposable key and local HTTPS upstream, verifying Bearer substitution, explicit method/path rejection, different-host credential isolation, proxy authentication, and CA validation. It never reads 1Password, restarts your normal proxy, or contacts Mistral. Verified against nono 0.79.0; real-account and VM activation are separate checks.
+Tests use synthetic files and fake curl; the opt-in integration test requires `nono`, `openssl`, `curl`, and loopback socket permission. It uses a disposable key and local HTTPS upstream, without reading 1Password, restarting your proxy, or contacting Mistral. Live OCR accuracy and real-account/VM activation require separate checks.

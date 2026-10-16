@@ -15,16 +15,9 @@ See the [pi extensions documentation](https://github.com/earendil-works/pi/blob/
 
 ## Type-checking
 
-A `tsconfig.json` sits alongside the extensions so that `tsc` can resolve the platform packages (`@earendil-works/pi-*`, `typebox`, `@types/node`). The matching `.d.ts` stubs live under `node_modules/`, populated on demand by `bin/install-types` (which copies them out of the dotfiles-managed Pi under `~/n/pi`). Extensions use the running Pi's platform dependencies[^jiti]; the script handles both nested and hoisted package layouts.
+Run `bin/typecheck` from the repository root. Missing type stubs are copied automatically from the managed Pi installation at `~/n/pi`.
 
-[^jiti]: Pi's loader (see `dist/core/extensions/loader.js` in the Pi installation) loads extensions with jiti, passing a map that rewrites platform package specifiers to absolute paths before Node's module resolution kicks in. Those imports use Pi's runtime dependencies rather than the local type-only `node_modules` directory.
-
-The stub tree is _not_ committed: each pi release would otherwise produce a thousand-file regeneration diff that buries everything else in the history, and the bulk of the tree (`@types/node`, `typebox`) is third-party content that has no business living in this repo. The `node_modules/` directory itself is tracked, but only to anchor a `.gitignore` that ignores everything underneath it; the stubs themselves are produced locally as needed.
-
-- Run a check from the repo root with `bin/typecheck`. If the stubs are missing (fresh checkout, or you wiped them) it will call `bin/install-types` for you automatically before invoking `tsc`.
-- Refresh the stubs manually after each pi upgrade with `bin/install-types`. The script does not detect version drift on its own, so a stale tree will type-check against the previous pi's API surface until you rerun it.
-
-`npm install` is intentionally blocked in this directory because the runtime dependency trees of the platform packages, in particular `@earendil-works/pi-ai`, pull in every supported provider SDK (Anthropic, AWS Bedrock, Google, Mistral, OpenAI) and their transitive trees. None of that is needed to type-check a handful of extension files, and at least one transitive dependency (`@mistralai/mistralai`) has been the target of supply chain attacks in the past ([MAL-2026-3432](https://osv.dev/vulnerability/MAL-2026-3432)/[GHSA-3q49-cfcf-g5fm](https://github.com/advisories/GHSA-3q49-cfcf-g5fm)).
+After each Pi upgrade, run `bin/install-types` manually; otherwise checks may still use the previous version's API. Do not run `npm install` here: extensions use Pi's runtime dependencies, and this directory needs only their types.
 
 ## Extensions
 
@@ -38,7 +31,7 @@ Append `pick` (or `--pick`) to choose from the 20 most recent answers via a sele
 
 ### `jj-guard.ts`
 
-Hooks the `tool_call` event and blocks raw `git add`, `git stage`, and `git commit` invocations whenever pi is running inside a Jujutsu repository (detected by walking up to a `.git` worktree root and checking for a sibling `.jj` directory).
+Blocks raw `git add`, `git stage`, and `git commit` invocations inside Jujutsu repositories.
 
 Intended as a guardrail against LLMs that reflexively reach for git commands even when the project uses `jj` (not a security boundary; the regexes are heuristic and won't catch every obfuscated invocation).
 
@@ -46,34 +39,19 @@ Intended as a guardrail against LLMs that reflexively reach for git commands eve
 
 ### `model-info.ts`
 
-Hooks `before_agent_start` and appends a "Pi runtime" block to the system prompt on every turn:
-
-```
-## Pi runtime
-
-- Active model: `anthropic/claude-opus-4-7` (Claude Opus 4.7)
-- Active thinking level: `xhigh`
-```
-
-This gives the agent a reliable way to identify itself at runtime, which matters for skills that need accurate self-attribution. For example, the `git-commit` and `jj-commit` skills in this repo derive their `Co-Authored-By` trailer from the model identity; without this extension they fall back to a generic `AI Assistant <noreply@example.com>` line.
-
-Because the block is regenerated every turn, `/model` and `/thinking` changes are reflected live without restarting Pi.
+Adds the active model and thinking level to the system prompt, reflecting `/model` and `/thinking` changes without restarting Pi. The commit skills use this identity for their `Co-Authored-By` trailers.
 
 ### `ocr/`
 
-Adds an `ocr` tool for local scanned PDFs and PNG/JPEG images, plus `/ocr-status` and `/ocr-approval`. Sends only a placeholder credential through the existing nono proxy; the extension never reads the real Mistral key. The first OCR call asks for approval, which is retained for the rest of the session without further prompts and inherited by subsequently launched subagents with OCR enabled. `/ocr-approval session` approves ahead of first use, and `/ocr-approval revoke` clears approval so the next call asks again. Each call defaults to the first PDF page or a single image and returns private JSON/Markdown/provenance artifacts rather than document text. Requires `curl` and a host-side Mistral OCR credential route; images use the same route as PDFs. See [`ocr/README.md`](ocr/README.md) for setup, limits, security boundaries, and tests. A companion Pi-only `ocr` skill covers document handling and transcription fidelity.
+Adds an `ocr` tool for local PDFs and PNG/JPEG images through the nono credential proxy, plus `/ocr-status` and `/ocr-approval`. Uploads require session-wide approval and incur API charges. See the [OCR README](ocr/README.md) for setup, limits, approval inheritance, and privacy; the companion `ocr` skill covers document handling.
 
 ### `sandbox.ts`
 
-Shows a dimmed `Sandbox ✔` footer status when `NONO_CAP_FILE` is non-empty, alongside other extension statuses such as OCR and subagents. Checks the current process environment on session start (including reload), without reading the capability file. This is a nono launcher hint, not verification of sandbox enforcement. Shows nothing when the variable is unset or empty, and does nothing outside TUI mode.
+Shows `Sandbox ✔` in the TUI footer when `NONO_CAP_FILE` is non-empty. This is a launcher hint, not verification of sandbox enforcement.
 
 ### `subagent/`
 
-Delegates focused tasks to specialized subagents that run as direct, headless Pi processes, communicating with the main agent over a typed Unix domain socket bus. No tmux dependency; the controlling UI shows progress and each task retains private stdout/stderr and bus logs. Ships six default agent personalities (`scout`, `linter`, `tester`, `reviewer`, `formatter`, `worker`); more can be added by dropping files into `~/.pi/agent/agents/`.
-
-In main mode, registers `subagent`, `subagent_steer`, `subagent_cancel`, and `subagent_status` tools. In sub mode (when spawned by another Pi), registers `report`, `progress`, and `ask` tools so the child can talk back. Lifecycle events are emitted on `pi.events` under the `subagent:*` namespace.
-
-See [`subagent/README.md`](subagent/README.md) for more.
+Delegates focused tasks to headless Pi agents, with progress in the controlling UI and retained reports/logs. Includes `scout`, `linter`, `tester`, `reviewer`, `formatter`, and commit-producing `worker` agents. See the [subagent README](subagent/README.md) for tools, configuration, and lifecycle constraints.
 
 ### `datadog-mcp.ts`
 
@@ -101,7 +79,7 @@ Registers three slash commands:
 
 A companion `google-workspace-mcp` skill under `pi/skills/google-workspace-mcp/` teaches the agent the `list_tools`, `describe_tool`, and `call_tool` pattern. Mutating tools always require a confirmation prompt; only a local allowlist of known read operations bypasses the gate, so unknown server tools default to mutating. `GOOGLE_WORKSPACE_MCP_URL` is required. `GOOGLE_WORKSPACE_MCP_ACCOUNT_DOMAIN` optionally customizes account guidance, and the local OAuth callback port defaults to `19877` with an override available through `GOOGLE_WORKSPACE_MCP_CALLBACK_PORT`.
 
-The dynamic client registration metadata and OAuth tokens are stored as plaintext JSON under `$XDG_STATE_HOME/pi/google-workspace-mcp/` (default `~/.local/state/pi/google-workspace-mcp/`). An unset, empty, or relative `XDG_STATE_HOME` uses the default. This state is independent of `PI_CODING_AGENT_DIR`, keeping credentials outside configuration directories that may be version-controlled. Directories and files are restricted to modes `0700` and `0600` on POSIX systems. This is not an OS credential store. The FastMCP v2.13 DCR flow registers a public client with `token_endpoint_auth_method=none`; the secret-based methods in the server's discovery metadata do not describe this client-facing flow.
+The dynamic client registration metadata and OAuth tokens are stored as plaintext JSON under `$XDG_STATE_HOME/pi/google-workspace-mcp/` (default `~/.local/state/pi/google-workspace-mcp/`). An unset, empty, or relative `XDG_STATE_HOME` uses the default. This state is independent of `PI_CODING_AGENT_DIR`, keeping credentials outside configuration directories that may be version-controlled. Directories and files are restricted to modes `0700` and `0600` on POSIX systems. This is not an OS credential store.
 
 ### `slack-mcp.ts`
 
@@ -118,20 +96,11 @@ A companion `slack-mcp` skill under `pi/skills/slack-mcp/` teaches the agent how
 
 Adds a `/context` slash command, similar to the one from Claude Code, that shows how the current context window is being used. This is a counterpart to the built-in `/session`, which reports _cumulative_ session billing rather than current context composition, and to the footer, which reports context usage as a single opaque percentage.
 
-The _total_ (from `ctx.getContextUsage()`) is authoritative when a usable assistant response exists after the latest compaction or context edit. Until then, the report estimates the total and does not calibrate categories against stale provider usage. The _categories_ are estimated from character counts; any discrepancy is reported in the "Unaccounted" category.
+The total uses provider usage once a usable assistant response exists after the latest compaction or context edit; until then, it is estimated. Categories are always estimates, with discrepancies shown as "Unaccounted".
 
 ### `total-cost.ts`
 
-Adds a `/total-cost` slash command that scans saved Pi sessions under `$PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`) plus durable subagent transcripts under `$PI_CODING_AGENT_DIR/subagent-sessions/<task_id>/` (default `~/.pi/agent/subagent-sessions/<task_id>/`). It shows a per-month breakdown of cumulative LLM cost, message count, and number of distinct sessions. Child sessions contribute directly under their recorded models; their costs are not rolled into parent tool results. Their separate storage keeps them out of ordinary resume listings. The scanner ignores bus logs and other task artifacts, which remain under `XDG_STATE_HOME`; deleting those artifacts does not affect transcript costs. Older task-local transcripts require explicit migration to the durable directory before they contribute. Deleted transcripts and older ephemeral (`--no-session`) runs do not contribute to totals. The cost is also broken down per model, with one extra column per model (ordered by total cost, descending) in the same table:
-
-```
-Month       Cost  claude-opus-4-8  gpt-5.5  Messages  Sessions
-─────────────────────────────────────────────────────────────
-2026-05   $42.17           $38.02    $4.15       318        24
-2026-04   $89.04           $89.04        -       612        41
-─────────────────────────────────────────────────────────────
-Total    $131.21          $127.06    $4.15       930        65
-```
+Adds `/total-cost`, showing monthly LLM cost, message count, and session count, broken down by model. Reads saved sessions under `$PI_CODING_AGENT_DIR/sessions` and `subagent-sessions` (default base: `~/.pi/agent`). Deleted transcripts and ephemeral runs do not contribute; see [subagent state and inspection](subagent/README.md#state-and-inspection) for retention and older transcript handling.
 
 It accepts two optional arguments:
 

@@ -107,4 +107,4 @@ Run all extension, subagent, and Atlassian tests from the repository root:
 bin/test
 ```
 
-The Pi tests prefer `PI_REAL_BIN` when nonempty, following its executable symlinks to the coding-agent package. Otherwise they use the managed runtime at `~/n/pi`, not `pi` on `PATH` (which may be a launcher). An invalid override fails rather than silently selecting another runtime. Platform dependencies and the subagent test loader are resolved from the selected package, supporting both nested and hoisted layouts. Tests never fall back to an npm-global Pi installation. The context-accounting fixtures target Pi 1.0.4; passing them on an older runtime does not validate the target serializer.
+Pi tests use the managed runtime at `~/n/pi`. Set `PI_REAL_BIN` to a real Pi executable (not a launcher) to override it; invalid overrides fail without fallback.

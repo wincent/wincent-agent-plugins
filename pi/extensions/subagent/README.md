@@ -1,229 +1,99 @@
 # subagent extension
 
-A Pi extension that delegates tasks to specialized subagents running as direct, headless Pi child processes. Communication uses a typed Unix domain socket bus. No tmux server, pane, or socket is required.
+Delegate tasks to specialized agents running as headless Pi child processes. The controlling UI shows progress; reports and private logs remain available after completion. No tmux dependency.
 
 ## Install
 
-The six default agents under `agents/` are auto-discovered relative to the loaded extension module. To override a shipped agent or add a project-local one, drop a `.md` file with the same name (or a new name) under `<repo>/.pi/agents/` (project-scoped) or `~/.pi/agent/agents/` (user-scoped); both shadow the extension-bundled tier.
+Load the extension as described in the [parent README](../README.md). The six bundled agents are auto-discovered. Add or override agents with `.md` files under `<repo>/.pi/agents/` (project-scoped) or `~/.pi/agent/agents/` (user-scoped); project agents take precedence over user agents, then bundled agents.
 
-The companion skill at [`pi/skills/subagent/`](../../skills/subagent/) and the prompts under `prompts/` are discovered by Pi itself, not by this extension.
+The companion [skill](../../skills/subagent/) and workflow prompts under `prompts/` must be discoverable by Pi separately.
 
-## Requirements
+Requires an installed Node/Bun Pi CLI, a POSIX environment with `bash`, Unix domain sockets, and process-group signals. SDK hosts and standalone compiled binaries are not supported. Workers require git; isolated worktrees require a repository with at least one commit.
 
-- Pi (globally installed; see [parent README](../README.md))
-- A POSIX environment with `bash`, Unix domain sockets, and process-group signals.
-- git (only for the `worker` agent; `worktree: true` requires the repo to have at least one commit).
+## Tools and execution
 
-## What you get
+| Tool              | Purpose                                                              |
+| ----------------- | -------------------------------------------------------------------- |
+| `subagent`        | Spawn a subagent in the background; deliver its report later.        |
+| `subagent_steer`  | Redirect a running subagent.                                         |
+| `subagent_cancel` | Cancel a task, escalating to SIGTERM/SIGKILL if needed.              |
+| `subagent_status` | List active/recent completed tasks or retrieve a task's full report. |
 
-When loaded in main mode (no `PI_SUBAGENT_TASK_ID` in the environment), the extension registers four tools:
+Children receive `report`, `progress`, and `ask` tools instead of delegation tools. Lifecycle events are available on `pi.events` under `subagent:*`; see [events.ts](main/events.ts) for the event contract.
 
-| Tool              | Purpose                                                                  |
-| ----------------- | ------------------------------------------------------------------------ |
-| `subagent`        | Spawn a subagent in the background by default; deliver its report later. |
-| `subagent_steer`  | Send a steering message to a running subagent.                           |
-| `subagent_cancel` | Cancel a running subagent (graceful, then SIGTERM, then SIGKILL).        |
-| `subagent_status` | List active/recent completed tasks or retrieve a task's full report.     |
+`background` defaults to `true`. Set `background: false` only when the user explicitly requests synchronous execution. Continue independent work or yield the turn; do not busy-poll. Sequential campaigns can launch one background worker at a time. Overlap only independent work and avoid concurrent writes to shared files.
 
-When loaded in sub mode (env vars set by the spawner), the extension registers three tools:
+The controller owns child lifetime: session shutdown cancels unfinished tasks. A one-shot `pi -p` controller must stay alive until completion or its caller must explicitly request synchronous delegation. Background dispatch alone does not keep it alive.
 
-| Tool       | Purpose                                                      |
-| ---------- | ------------------------------------------------------------ |
-| `report`   | Send a structured report to the main agent.                  |
-| `progress` | Send a short status update to the main agent.                |
-| `ask`      | Ask the main agent (or watching user) a clarifying question. |
+Each child inherits the controller's provider, model, thinking level, environment, sandbox, and proxy lifetime at dispatch. Later model changes affect future children only. Children do not rerun launch wrappers, acquire independent proxy leases, or escape the controller's restrictions.
 
-It also emits lifecycle events on `pi.events`: `subagent:spawned`, `subagent:connected`, `subagent:progress`, `subagent:report`, `subagent:finalizing`, `subagent:asked`, `subagent:answered`, `subagent:steered`, `subagent:done`, `subagent:failed`. The namespace is singular to coexist with `@tintinweb/pi-subagents`' plural `subagents:*` namespace.
-
-## Execution mode
-
-`background` defaults to `true`: the tool returns a task handle after connection, and completion arrives later. Set `background: false` only when the user explicitly requests synchronous execution. Needing the report for a subsequent step is not a reason to block the conversation. Continue independent work or yield the turn; do not busy-poll for completion.
-
-Background execution and concurrent scheduling are independent. A sequential campaign can launch one background worker at a time, starting the next after completion while leaving the conversation available. Overlap only independent work and avoid concurrent writes to shared files.
-
-This default also applies to headless controllers; there is no mode-dependent synchronous fallback. A one-shot `pi -p` controller cancels unfinished children when it exits. Its caller must keep the session alive until completion or explicitly request synchronous delegation (`background: false`); otherwise, avoid delegation. Background dispatch results include a reminder of this lifetime constraint.
-
-## Model selection
-
-Each subagent inherits the main agent's active provider, model, and thinking level at dispatch time, passed explicitly via `--provider`, `--model`, and `--thinking`. Changing the main agent's settings affects subsequent spawns, not already-running subagents. If the main context has no model, the child uses Pi's normal model selection. Pi may clamp thinking to the selected model's supported levels; exact child-side verification is part of the planned state handoff.
-
-Extensions can opt into small, namespaced JSON snapshots using the [shared state helper](../lib/README.md#subagent-state). Snapshots are collected synchronously at dispatch and passed through the child's environment, not persisted in launch artifacts or sent through prompts or the bus. There is no live synchronization: later parent changes affect future children only. OCR uses this to share session approval with subsequently launched children; its extension must still be loaded and allowed by the agent's tool configuration. This is cooperative workflow state, not authenticated authorization.
-
-## Runtime and inherited environment
-
-Subagents invoke the controlling process's interpreter and canonical installed Pi CLI with `-p`, with file-backed stdin and stdout/stderr redirected to private task logs. The entrypoint must match the Pi package's declared CLI; runtime identification or execution failure stops launch without a PATH fallback. Installed Node/Bun CLI distributions are supported; SDK hosts, source entrypoints not declared in the package manifest, and standalone compiled binaries are not supported by this resolver.
-
-Children persist their Pi session under `$PI_CODING_AGENT_DIR/subagent-sessions/<task_id>/` (default `~/.pi/agent/subagent-sessions/<task_id>/`) via an explicit `--session-dir`, overriding inherited session-directory settings. Only transcripts use this durable location; other task artifacts still follow `XDG_STATE_HOME`. Failure to create the transcript directory stops launch without falling back to temporary storage. These transcripts retain model usage, messages, and tool calls/results without entering the normal `--resume` or `/resume` listings. The wrapper sets `umask 077` so newly created session files and other child-created files are private; the session directory has mode `0700`. `/total-cost` scans these transcripts separately from interactive sessions. The transcripts can contain sensitive prompts, file contents, and command output; they are retained independently of task artifacts, not uploaded automatically. Opening one explicitly with `pi --session <path-to-jsonl>` remains possible.
-
-The initial Bash process starts with stdin ignored; its final `exec` redirects stdin from the existing private `task.txt` (mode `0600`). Task contents are not included in argv or the generated wrapper, avoiding command-line argument-size constraints. The regular file supplies EOF naturally, without a writer pipe to close. It remains available with the other diagnostic artifacts after exit. Missing or unreadable task input fails before the selected runtime executes, with diagnostics retained in stderr and no transport fallback.
-
-The file and stdin transport preserve the task's UTF-8 bytes, but Pi trims leading and trailing whitespace when constructing the initial user message. This differs from the old shell command substitution, which stripped only trailing newlines. Empty or whitespace-only tasks are rejected before tool setup or spawning; nonblank task files retain their original whitespace. Option-like and `@file`-like task text stays message data, not CLI arguments or implicit file inclusion.
-
-Direct children inherit the controller's environment and OS sandbox, even though each child has its own process group. A sandboxed controller produces sandboxed children; an unsandboxed controller produces unsandboxed children. Children do not rerun nono or proxy bootstrap wrappers, obtain independent proxy leases, or escape the parent's restrictions. The parent wrapper must authorize the task-specific socket subtree, task files, worktree paths, and installed runtime. No tmux socket grant or additional wrapper execution grant is needed.
-
-Both sandboxed and `pi-naked` children share the controller's proxy environment and lease lifetime. The controller owns their lifetime and cancels them at shutdown; a background subagent is not an independently leased session. Proxy access cannot be revoked separately for one child through this shared transport. Only explicitly registered extension snapshots are forwarded; ordinary environment inheritance alone does not transfer an extension's in-memory state. Start a fresh updated controller after changing these wrappers or the extension; old tmux-based controllers do not provide these inheritance guarantees.
-
-### Socket placement
-
-Set `PI_SUBAGENT_SOCKET_ROOT` to an existing, absolute, user-owned private directory (0700). The launcher must create it before sandbox startup and authorize socket bind/connect beneath it. Dotfiles commit `5a97ebeb0017` supplies `$TMPDIR/pi-sockets` and nono's `filesystem.unix_socket_subtree_bind` grant. The extension allocates a unique private `p-XXXXXX` directory there and uses `s` as the socket filename. An explicitly configured invalid, inaccessible, or overlong root fails without falling back elsewhere.
-
-Without that variable, unsandboxed and Linux launches allocate private per-task directories directly under the OS temporary directory. Paths are checked in UTF-8 bytes before bind/connect: at most 103 bytes on macOS (and conservatively on other POSIX systems), or 107 on Linux, reserving space for the terminating NUL. Choose a shorter permitted root if even this path is too long; artifact paths do not need shortening.
-
-`PI_SUBAGENT_SOCKET_PATH` carries the exact allocated path to the child. The child does not derive it from its root or state directory, and rejects missing or invalid bootstrap paths before submitting a model request. `PI_SUBAGENT_BUS_DIR` still names the retained artifact directory. Closing the controller's transport removes its socket directory; launch failures also clean up that allocation. Cleanup is nonrecursive, verifies the allocated directory's identity, and never removes the shared root. Unexpected contents or cleanup failures are reported rather than removed recursively. Abrupt controller death such as SIGKILL can leave an orphaned socket directory; disk history does not authorize sweeping other allocations.
-
-### Wrapper smoke test
-
-Run `node pi/extensions/subagent/tests/sandbox-smoke.mjs /absolute/path/to/bin/pi` explicitly (or pass `bin/pi-naked` for an unsandboxed controller). It uses an isolated temporary Pi configuration and a deterministic provider, with no paid model calls. Only the controller uses the real wrapper; the test checks that its direct child uses the same installed runtime and socket root, plus progress/clarification/report delivery, process-group exit, socket cleanup, and retained results. Logs and task artifacts are kept for diagnosis. It does not alter sandbox permissions or substitute a runtime after failure; it does not itself test sandbox denial or proxy endpoint access.
-
-The initial recursive-wrapper macOS smoke bound the socket successfully but failed at child wrapper access, then at nested nono policy reconstruction. Direct inherited children avoid that bootstrap. Subsequent manual macOS checks passed scout execution, worker commit retention, cancellation, denied access, and normal controller shutdown with a child and tool descendant. The retained worker branch, commit contents, saved result, and absent worktree directory/registration were independently checked. Forced SIGKILL/crash recovery and the broader sandboxed linked-worktree/subdirectory matrix remain unverified.
-
-Children exit after their task settles. A successfully sent final `report` (`final: true`, the default) requests skipping the automatic follow-up model turn; the child need not restate its report in a final assistant message. Call final reports directly and on their own: Pi only skips the follow-up when every tool in the batch requests termination, and explicit extension continuations can still run. Interim reports (`final: false`) continue normally. This does not bypass settlement, process exit, result retention, or cleanup. Cancellation sends a bus message, then escalates to SIGTERM/SIGKILL for the child process group if needed. Completion waits for process exit before finalizing worktrees. Controlling-session shutdown cancels remaining children.
+Extensions can opt into [spawn-time state snapshots](../lib/README.md#subagent-state). OCR approval is inherited by subsequently launched children when OCR is loaded and allowed by their tool configuration; later approval or revocation does not reach existing children. This is cooperative workflow state, not authenticated authorization.
 
 ## Default agents
 
-The extension ships six agent personalities under `agents/`. They are discovered from `~/.pi/agent/agents/` (user) and `<repo>/.pi/agents/` (project) once symlinked.
+| Agent       | Use case                                       | Worktree | ask_policy |
+| ----------- | ---------------------------------------------- | -------- | ---------- |
+| `scout`     | Read-only reconnaissance                       | false    | human      |
+| `linter`    | Run linter, report findings                    | false    | human      |
+| `tester`    | Run tests, report failures                     | false    | human      |
+| `reviewer`  | Review code, report concerns                   | false    | human      |
+| `formatter` | Run formatter, write changes, report           | false    | human      |
+| `worker`    | Implement scoped change, commit, report branch | true     | deny       |
 
-| Agent       | Use case                                       | Tools                                             | Worktree | ask_policy |
-| ----------- | ---------------------------------------------- | ------------------------------------------------- | -------- | ---------- |
-| `scout`     | Read-only recon                                | read, grep, find, ls, bash, codemode              | false    | (human)    |
-| `linter`    | Run linter, report findings                    | read, grep, find, ls, bash, codemode              | false    | (human)    |
-| `tester`    | Run tests, report failures                     | read, grep, find, ls, bash, codemode              | false    | (human)    |
-| `reviewer`  | Review code, report concerns                   | read, grep, find, ls, bash, codemode              | false    | (human)    |
-| `formatter` | Run formatter, write changes, report           | read, write, edit, grep, find, ls, bash, codemode | false    | (human)    |
-| `worker`    | Implement scoped change, commit, report branch | read, write, edit, grep, find, ls, bash, codemode | true     | deny       |
-
-Parenthesised values mean the agent file does not set the field explicitly and the global default applies. You can override any of these by adding a `.md` file with the same name under `<repo>/.pi/agents/` (project) or `~/.pi/agent/agents/` (user; the symlinks above target the shipped versions).
-
-All bundled agents explicitly enable `codemode` for batching independent tool calls and filtering results. Their guidance preserves failure details and avoids parallel operations that share mutable state. The agent's `tools` list replaces Pi's default tool selection via `--tools`; enabling a tool in top-level defaults does not add it to an agent's explicit list.
+See [agents/](agents/) for tool lists and instructions. Prompt restrictions such as "read-only" are not enforced bash denylists. Workers commit even with `worktree: false`; use the main agent or a custom non-committing agent for edits without commits.
 
 ## Agent frontmatter
 
-Agent `.md` files start with YAML-ish frontmatter:
+Agent files contain frontmatter followed by a system prompt:
 
-| Field              | Required | Values                             | Notes                                                                                                                              |
-| ------------------ | -------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `description`      | yes      | string                             | One-line summary surfaced to the main agent.                                                                                       |
-| `tools`            | yes      | comma-separated list               | Allowed tools (in addition to the runtime bus tools `report`, `progress`, `ask`).                                                  |
-| `disallowed_tools` | no       | comma-separated list               | Explicit denylist.                                                                                                                 |
-| `worktree`         | no       | `true` / `false` (default `false`) | Provision an isolated git worktree (case-2 isolation).                                                                             |
-| `ask_policy`       | no       | `human` (default), `deny`, `llm`   | How to answer the subagent's `ask` envelopes. Per-call argument to the `subagent` tool overrides this. See the skill for guidance. |
+| Field              | Required | Meaning                                                                |
+| ------------------ | -------- | ---------------------------------------------------------------------- |
+| `description`      | yes      | One-line summary surfaced to the main agent.                           |
+| `tools`            | yes      | Comma-separated tool list, plus mandatory `report`, `progress`, `ask`. |
+| `disallowed_tools` | no       | Comma-separated denylist; cannot exclude mandatory bus tools.          |
+| `worktree`         | no       | Isolated git worktree; defaults to `false`.                            |
+| `ask_policy`       | no       | `human` (default), `deny`, or `llm`.                                   |
 
-Per-call `worktree` and `ask_policy` arguments override agent frontmatter. Retired `placement` and `close_on_success` fields in existing agent files are ignored; neither is a tool parameter anymore. All children exit on completion, while logs are retained regardless of success. `disallowed_tools` is passed through Pi's `--exclude-tools`; excluding mandatory bus tools is rejected.
+The `tools` list replaces Pi's default tool selection; top-level defaults do not add tools to it. Per-call `worktree` and `ask_policy` arguments override frontmatter.
 
-## Where state lives
+`human` prompts the user; `deny` tells the child to make a reasonable assumption; `llm` consults the controller's model at extra token cost. After 10 successful LLM answers, the next question goes to the user, then the budget resets. Unavailable LLM answers or dismissed/unavailable escalation prompts fall back to `deny`.
 
-Per-task state lives at `${XDG_STATE_HOME:-~/.local/state}/pi/subagent/<task_id>/`:
+## Sandbox setup
 
-- `meta.json`: task metadata (status, pids, inherited model/thinking, exit code/signal, started/ended timestamps)
-- `result.json`: full final result, written atomically with mode `0600` after finalization; retained across sessions
-- `bus.jsonl`: append-only audit log of every envelope in both directions
-- `system-prompt.md`: the rendered system prompt the subagent was given
-- `task.txt` / `run.sh`: wrapper artifacts written by the spawner
-- `stdout.log` / `stderr.log`: child output and diagnostics (mode `0600`)
-- `worktree`: symlink to the isolated worktree, when `worktree: true`
+Authorize the installed runtime, task files, transcript directory, worktree paths (including shared Git metadata), and socket subtree before starting the controller. Policy changes require a new sandbox process, not just `/reload`.
 
-Session transcripts live separately under `$PI_CODING_AGENT_DIR/subagent-sessions/<task_id>/` (default `~/.pi/agent/subagent-sessions/<task_id>/`), with directory mode `0700` and file mode `0600`. A launch that fails before any conversation may leave no transcript. Sandboxes must grant read/write access to this subtree, not the entire agent directory; sockets remain under their separate temporary root. Policy changes require a new sandbox process, not just `/reload`.
+Set `PI_SUBAGENT_SOCKET_ROOT` to an existing, absolute, user-owned private directory (mode `0700`), and authorize socket bind/connect beneath it. An invalid or overlong configured root fails without fallback. Without an override, unsandboxed and Linux launches use the OS temporary directory. If socket paths exceed platform limits, choose a shorter permitted root. Abrupt controller death can leave orphaned socket directories.
 
-On session start, stale entries whose recorded pids are gone are marked `crashed` automatically.
+For a wrapper smoke test, run `node pi/extensions/subagent/tests/sandbox-smoke.mjs /absolute/path/to/bin/pi` from the repository root (or supply your unsandboxed wrapper). It uses a deterministic provider without paid model calls and retains diagnostic artifacts. It does not test sandbox denial or proxy endpoint access; forced-crash recovery and the sandboxed linked-worktree/subdirectory matrix remain unverified.
 
-## Results and completed-task history
+## State and inspection
 
-Synchronous final tool results and per-task `subagent_status` responses include model-visible status, full task ID, artifact paths, worktree outcome, and the full `finalReport`: summary, findings, branch/commits, and arbitrary `data`. Background completion messages are short digests with a task ID and result path; retrieve the full report with `subagent_status` if the finalized result has not already been observed. If saving fails, the completion message still carries the full bounded result so finalization details are not lost. The UI's `details` object is not the model-facing interface. Task-specific deliverables can live under `finalReport.data`, not just `summary`.
+Task artifacts live at `${XDG_STATE_HOME:-~/.local/state}/pi/subagent/<task_id>/`. Useful files include `result.json` (saved result), `bus.jsonl` (communication log), `stdout.log`, `stderr.log`, and the child's prompt/task inputs. Use `tail -F` on logs for inspection outside Pi; there is no interactive child TUI. Stale tasks whose recorded processes are gone are marked `crashed` on session start.
 
-Large results produce an explicitly marked preview (32,000 characters of result data plus identity/path information) and a path to the full saved result. If persistence fails, the result still includes the report and a diagnostic; the audit log remains the fallback inspection surface.
+Durable transcripts live separately under `$PI_CODING_AGENT_DIR/subagent-sessions/<task_id>/` (default `~/.pi/agent/subagent-sessions/<task_id>/`). They contain potentially sensitive messages and tool output, use private permissions, and are not uploaded automatically. Grant sandbox access to this subtree, not the entire agent directory. Transcripts are excluded from normal resume listings but can be opened with `pi --session <path-to-jsonl>`.
 
-`subagent_status` without arguments lists this controller's active tasks and ten recent completed tasks from the local state directory, including previous sessions. `limit` selects 0 to 50 completed tasks; 0 means active only. Listings provide IDs, brief summaries, and paths. `subagent_status({task_id: "..."})` retrieves the full result for an active or completed task. Older tasks without a saved result can recover their report from the audit log; missing/corrupt artifacts produce an explicit diagnostic rather than hiding the task. Pruning task directories removes their status/report history, but leaves durable transcripts and their `/total-cost` contributions intact. Deleting the durable transcripts removes those costs. Older transcripts under task-local `sessions/` directories are not migrated automatically and no longer contribute to `/total-cost` until explicitly migrated. Sessions from earlier `--no-session` runs cannot be reconstructed from the bus log.
+`subagent_status` lists active tasks and ten recent completed tasks, including previous sessions. `limit` accepts 0-50; 0 lists active tasks only. Supply `task_id` for the full report. Large results return a marked preview and a path to the complete saved result; storage/retrieval failures are reported explicitly.
 
-### Lifecycle, task fulfillment, and evidence
+Deleting task directories removes report history but not transcripts or their `/total-cost` contributions. Deleting transcripts removes those costs. Older task-local transcripts require explicit migration to the durable directory to contribute; ephemeral runs cannot be reconstructed from bus logs.
 
-`status` describes the harness lifecycle, not whether the request was fulfilled. After child settlement it remains `finalizing` until commit retention, cleanup, and result handling finish. `finalized: false` marks provisional results; a child's `final: true` report is not a controller completion notification.
+## Interpreting results
 
-Children can report `outcome` as `completed`, `partial`, `blocked`, `declined`, `failed`, or `unknown`, with a descriptive `summary`, `remaining`, `blockers`, `artifacts`, and `verification`. Final tool results expose that claim as `taskOutcome` alongside a human-readable `resultDescription`. Missing outcomes are `unknown`; neither a zero exit code nor prose is converted into a completion claim. `execution` records child completion/exit separately, so a reported completed task can still have a failed harness lifecycle when retention fails.
+`status` describes the harness lifecycle, not task fulfillment: `ok` alone does not mean the request was fulfilled. Use `taskOutcome`, `resultDescription`, `remaining`, and `blockers` to understand what was delivered. Only controller-finalized results are authoritative about retention and cleanup; a child's final report is still provisional until then.
 
-Artifacts have `kind`, `location`, and optional `description`. Verification entries have `check`, `result` (`passed`, `failed`, or `not_run`), and optional `details`. Results separate `artifacts.reported` from `artifacts.retained`, and `verification.reported` from `verification.harness`. The controller verifies process completion, Git inventory, branch retention, and worktree cleanup; it does not independently rerun the child's checks. A completed testing task can legitimately report failing tests. Saved snapshots retain the raw `details` and derived `result` description.
+Results distinguish child-reported artifacts/checks from harness-observed retention and cleanup. The harness does not independently rerun the child's checks. Inspect `finalReport.data` as well as the summary; it can hold the actual deliverable. See the [skill](../../skills/subagent/SKILL.md#reading-the-report) for report-handling guidance.
 
-Background progress and reports remain available through lifecycle events, the progress widget, task logs, and explicit status inspection; they do not inject provisional report messages or trigger model turns. Clarification requests still follow `ask_policy` immediately. Only controller-finalized completion notifies the main model, with a bounded result description, lifecycle/outcome, retained branch or preserved path when available, and a retrieval pointer. Saved-result digests do not repeat the full artifacts and verification tables.
-
-Completion delivery is session-local and deduplicated per task. While the controller is busy, notices stay in an extension-owned queue until a turn or pre-settlement boundary; pending completions share one hidden custom message and request one continuation. A per-task `subagent_status` retrieval of the finalized saved result suppresses its pending notice. Listings, interim reports, and legacy audit reconstructions do not count as observing the authoritative result. An idle controller receives the completion immediately. A notice already delivered to model context cannot be retracted; do not acknowledge it again if the outcome has already been handled. Hidden messages remain in session/model context without rendering a synthetic user-message bubble; the agent should summarize the substantive result once.
-
-Pending notices do not restart an aborted or failed run, and shutdown discards the queue without starting another turn. Reports remain on disk for later inspection; delivery state resets with the session.
-
-Workers remain commit-producing agents even with `worktree: false`. A no-commit request should be declined without edits and with an explicit reason; use the main agent or a custom non-committing agent instead.
-
-## Watching progress
-
-The controlling UI shows a running-task count and a compact progress widget. Synchronous calls also stream progress/report updates in the tool result. Background reports update lifecycle/UI state without conversational notifications; finalized completion reaches the model for one substantive response. `subagent_status` exposes each active task's pid and log paths.
-
-For inspection outside Pi, use `tail -F` on the task's `bus.jsonl`, `stdout.log`, or `stderr.log`. Logs remain after the child exits, including on failure. There is no interactive child TUI or attach viewer in this increment.
+Progress stays in the UI and logs; only finalized completion notifies the main model. Summarize the substantive outcome once, not each lifecycle event. Retrieve the full result when needed, not merely to acknowledge an already-handled notification.
 
 ## Worktree handling
 
-For `worktree: true` agents (case 2), the extension:
+Isolated tasks start on detached HEAD under `<source-worktree-root>/.agent-worktrees/<task_id>/`. Configure `.agent-worktrees/` in your global Git ignore file; the extension does not edit ignore settings. An empty `git branch --show-current` is expected: do not create or switch branches to "fix" it.
 
-1. Creates `<source-worktree-root>/.agent-worktrees/<task_id>/`, including when the source is itself a linked worktree. Requests from a subdirectory use that checkout's root.
-2. Records the starting commit and runs `git worktree add --detach` against that exact commit.
-3. Sets the subagent's cwd to that worktree.
-4. After the subagent exits:
-   - Detects commits since the recorded starting commit, even if the worker committed everything and left a clean checkout. Later changes to the parent's HEAD do not change that baseline.
-   - If uncommitted changes exist and the child explicitly reported `completed`: stages and commits with `subagent(<agent>): <truncated task>`. Otherwise leaves uncommitted work untouched and preserves the worktree, while still retaining any existing commits.
-   - Creates and verifies branch `subagent/<agent>/<task_id>` for committed output before removing the worktree. Existing branches are never overwritten.
-   - Only a clean checkout with no new commits is treated as a no-op.
-   - If reported commit IDs disagree with Git's detected commits, or retention/cleanup fails: reports failure and preserves the worktree when present. Detected commits and the retained branch remain visible under `worktree`; the child's original `finalReport` is not overwritten.
+After the child exits, committed output is retained on `subagent/<agent>/<task_id>` before removing the worktree. Existing branches are never overwritten. If the child explicitly reports `completed`, remaining uncommitted changes are committed by the harness; otherwise they are left untouched and the worktree is preserved. Retention or cleanup failures are reported, with preserved paths where available. The main agent decides whether to merge, open a PR, or abandon the retained branch.
 
-Configure `.agent-worktrees/` in your global Git ignore file before using isolated workers. The extension does not edit your ignore configuration. Keeping worktrees inside the source checkout avoids a sibling-directory write outside a repository-scoped sandbox grant; access to shared Git metadata and the task files/socket still needs validation, especially when the source is a linked worktree or the sandbox starts in a subdirectory.
+## Limitations and tests
 
-An isolated worker starts on detached HEAD and commits there. An empty `git branch --show-current` is expected, not a setup failure: the harness creates the retained branch after the worker exits. Do not create or switch branches merely to make that command nonempty. The branch is the artefact; the worktree directory is internal. The main agent decides whether to merge, PR, or abandon.
+- A dropped communication socket terminates the task; reconnection is not supported.
+- Children cannot recursively delegate.
+- Prompt-only restrictions are not security boundaries, and children share the controller's proxy capabilities.
 
-New results replace the ambiguous `worktree.hasChanges` with `hasCommittedChanges` (new commits since the starting commit, including any harness-created commit) and `hadUncommittedChanges` (dirty files observed at the start of finalization). These describe output history, not whether a worktree currently exists. A clean, removed checkout can have `hasCommittedChanges: true` and `hadUncommittedChanges: false`; `null` means the inventory was not established.
-
-Cleanup is independently observed during controller finalization: `worktree.cleanup.directoryRemoved` checks the directory, while `worktree.cleanup.registrationRemoved` queries Git's worktree registrations. `false` records a remaining directory/registration, including intentionally preserved work; `null` means the check could not establish the state. `execution.processExited` records an observed child exit; `execution.processGroupExited` records whether the owned process group passed the disappearance check. Exit code and signal remain separate. Missing fields in older snapshots do not prove successful cleanup, and shared-cwd tasks have no worktree cleanup object.
-
-## Files
-
-```
-pi/extensions/subagent/
-  index.ts                  # role dispatch
-  bus/
-    envelope.ts             # envelope schema + validators
-    transport-uds.ts        # UDS listen/connect with framing
-    audit-log.ts            # serialized JSONL writer
-    bus.ts                  # high-level Bus API (multi-subscriber, request/reply)
-  main/
-    agents.ts               # discovery of agent .md files
-    events.ts               # pi.events lifecycle emitters
-    registry.ts             # in-process map of active tasks
-    result.ts               # model-visible results, persistence, completed history
-    description.ts          # task fulfillment, result narrative, artifacts/evidence
-    routing.ts              # bus-to-lifecycle/UI events and background asks
-    notifications.ts        # finalized completion batching and deduplication
-    spawn.ts                # direct headless spawn, logs, process signals
-    launch.ts               # connection/startup race and failed-spawn cleanup
-    lifecycle.ts            # cancellation and bus/process outcome reconciliation
-    status.ts               # controlling-UI progress widget
-    state.ts                # state-dir layout and stale-entry reaper
-    tools.ts                # subagent, subagent_steer, subagent_cancel, subagent_status
-    worktree.ts             # git worktree lifecycle (case 2)
-  sub/
-    routing.ts              # steer/cancel/answer handlers
-    tools.ts                # report, ask, progress
-  agents/                   # bundled agent .md files
-  prompts/                  # bundled workflow prompts (e.g. /sweep)
-  tests/                    # unit + integration harnesses
-```
-
-## `ask_policy: llm` budget
-
-When a task runs with `ask_policy: llm`, each successful LLM-answered question costs one `complete()` round-trip against `ctx.model`. To bound that spend and to keep a human in the loop, the extension counts those answers and escalates to a `human` prompt every `LLM_ASK_BUDGET` answers (10, defined at the top of `main/ask.ts`). The escalation prompt shows the question and the budget context; whatever the user types becomes the answer (`source: "human-escalated"`), and the counter resets so the subagent gets another 10 LLM answers before the next check-in. If the user dismisses the prompt or no UI is available, the subagent unblocks with the deny-style reply (`source: "policy-escalated"`) and the counter still resets.
-
-The lifetime total of LLM-answered questions is surfaced as `llmAnswersTotal` on the `subagent:answered` and `subagent:done` lifecycle events for diagnostics.
-
-## Known limitations (v1)
-
-- Reconnection on a dropped UDS is not supported; a closed socket terminates the task.
-- Hard bash denylists for soft-control agents (e.g. blocking `git commit` for the `formatter`) are not enforced; the agent's system prompt is the only constraint.
-- A headless controlling `pi -p` does not keep running for background subagents; session shutdown cancels them. Keep the controller alive or explicitly request `background: false`; the default remains background even in headless mode.
-- Recursive spawning is not registered in sub mode.
-
-## Tests
-
-Run `node pi/extensions/subagent/tests/run.mjs` from the repository root. The suite covers direct process launch, cancellation escalation, failed-start cleanup, and real headless Pi parent/child execution with an in-memory test provider. The provider makes no network requests and needs no credentials. Real nono sandbox/proxy compatibility remains a separate smoke test.
+Run `node pi/extensions/subagent/tests/run.mjs` from the repository root. The suite uses an in-memory provider without network requests or credentials; real sandbox/proxy compatibility needs separate checks.
