@@ -22,4 +22,4 @@ In addition to `pi/skills/`, the `pi/` directory contains two other directories 
 
 Claude skills in this repository should be written in a way that is free of "claude-isms" (that is, patterns, tools, or assumptions that only work in Claude). They should be usable as-is from both Claude and Pi via the symlinks described above.
 
-In the rare case where a task genuinely requires a completely different approach that cannot be shared between Claude and Pi, a Pi-specific skill may be added directly under `pi/skills/` rather than as a symlink to a Claude plugin skill. If the workflow is only invoked proactively and does not need skill auto-loading, prefer a prompt template under `pi/prompts/`; the `pi-update` prompt is an example.
+In the rare case where a task genuinely requires a completely different approach that cannot be shared between Claude and Pi, a Pi-specific skill may be added directly under `pi/skills/` rather than as a symlink to a Claude plugin skill. If the workflow is only invoked proactively and does not need skill auto-loading, prefer a prompt template under `pi/prompts/`.

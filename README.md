@@ -21,9 +21,7 @@ Plugins live under [`claude/`](./claude):
 
 #### Prompt templates
 
-Pi prompt templates live under [`pi/prompts`](./pi/prompts/):
-
-- [pi-update](./pi/prompts/pi-update.md) (Pi-only): check for Pi updates, checking against installed skills, extensions, and prompts for compatibility issues.
+Pi prompt templates live under [`pi/prompts`](./pi/prompts/) (or rather, they would if we had any).
 
 #### Skills
 
