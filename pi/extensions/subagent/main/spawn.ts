@@ -42,6 +42,7 @@ export async function spawnSubagent(
   args: SpawnArgs,
   runtime: PiRuntime = runningPiRuntime(),
 ): Promise<SpawnedProcess> {
+  validateTask(args.task);
   writeFileSync(join(args.taskDir, 'task.txt'), args.task, {
     encoding: 'utf-8',
     mode: 0o600,
@@ -232,18 +233,23 @@ export function renderWrapper(
   if (denied.size > 0) {
     piArgs.push('--exclude-tools', shellQuote([...denied].join(',')));
   }
-  piArgs.push(
-    '--',
-    '"$(cat ' + shellQuote(join(args.taskDir, 'task.txt')) + ')"',
-  );
+  piArgs.push('--');
   return [
     '#!/usr/bin/env bash',
     'set -e',
     ...exports,
     `cd ${shellQuote(args.cwd)}`,
-    `exec ${command} ` + piArgs.join(' '),
+    `exec ${command} ${piArgs.join(' ')} < ${
+      shellQuote(join(args.taskDir, 'task.txt'))
+    }`,
     '',
   ].join('\n');
+}
+
+export function validateTask(task: string): void {
+  if (!task.trim()) {
+    throw new Error('Subagent task must not be empty or whitespace-only');
+  }
 }
 
 function shellQuote(value: string): string {

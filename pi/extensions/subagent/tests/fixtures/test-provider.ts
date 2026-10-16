@@ -242,13 +242,21 @@ export default function (pi: ExtensionAPI): void {
             : 'missing';
           call = {name: 'subagent_status', arguments: {task_id: taskId}};
         } else if (!isChild && current === 0) {
+          const blankTasks: Record<string, string> = {
+            'empty-task': '',
+            'whitespace-task': ' \t\r\n',
+            'unicode-whitespace-task': '\u2003\u00a0\ufeff',
+          };
           call = {
             name: 'subagent',
             arguments: {
               agent: scenario.startsWith('worker-') ? 'worker' : 'scout',
               ...(scenario === 'worker-declined' ? {worktree: false} : {}),
-              task: scenario === 'background' ||
-                  scenario === 'background-default-shutdown'
+              ...(scenario in blankTasks ? {worktree: true} : {}),
+              task: scenario in blankTasks
+                ? blankTasks[scenario]
+                : scenario === 'background' ||
+                    scenario === 'background-default-shutdown'
                 ? 'wait'
                 : scenario === 'metadata-failure'
                 ? 'ask'

@@ -44,6 +44,7 @@ import {
   taskResult,
 } from './result.js';
 import {installMainRoutingFor} from './routing.js';
+import {validateTask} from './spawn.js';
 import {
   auditLogPath,
   ensureTaskDir,
@@ -66,7 +67,9 @@ export const GRACE_TURNS = 5;
 
 const SubagentParams = Type.Object({
   agent: Type.String({description: 'Name of an agent (matches an .md file)'}),
-  task: Type.String({description: 'The task to delegate, in natural language'}),
+  task: Type.String({
+    description: 'The nonblank task to delegate, in natural language',
+  }),
   worktree: Type.Optional(
     Type.Boolean({description: 'Override the agent.md worktree default'}),
   ),
@@ -149,6 +152,7 @@ export function registerMainTools({pi}: {pi: ExtensionAPI}): void {
     ].join(' '),
     parameters: SubagentParams,
     async execute(_id, params, signal, onUpdate, ctx) {
+      validateTask(params.task);
       const combined = signal
         ? AbortSignal.any([signal, session.signal])
         : session.signal;

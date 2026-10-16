@@ -1,8 +1,8 @@
 import {spawn} from 'node:child_process';
-import {writeFileSync} from 'node:fs';
+import {readFileSync, writeFileSync} from 'node:fs';
 import {createConnection} from 'node:net';
 
-const mode = process.argv.at(-1);
+const mode = readFileSync(0, 'utf8').trim();
 writeFileSync(`${process.env.PI_SUBAGENT_BUS_DIR}/pid`, String(process.pid));
 writeFileSync(`${process.env.PI_SUBAGENT_BUS_DIR}/socket-env.json`, JSON.stringify({
   busDir: process.env.PI_SUBAGENT_BUS_DIR,

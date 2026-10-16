@@ -1,9 +1,12 @@
 import {strict as assert} from 'node:assert';
-import {execFileSync} from 'node:child_process';
+import {spawnSync} from 'node:child_process';
 import {
+  closeSync,
   existsSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -24,8 +27,10 @@ import {
   renderWrapper,
   spawnSubagent,
   terminateProcess,
+  waitForExit,
 } from '../main/spawn.js';
 import {spawnFakeChild} from './fixtures/runtime.js';
+import {stdinTasks} from './fixtures/tasks.js';
 
 function argsFor(dir: string, task = 'Inspect the code'): SpawnArgs {
   return {
@@ -40,32 +45,50 @@ function argsFor(dir: string, task = 'Inspect the code'): SpawnArgs {
   };
 }
 
-function capturePiArgs(
+async function capturePiInput(
   overrides: Partial<SpawnArgs> = {},
-): string[] {
-  const dir = mkdtempSync(join(tmpdir(), 'sa-'));
+): Promise<{args: string[]; stdin: Buffer}> {
+  const dir = mkdtempSync(join(tmpdir(), "sa task's "));
+  const previousPath = process.env.PATH;
+  let child: SpawnedProcess | undefined;
   try {
     writeFileSync(
       join(dir, "Pi runtime's executable"),
-      '#!/bin/sh\nprintf \'%s\\0\' "$@"\n',
+      '#!/bin/sh\numask 077\nprintf \'%s\\0\' "$@"\ncat > "$PI_SUBAGENT_BUS_DIR/stdin"\n',
       {mode: 0o700},
     );
     writeFileSync(join(dir, 'pi'), '#!/bin/sh\nexit 93\n', {mode: 0o700});
+    process.env.PATH = `${dir}:${previousPath}`;
     const args = {...argsFor(dir), ...overrides};
-    writeFileSync(join(dir, 'task.txt'), args.task);
-    const wrapperPath = join(dir, 'run.sh');
-    writeFileSync(
-      wrapperPath,
-      renderWrapper(args, {
-        executable: join(dir, "Pi runtime's executable"),
-        args: [],
-      }),
+    child = await spawnSubagent(args, {
+      executable: join(dir, "Pi runtime's executable"),
+      args: [],
+    });
+    assert.equal(
+      (await waitForExit(child, 3_000))?.code,
+      0,
+      readFileSync(child.stderrPath, 'utf8'),
     );
-    return execFileSync('bash', [wrapperPath], {
-      encoding: 'utf-8',
-      env: {...process.env, PATH: `${dir}:${process.env.PATH}`},
-    }).split('\0').slice(0, -1);
+    const argv = readFileSync(child.stdoutPath, 'utf8').split('\0').slice(
+      0,
+      -1,
+    );
+    const stdin = readFileSync(join(dir, 'stdin'));
+    assert.deepEqual(stdin, Buffer.from(args.task, 'utf8'));
+    assert.deepEqual(readFileSync(join(dir, 'task.txt')), stdin);
+    assert.ok(!argv.some((arg) => arg.includes(args.task)));
+    assert.ok(!readFileSync(join(dir, 'run.sh'), 'utf8').includes(args.task));
+    assert.equal(argv.at(-1), '--');
+    assert.equal(statSync(join(dir, 'run.sh')).mode & 0o777, 0o700);
+    for (const name of ['stdout.log', 'stderr.log', 'task.txt']) {
+      assert.equal(statSync(join(dir, name)).mode & 0o777, 0o600);
+    }
+    return {args: argv, stdin};
   } finally {
+    if (child) {
+      await terminateProcess(child, 0, 100);
+    }
+    restoreEnv('PATH', previousPath);
     rmSync(dir, {recursive: true, force: true});
   }
 }
@@ -78,8 +101,8 @@ function restoreEnv(key: string, value: string | undefined): void {
   }
 }
 
-test('wrapper passes the exact model and thinking level in headless mode', () => {
-  const args = capturePiArgs({
+test('wrapper passes the exact model and thinking level in headless mode', async () => {
+  const {args} = await capturePiInput({
     model: {provider: 'openai-codex', id: 'gpt-6-astra'},
     thinkingLevel: 'high',
   });
@@ -95,7 +118,7 @@ test('wrapper passes the exact model and thinking level in headless mode', () =>
     ],
   );
   assert.equal(args[0], '-p');
-  assert.equal(args.at(-1), 'Inspect the code');
+  assert.equal(args.at(-1), '--');
   assert.equal(
     args[args.indexOf('--tools') + 1],
     'read,bash,report,progress,ask',
@@ -103,35 +126,123 @@ test('wrapper passes the exact model and thinking level in headless mode', () =>
   assert.ok(args.includes('--no-session'));
 });
 
-test('wrapper preserves shell metacharacters and option-like prompts', () => {
+test('wrapper preserves shell metacharacters and option-like prompts', async () => {
   const model = {
     provider: "custom provider's $(echo unsafe)",
     id: "org/model's name:tag; `echo unsafe` $HOME",
   };
-  const args = capturePiArgs({model, task: '--model unwanted; $(echo unsafe)'});
+  const task = '--model unwanted; $(echo unsafe)';
+  const {args, stdin} = await capturePiInput({model, task});
   assert.equal(args[args.indexOf('--provider') + 1], model.provider);
   assert.equal(args[args.indexOf('--model') + 1], model.id);
-  assert.deepEqual(args.slice(-2), ['--', '--model unwanted; $(echo unsafe)']);
+  assert.equal(args.at(-1), '--');
+  assert.equal(stdin.toString('utf8'), task);
 });
 
-test('wrapper leaves model selection to Pi if no model is provided', () => {
-  const args = capturePiArgs();
+test('wrapper leaves model selection to Pi if no model is provided', async () => {
+  const {args} = await capturePiInput();
   assert.ok(!args.includes('--provider'));
   assert.ok(!args.includes('--model'));
 });
 
-test('wrapper quotes the selected executable and ignores PATH shims', () => {
-  assert.equal(capturePiArgs().at(-1), 'Inspect the code');
-});
-
-test('wrapper applies the denylist without excluding runtime bus tools', () => {
-  const args = capturePiArgs({disallowedTools: ['bash']});
-  assert.equal(args[args.indexOf('--exclude-tools') + 1], 'bash');
-  assert.throws(
-    () => capturePiArgs({disallowedTools: ['report']}),
-    /must not exclude/,
+test('wrapper quotes executable and task paths and ignores PATH shims', async () => {
+  assert.equal(
+    (await capturePiInput()).stdin.toString('utf8'),
+    'Inspect the code',
   );
 });
+
+test('wrapper applies the denylist without excluding runtime bus tools', async () => {
+  const {args} = await capturePiInput({disallowedTools: ['bash']});
+  assert.equal(args[args.indexOf('--exclude-tools') + 1], 'bash');
+  for (const name of ['report', 'progress', 'ask']) {
+    await assert.rejects(
+      capturePiInput({disallowedTools: [name]}),
+      /must not exclude/,
+    );
+  }
+});
+
+for (const {scenario, task} of stdinTasks) {
+  test(`file-backed stdin preserves exact bytes through EOF: ${scenario}`, {
+    timeout: 5_000,
+  }, async () => {
+    await capturePiInput({task});
+  });
+}
+
+for (const task of ['', ' \t\r\n', '\u2003\u00a0\ufeff']) {
+  test(`blank task is rejected before writing or spawning: ${JSON.stringify(task)}`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sa-'));
+    try {
+      await assert.rejects(
+        spawnSubagent(argsFor(dir, task), {
+          executable: join(dir, 'must-not-run'),
+          args: [],
+        }),
+        /task must not be empty or whitespace-only/,
+      );
+      assert.deepEqual(readdirSync(dir), []);
+    } finally {
+      rmSync(dir, {recursive: true, force: true});
+    }
+  });
+}
+
+for (const failure of ['missing', 'unreadable']) {
+  test(
+    `${failure} task file fails before runtime execution and retains stderr`,
+    {
+      skip: failure === 'unreadable' && process.getuid?.() === 0
+        ? 'root can read files regardless of mode bits'
+        : false,
+    },
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "sa task's "));
+      const fds: number[] = [];
+      try {
+        const runtimePath = join(dir, 'runtime');
+        writeFileSync(
+          runtimePath,
+          '#!/bin/sh\ntouch "$PI_SUBAGENT_BUS_DIR/invoked"\n',
+          {mode: 0o700},
+        );
+        const wrapperPath = join(dir, 'run.sh');
+        writeFileSync(
+          wrapperPath,
+          renderWrapper(argsFor(dir), {executable: runtimePath, args: []}),
+        );
+        // Exercise the retained wrapper's redirection failure without a spawn race.
+        if (failure === 'unreadable') {
+          writeFileSync(join(dir, 'task.txt'), 'Inspect the code', {
+            mode: 0o000,
+          });
+        }
+        const stderrPath = join(dir, 'stderr.log');
+        fds.push(openSync(join(dir, 'stdout.log'), 'a', 0o600));
+        fds.push(openSync(stderrPath, 'a', 0o600));
+        const result = spawnSync('bash', [wrapperPath], {
+          stdio: ['ignore', fds[0], fds[1]],
+          timeout: 3_000,
+        });
+        assert.equal(result.error, undefined);
+        assert.equal(result.status, 1);
+        assert.match(
+          readFileSync(stderrPath, 'utf8'),
+          failure === 'missing'
+            ? /task\.txt.*No such file/
+            : /task\.txt.*Permission denied/,
+        );
+        assert.ok(!existsSync(join(dir, 'invoked')));
+      } finally {
+        for (const fd of fds) {
+          closeSync(fd);
+        }
+        rmSync(dir, {recursive: true, force: true});
+      }
+    },
+  );
+}
 
 async function withChild(
   mode: string,

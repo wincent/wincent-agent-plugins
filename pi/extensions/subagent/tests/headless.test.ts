@@ -21,6 +21,7 @@ import type {Envelope} from '../bus/envelope.js';
 import {launchSubagent} from '../main/launch.js';
 import {readTaskResult, resultText} from '../main/result.js';
 import {spawnSubagent, terminateProcess, waitForExit} from '../main/spawn.js';
+import {stdinTasks} from './fixtures/tasks.js';
 
 // Match locatePiPackage(): prefer the explicit real executable, never PATH.
 const entry = realpathSync(
@@ -98,7 +99,15 @@ function setup() {
 }
 
 for (
-  const scenario of ['ask', 'continuation', 'failure', 'cancel', 'disconnect']
+  const {scenario, task} of [
+    ...['ask', 'continuation', 'failure', 'cancel', 'disconnect'].map((
+      scenario,
+    ) => ({
+      scenario,
+      task: scenario,
+    })),
+    ...stdinTasks,
+  ]
 ) {
   test(`real headless Pi: ${scenario}`, {timeout: 30_000}, async () => {
     const {dir, cleanup} = setup();
@@ -111,7 +120,7 @@ for (
           taskDir: dir,
           parentId: 'test_parent',
           cwd: dir,
-          task: scenario,
+          task,
           model,
           thinkingLevel: 'high',
           toolsWhitelist: [],
@@ -158,6 +167,12 @@ for (
         socketPath: launched.socketPath,
         busDir: dir,
       });
+      const requests = readFileSync(join(dir, 'requests.jsonl'), 'utf8');
+      const initial = JSON.parse(requests.split('\n')[0]).messages.find(
+        (message: {role: string}) => message.role === 'user',
+      );
+      assert.deepEqual(initial.content, [{type: 'text', text: task.trim()}]);
+      assert.equal(readFileSync(join(dir, 'task.txt'), 'utf8'), task);
       const done = received.filter((env) => env.type === 'done');
       if (scenario === 'disconnect') {
         assert.ok(!received.some((env) => env.type === 'report'));
@@ -173,7 +188,10 @@ for (
           stderr,
         );
       }
-      if (scenario === 'ask' || scenario === 'continuation') {
+      if (
+        scenario === 'ask' || scenario === 'continuation' ||
+        scenario.startsWith('stdin-')
+      ) {
         assert.equal(exit.code, 0, stderr);
         assert.ok(received.some((env) => env.type === 'progress'));
         assert.ok(received.some((env) => env.type === 'report'));
@@ -190,6 +208,33 @@ for (
         await terminateProcess(launched.process, 0, 500);
       }
       await bus?.close();
+      cleanup();
+    }
+  });
+}
+
+for (
+  const scenario of ['empty-task', 'whitespace-task', 'unicode-whitespace-task']
+) {
+  test(`real controller rejects ${scenario} before creating task or worktree`, {
+    timeout: 30_000,
+  }, async () => {
+    const {dir, cleanup} = setup();
+    try {
+      await runController(dir, scenario);
+      const requests = readFileSync(join(dir, 'requests.jsonl'), 'utf8');
+      const results = toolTexts(requests, 'subagent');
+      assert.equal(results.length, 1);
+      assert.match(results[0], /task must not be empty or whitespace-only/);
+      const lastRequest = JSON.parse(requests.trim().split('\n').at(-1)!);
+      const result = lastRequest.messages.find((
+        message: {role: string; toolName?: string},
+      ) => message.role === 'toolResult' && message.toolName === 'subagent');
+      assert.equal(result.isError, true);
+      const root = join(dir, 'pi', 'subagent');
+      assert.deepEqual(existsSync(root) ? readdirSync(root) : [], []);
+      assert.ok(!existsSync(join(dir, '.agent-worktrees')));
+    } finally {
       cleanup();
     }
   });
