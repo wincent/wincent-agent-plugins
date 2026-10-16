@@ -52,10 +52,17 @@ function toolResult(cost, timestamp, extra = {}) {
   };
 }
 
-async function report(t, files, args = '', context = {hasUI: false}) {
+async function report(t, files, args = '', context = {hasUI: false}, options = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'total-cost-test-'));
-  const previousDir = process.env.PI_CODING_AGENT_DIR;
+  const previous = Object.fromEntries(['PI_CODING_AGENT_DIR', 'XDG_STATE_HOME', 'HOME'].map((key) => [key, process.env[key]]));
+  const stateDir = options.defaultState ? join(dir, '.local', 'state') : join(dir, 'state');
   process.env.PI_CODING_AGENT_DIR = dir;
+  if (options.defaultState) {
+    process.env.HOME = dir;
+    delete process.env.XDG_STATE_HOME;
+  } else {
+    process.env.XDG_STATE_HOME = stateDir;
+  }
   try {
     const project = join(dir, 'sessions', 'project');
     await mkdir(project, {recursive: true});
@@ -66,6 +73,13 @@ async function report(t, files, args = '', context = {hasUI: false}) {
           '\n{broken\n',
       );
     }
+    const subagentRoot = join(stateDir, 'pi', 'subagent');
+    for (const [index, entries] of (options.subagentFiles ?? []).entries()) {
+      const sessions = join(subagentRoot, `task_${index}`, 'sessions');
+      await mkdir(sessions, {recursive: true});
+      await writeFile(join(sessions, 'child.jsonl'), entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n{partial');
+    }
+    await options.setup?.({dir, project, subagentRoot});
     let handler;
     extension({
       registerCommand(name, command) {
@@ -79,10 +93,9 @@ async function report(t, files, args = '', context = {hasUI: false}) {
     await handler(args, context);
     return output.join('\n');
   } finally {
-    if (previousDir === undefined) {
-      delete process.env.PI_CODING_AGENT_DIR;
-    } else {
-      process.env.PI_CODING_AGENT_DIR = previousDir;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
     await rm(dir, {recursive: true, force: true});
   }
@@ -108,6 +121,60 @@ test('counts usage by month/model/session without inflating message counts', asy
     ['2026-08', '$0.75', '-', '$0.75', '0', '1'],
     ['Total', '$4.75', '$4.00', '$0.75', '1', '2'],
   ]);
+});
+
+test('includes retained subagent messages, usage entries, and tool costs', async (t) => {
+  const output = await report(t, [[assistant('parent-model', 5, '2026-09-21')]], 'no-model-breakdown', undefined, {
+    subagentFiles: [[
+      assistant('child-model', 2, '2026-09-21'),
+      usage('child-model', 1, '2026-09-21'),
+      toolResult(0.5, '2026-09-21'),
+    ]],
+  });
+  assert.deepEqual(rows(output), [
+    ['2026-09', '$8.50', '2', '2'],
+    ['Total', '$8.50', '2', '2'],
+  ]);
+  assert.match(output, /Scanned 2 session file\(s\).*pi\/subagent\/\*\/sessions/);
+});
+
+test('child model filters and UTC months work with the default state root', async (t) => {
+  const output = await report(t, mixedFiles, 'worker', undefined, {
+    defaultState: true,
+    subagentFiles: [[
+      assistant('worker-model', 2, '2026-09-01T00:30:00+02:00'),
+      usage('worker-model', 0.5, '2026-09-01'),
+    ]],
+  });
+  assert.deepEqual(rows(output), [
+    ['2026-09', '$0.50', '$0.50', '0', '1'],
+    ['2026-08', '$2.00', '$2.00', '1', '1'],
+    ['Total', '$2.50', '$2.50', '1', '1'],
+  ]);
+  assert.match(output, /\.local\/state\/pi\/subagent/);
+});
+
+test('scans child sessions without parent sessions, ignoring other task artifacts', async (t) => {
+  const output = await report(t, [], '', undefined, {
+    subagentFiles: [[assistant('child', 2, '2026-09-21')]],
+    async setup({dir, subagentRoot}) {
+      await rm(join(dir, 'sessions'), {recursive: true});
+      const unrelated = JSON.stringify(assistant('not-a-session', 1000, '2026-09-21'));
+      await writeFile(join(subagentRoot, 'task_0', 'bus.jsonl'), unrelated);
+      await writeFile(join(subagentRoot, 'task_0', 'requests.jsonl'), unrelated);
+      await writeFile(join(subagentRoot, 'task_0', 'sessions', 'ignore.log'), unrelated);
+      await mkdir(join(subagentRoot, 'legacy-task'));
+      await writeFile(join(subagentRoot, 'legacy-task', 'bus.jsonl'), unrelated);
+      await writeFile(join(subagentRoot, 'not-a-directory'), unrelated);
+      await mkdir(join(subagentRoot, 'task_0', 'worktree'));
+      await writeFile(join(subagentRoot, 'task_0', 'worktree', 'other.jsonl'), unrelated);
+    },
+  });
+  assert.deepEqual(rows(output), [
+    ['2026-09', '$2.00', '$2.00', '1', '1'],
+    ['Total', '$2.00', '$2.00', '1', '1'],
+  ]);
+  assert.match(output, /Scanned 1 session file\(s\)/);
 });
 
 test('model filters retain usage-only months and omit unmatched months', async (t) => {

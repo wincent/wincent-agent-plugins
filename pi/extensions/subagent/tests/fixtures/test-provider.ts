@@ -3,7 +3,10 @@ import {
   type ToolCall,
   createAssistantMessageEventStream,
 } from '@earendil-works/pi-ai';
-import type {ExtensionAPI} from '@earendil-works/pi-coding-agent';
+import {
+  type ExtensionAPI,
+  SessionManager,
+} from '@earendil-works/pi-coding-agent';
 import {execFileSync} from 'node:child_process';
 import {
   appendFileSync,
@@ -68,6 +71,17 @@ export default function (pi: ExtensionAPI): void {
           hasUI: ctx.hasUI,
           socketPath: process.env.PI_SUBAGENT_SOCKET_PATH,
           busDir: process.env.PI_SUBAGENT_BUS_DIR,
+        }),
+      );
+    }
+  });
+  pi.on('session_shutdown', async (_event, ctx) => {
+    if (!isChild && scenario === 'session-storage') {
+      writeFileSync(
+        join(ctx.cwd, 'resume-sessions.json'),
+        JSON.stringify({
+          current: (await SessionManager.list(ctx.cwd)).map((s) => s.path),
+          all: (await SessionManager.listAll()).map((s) => s.path),
         }),
       );
     }
@@ -157,6 +171,9 @@ export default function (pi: ExtensionAPI): void {
     }],
     streamSimple(model, context, options) {
       const stream = createAssistantMessageEventStream();
+      // Synthetic accounting data only; this provider never makes a request.
+      const input = isChild && scenario === 'session-storage' ? 1 : 0;
+      const cost = input ? 0.25 : 0;
       const output: AssistantMessage = {
         role: 'assistant',
         content: [],
@@ -166,12 +183,18 @@ export default function (pi: ExtensionAPI): void {
         timestamp: Date.now(),
         stopReason: 'pending',
         usage: {
-          input: 0,
+          input,
           output: 0,
           cacheRead: 0,
           cacheWrite: 0,
-          totalTokens: 0,
-          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0},
+          totalTokens: input,
+          cost: {
+            input: cost,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            total: cost,
+          },
         },
       };
       const respond = () => {

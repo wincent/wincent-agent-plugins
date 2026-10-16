@@ -122,7 +122,7 @@ The _total_ (from `ctx.getContextUsage()`) is authoritative when a usable assist
 
 ### `total-cost.ts`
 
-Adds a `/total-cost` slash command that scans every saved Pi session under `$PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`) and shows a per-month breakdown of cumulative LLM cost, message count, and number of distinct sessions. The cost is also broken down per model, with one extra column per model (ordered by total cost, descending) in the same table:
+Adds a `/total-cost` slash command that scans saved Pi sessions under `$PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`) plus retained subagent transcripts under `${XDG_STATE_HOME:-~/.local/state}/pi/subagent/<task_id>/sessions/`. It shows a per-month breakdown of cumulative LLM cost, message count, and number of distinct sessions. Child sessions contribute directly under their recorded models; their costs are not rolled into parent tool results. Their separate storage keeps them out of ordinary resume listings. The scanner ignores bus logs and other task artifacts, and tolerates older tasks without transcripts. Deleted transcripts and older ephemeral (`--no-session`) runs do not contribute to totals. The cost is also broken down per model, with one extra column per model (ordered by total cost, descending) in the same table:
 
 ```
 Month       Cost  claude-opus-4-8  gpt-5.5  Messages  Sessions

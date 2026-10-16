@@ -53,6 +53,8 @@ Extensions can opt into small, namespaced JSON snapshots using the [shared state
 
 Subagents invoke the controlling process's interpreter and canonical installed Pi CLI with `-p`, with file-backed stdin and stdout/stderr redirected to private task logs. The entrypoint must match the Pi package's declared CLI; runtime identification or execution failure stops launch without a PATH fallback. Installed Node/Bun CLI distributions are supported; SDK hosts, source entrypoints not declared in the package manifest, and standalone compiled binaries are not supported by this resolver.
 
+Children persist their Pi session under the task's private `sessions/` directory via an explicit `--session-dir`, overriding inherited session-directory settings. These transcripts retain model usage, messages, and tool calls/results without entering the normal `--resume` or `/resume` listings. The wrapper sets `umask 077` so newly created session files and other child-created files are private; the session directory has mode `0700`. `/total-cost` scans these transcripts separately from interactive sessions. The transcripts can contain sensitive prompts, file contents, and command output; they are retained with the task artifacts, not uploaded automatically. Opening one explicitly with `pi --session <path-to-jsonl>` remains possible.
+
 The initial Bash process starts with stdin ignored; its final `exec` redirects stdin from the existing private `task.txt` (mode `0600`). Task contents are not included in argv or the generated wrapper, avoiding command-line argument-size constraints. The regular file supplies EOF naturally, without a writer pipe to close. It remains available with the other diagnostic artifacts after exit. Missing or unreadable task input fails before the selected runtime executes, with diagnostics retained in stderr and no transport fallback.
 
 The file and stdin transport preserve the task's UTF-8 bytes, but Pi trims leading and trailing whitespace when constructing the initial user message. This differs from the old shell command substitution, which stripped only trailing newlines. Empty or whitespace-only tasks are rejected before tool setup or spawning; nonblank task files retain their original whitespace. Option-like and `@file`-like task text stays message data, not CLI arguments or implicit file inclusion.
@@ -118,6 +120,7 @@ Per-task state lives at `${XDG_STATE_HOME:-~/.local/state}/pi/subagent/<task_id>
 - `system-prompt.md`: the rendered system prompt the subagent was given
 - `task.txt` / `run.sh`: wrapper artifacts written by the spawner
 - `stdout.log` / `stderr.log`: child output and diagnostics (mode `0600`)
+- `sessions/`: private Pi session JSONL transcripts with conversation history, tool calls/results, and usage (directory `0700`, files `0600`); a launch that fails before any conversation may leave no transcript
 - `worktree`: symlink to the isolated worktree, when `worktree: true`
 
 On session start, stale entries whose recorded pids are gone are marked `crashed` automatically.
@@ -128,7 +131,7 @@ Synchronous final tool results and per-task `subagent_status` responses include 
 
 Large results produce an explicitly marked preview (32,000 characters of result data plus identity/path information) and a path to the full saved result. If persistence fails, the result still includes the report and a diagnostic; the audit log remains the fallback inspection surface.
 
-`subagent_status` without arguments lists this controller's active tasks and ten recent completed tasks from the local state directory, including previous sessions. `limit` selects 0 to 50 completed tasks; 0 means active only. Listings provide IDs, brief summaries, and paths. `subagent_status({task_id: "..."})` retrieves the full result for an active or completed task. Older tasks without a saved result can recover their report from the audit log; missing/corrupt artifacts produce an explicit diagnostic rather than hiding the task. Pruning task directories removes their history as well.
+`subagent_status` without arguments lists this controller's active tasks and ten recent completed tasks from the local state directory, including previous sessions. `limit` selects 0 to 50 completed tasks; 0 means active only. Listings provide IDs, brief summaries, and paths. `subagent_status({task_id: "..."})` retrieves the full result for an active or completed task. Older tasks without a saved result can recover their report from the audit log; missing/corrupt artifacts produce an explicit diagnostic rather than hiding the task. Pruning task directories removes their history and session transcripts as well, so their costs will no longer appear in `/total-cost`. Sessions from earlier `--no-session` runs cannot be reconstructed from the bus log.
 
 ### Lifecycle, task fulfillment, and evidence
 

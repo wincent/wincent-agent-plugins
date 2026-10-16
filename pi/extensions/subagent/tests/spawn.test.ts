@@ -80,6 +80,11 @@ async function capturePiInput(
     assert.ok(!readFileSync(join(dir, 'run.sh'), 'utf8').includes(args.task));
     assert.equal(argv.at(-1), '--');
     assert.equal(statSync(join(dir, 'run.sh')).mode & 0o777, 0o700);
+    assert.equal(statSync(join(dir, 'sessions')).mode & 0o777, 0o700);
+    assert.equal(
+      argv[argv.indexOf('--session-dir') + 1],
+      join(dir, 'sessions'),
+    );
     for (const name of ['stdout.log', 'stderr.log', 'task.txt']) {
       assert.equal(statSync(join(dir, name)).mode & 0o777, 0o600);
     }
@@ -123,7 +128,8 @@ test('wrapper passes the exact model and thinking level in headless mode', async
     args[args.indexOf('--tools') + 1],
     'read,bash,report,progress,ask',
   );
-  assert.ok(args.includes('--no-session'));
+  assert.ok(!args.includes('--no-session'));
+  assert.ok(args.includes('--session-dir'));
 });
 
 test('wrapper preserves shell metacharacters and option-like prompts', async () => {

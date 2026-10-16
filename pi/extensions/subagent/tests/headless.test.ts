@@ -8,6 +8,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import {homedir, tmpdir} from 'node:os';
@@ -51,6 +52,7 @@ function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'sa-'));
   const keys = [
     'PI_CODING_AGENT_DIR',
+    'PI_CODING_AGENT_SESSION_DIR',
     'PI_OFFLINE',
     'PI_SUBAGENT_SOCKET_ROOT',
     'XDG_STATE_HOME',
@@ -96,6 +98,18 @@ function setup() {
       rmSync(dir, {recursive: true, force: true});
     },
   };
+}
+
+function sessionEntries(taskDir: string) {
+  const dir = join(taskDir, 'sessions');
+  const files = readdirSync(dir).filter((name) => name.endsWith('.jsonl'));
+  assert.equal(files.length, 1, 'Each child retains one session transcript');
+  assert.equal(statSync(dir).mode & 0o777, 0o700);
+  const file = join(dir, files[0]);
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  return readFileSync(file, 'utf8').trim().split('\n').map((line) =>
+    JSON.parse(line)
+  );
 }
 
 for (
@@ -177,6 +191,10 @@ for (
       );
       assert.deepEqual(initial.content, [{type: 'text', text: task.trim()}]);
       assert.equal(readFileSync(join(dir, 'task.txt'), 'utf8'), task);
+      const savedUser = sessionEntries(dir).find((entry) =>
+        entry.type === 'message' && entry.message.role === 'user'
+      );
+      assert.deepEqual(savedUser.message.content, initial.content);
       const done = received.filter((env) => env.type === 'done');
       if (scenario === 'disconnect') {
         assert.ok(!received.some((env) => env.type === 'report'));
@@ -338,6 +356,75 @@ test(
         );
       }
       assert.doesNotMatch(requests, /test-preference/);
+    } finally {
+      cleanup();
+    }
+  },
+);
+
+test(
+  'child sessions retain tool history and usage outside normal resume discovery',
+  {
+    timeout: 30_000,
+  },
+  async () => {
+    const {dir, cleanup} = setup();
+    const inheritedSessionDir = join(dir, 'unwanted-sessions');
+    process.env.PI_CODING_AGENT_SESSION_DIR = inheritedSessionDir;
+    try {
+      await runController(dir, 'session-storage');
+      const result = JSON.parse(
+        toolTexts(
+          readFileSync(join(dir, 'requests.jsonl'), 'utf8'),
+          'subagent',
+        )[0],
+      );
+      assert.equal(result.status, 'ok');
+      assert.equal(result.execution.processGroupExited, true);
+      const entries = sessionEntries(result.taskDir);
+      assert.equal(entries[0].type, 'session');
+      assert.equal(entries[0].cwd, realpathSync(dir));
+      const messages = entries.filter((entry) => entry.type === 'message').map(
+        (entry) => entry.message,
+      );
+      const assistants = messages.filter((message) =>
+        message.role === 'assistant'
+      );
+      assert.equal(assistants.length, 3);
+      assert.equal(
+        assistants.reduce(
+          (total, message) => total + message.usage.cost.total,
+          0,
+        ),
+        0.75,
+        'Synthetic child usage survives persistence without another model turn',
+      );
+      assert.deepEqual(
+        assistants.flatMap((message) =>
+          message.content.filter((part: {type: string}) =>
+            part.type === 'toolCall'
+          )
+            .map((part: {name: string}) => part.name)
+        ),
+        ['progress', 'ask', 'report'],
+      );
+      assert.deepEqual(
+        messages.filter((message) => message.role === 'toolResult')
+          .map((message) => message.toolName),
+        ['progress', 'ask', 'report'],
+      );
+      assert.deepEqual(
+        JSON.parse(readFileSync(join(dir, 'resume-sessions.json'), 'utf8')),
+        {
+          current: [],
+          all: [],
+        },
+      );
+      assert.ok(
+        !existsSync(inheritedSessionDir),
+        'Explicit child directory overrides inherited session storage',
+      );
+      assert.ok(existsSync(result.resultPath));
     } finally {
       cleanup();
     }

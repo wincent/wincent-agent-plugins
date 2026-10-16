@@ -2,8 +2,9 @@
  * Total Cost Extension
  *
  * Adds a `/total-cost` command that scans every saved pi session under
- * `$PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`) and shows a
- * per-month breakdown of cumulative LLM cost, message count, and number of
+ * `$PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`) and retained
+ * subagent transcripts under `$XDG_STATE_HOME/pi/subagent/<task_id>/sessions` (default
+ * state root: `~/.local/state`). Shows cumulative LLM cost, message count, and
  * distinct sessions that contributed. By default the cost is also broken down
  * per model, with one extra column per model. In the TUI, Month and Cost stay
  * fixed while Left/Right scroll the remaining columns; Home/End jump to either
@@ -86,7 +87,21 @@ function getSessionsDir(): string {
   return join(base, 'sessions');
 }
 
-async function listSessionFiles(dir: string): Promise<string[]> {
+// Match subagent/main/state.ts; task artifacts are independent of agent config.
+function getSubagentStateRoot(): string {
+  const state = process.env.XDG_STATE_HOME ||
+    join(homedir(), '.local', 'state');
+  return join(state, 'pi', 'subagent');
+}
+
+function sessionSources(): string {
+  return `${getSessionsDir()} and ${getSubagentStateRoot()}/*/sessions`;
+}
+
+async function listSessionFiles(
+  dir: string,
+  childDirectory?: string,
+): Promise<string[]> {
   const result: string[] = [];
   let projectDirs: string[];
   try {
@@ -97,19 +112,22 @@ async function listSessionFiles(dir: string): Promise<string[]> {
 
   for (const project of projectDirs) {
     const projectPath = join(dir, project);
+    const sessionPath = childDirectory
+      ? join(projectPath, childDirectory)
+      : projectPath;
     let files: string[];
     try {
       const st = await stat(projectPath);
       if (!st.isDirectory()) {
         continue;
       }
-      files = await readdir(projectPath);
+      files = await readdir(sessionPath);
     } catch {
       continue;
     }
     for (const file of files) {
       if (file.endsWith('.jsonl')) {
-        result.push(join(projectPath, file));
+        result.push(join(sessionPath, file));
       }
     }
   }
@@ -132,8 +150,11 @@ function bucketKey(timestamp: string | number | undefined): string | null {
 }
 
 async function collectData(): Promise<RawData> {
-  const sessionsDir = getSessionsDir();
-  const files = await listSessionFiles(sessionsDir);
+  // Only scan the known session layouts, never bus logs or arbitrary task files.
+  const files = [
+    ...await listSessionFiles(getSessionsDir()),
+    ...await listSessionFiles(getSubagentStateRoot(), 'sessions'),
+  ];
 
   const months = new Map<string, Map<string, ModelStats>>();
   let skippedFiles = 0;
@@ -529,7 +550,7 @@ function buildLines(
         'dim',
         `Scanned ${
           fmtInt(totals.files)
-        } session file(s) in ${getSessionsDir()}`,
+        } session file(s) in ${sessionSources()}`,
       ),
     );
     return lines;
@@ -555,7 +576,7 @@ function buildLines(
   lines.push(
     theme.fg(
       'dim',
-      `Scanned ${fmtInt(totals.files)} session file(s) in ${getSessionsDir()}`,
+      `Scanned ${fmtInt(totals.files)} session file(s) in ${sessionSources()}`,
     ) +
       (totals.skippedFiles > 0
         ? theme.fg('warning', `, skipped ${totals.skippedFiles}`)
@@ -584,7 +605,7 @@ async function showTotals(
     }
     plain.push('');
     plain.push(
-      `Scanned ${fmtInt(totals.files)} session file(s) in ${getSessionsDir()}` +
+      `Scanned ${fmtInt(totals.files)} session file(s) in ${sessionSources()}` +
         (totals.skippedFiles > 0 ? `, skipped ${totals.skippedFiles}` : ''),
     );
     console.log(plain.join('\n'));
@@ -665,7 +686,7 @@ function makeModelFilter(filterTokens: string[]): ModelFilter | null {
 export default function (pi: ExtensionAPI) {
   pi.registerCommand('total-cost', {
     description:
-      'Show total LLM cost across all sessions, broken down by month and ' +
+      'Show total LLM cost across saved parent and subagent sessions, by month and ' +
       'model. Pass a model-name substring (e.g. "claude") to filter to ' +
       'matching models, or `no-model-breakdown` for totals only',
     getArgumentCompletions: (prefix: string) => {

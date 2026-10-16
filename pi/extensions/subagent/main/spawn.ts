@@ -1,6 +1,6 @@
 import type {ExtensionAPI} from '@earendil-works/pi-coding-agent';
 import {spawn} from 'node:child_process';
-import {closeSync, openSync, writeFileSync} from 'node:fs';
+import {closeSync, mkdirSync, openSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 
 import {SUBAGENT_STATE_ENV} from '../../lib/subagent-state.js';
@@ -43,6 +43,8 @@ export async function spawnSubagent(
   runtime: PiRuntime = runningPiRuntime(),
 ): Promise<SpawnedProcess> {
   validateTask(args.task);
+  // Keep transcripts with the retained task, outside Pi's resume index.
+  mkdirSync(join(args.taskDir, 'sessions'), {recursive: true, mode: 0o700});
   writeFileSync(join(args.taskDir, 'task.txt'), args.task, {
     encoding: 'utf-8',
     mode: 0o600,
@@ -207,7 +209,8 @@ export function renderWrapper(
     '-p',
     '--append-system-prompt',
     shellQuote(args.systemPromptPath),
-    '--no-session',
+    '--session-dir',
+    shellQuote(join(args.taskDir, 'sessions')),
   ];
   if (args.model) {
     piArgs.push(
@@ -237,6 +240,8 @@ export function renderWrapper(
   return [
     '#!/usr/bin/env bash',
     'set -e',
+    // Pi creates session files with the process umask, not an explicit mode.
+    'umask 077',
     ...exports,
     `cd ${shellQuote(args.cwd)}`,
     `exec ${command} ${piArgs.join(' ')} < ${
