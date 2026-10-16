@@ -75,7 +75,7 @@ Run `node pi/extensions/subagent/tests/sandbox-smoke.mjs /absolute/path/to/bin/p
 
 The initial recursive-wrapper macOS smoke bound the socket successfully but failed at child wrapper access, then at nested nono policy reconstruction. Direct inherited children avoid that bootstrap. Subsequent manual macOS checks passed scout execution, worker commit retention, cancellation, denied access, and normal controller shutdown with a child and tool descendant. The retained worker branch, commit contents, saved result, and absent worktree directory/registration were independently checked. Forced SIGKILL/crash recovery and the broader sandboxed linked-worktree/subdirectory matrix remain unverified.
 
-Children exit after their task settles. Cancellation sends a bus message, then escalates to SIGTERM/SIGKILL for the child process group if needed. Completion waits for process exit before finalizing worktrees. Controlling-session shutdown cancels remaining children.
+Children exit after their task settles. A successfully sent final `report` (`final: true`, the default) requests skipping the automatic follow-up model turn; the child need not restate its report in a final assistant message. Call final reports directly and on their own: Pi only skips the follow-up when every tool in the batch requests termination, and explicit extension continuations can still run. Interim reports (`final: false`) continue normally. This does not bypass settlement, process exit, result retention, or cleanup. Cancellation sends a bus message, then escalates to SIGTERM/SIGKILL for the child process group if needed. Completion waits for process exit before finalizing worktrees. Controlling-session shutdown cancels remaining children.
 
 ## Default agents
 

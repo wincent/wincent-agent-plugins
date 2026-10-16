@@ -161,6 +161,7 @@ export function registerSubTools(
       + 'commit summaries, or your final answer. Set `final: false` to send an '
       + 'incremental report and continue working; `final: true` (the default) '
       + 'indicates this is your last report, not that harness finalization is complete. '
+      + 'Call a final report directly, on its own, as your last action; it requests skipping the automatic follow-up model turn. '
       + 'Include outcome, a useful result description, remaining work/blockers, artifacts, '
       + 'and verification. Use partial, blocked, or declined instead of claiming completion when work is unfinished.',
     parameters: ReportParams,
@@ -185,6 +186,9 @@ export function registerSubTools(
       return {
         content: [{type: 'text', text: 'report sent'}],
         details: {summary: params.summary},
+        // End the model turn, not the process: normal settlement sends done
+        // and the controller still waits for exit, retention, and cleanup.
+        terminate: params.final ?? true,
       };
     },
   });

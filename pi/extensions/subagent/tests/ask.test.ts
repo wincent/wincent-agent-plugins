@@ -1,13 +1,9 @@
 /**
  * Tests for the pure dispatch decision in `ask-decision.ts`.
- *
- * The rest of `handleAsk` (in `ask.ts`) is intentionally not unit-
- * tested here: it pulls in `@earendil-works/pi-ai`, whose runtime
- * module is provided by pi itself at load time rather than by this
- * extension's stub-only `node_modules`, so importing it from a node
- * --test process fails. End-to-end coverage of the LLM path comes
- * from manual runs; coverage of the bus protocol comes from
- * `integration.test.ts`.
+ * Runtime-backed reply tests live in `communication.test.mjs`, which resolves
+ * platform imports from installed Pi rather than the local type-only stubs.
+ * Those tests cover deny, fallback, and human replies without model calls;
+ * the real LLM answering path still requires separate end-to-end coverage.
  */
 
 import {strict as assert} from 'node:assert';

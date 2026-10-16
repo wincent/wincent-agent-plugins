@@ -100,12 +100,16 @@ function setup() {
 
 for (
   const {scenario, task} of [
-    ...['ask', 'continuation', 'failure', 'cancel', 'disconnect'].map((
-      scenario,
-    ) => ({
-      scenario,
-      task: scenario,
-    })),
+    ...[
+      'ask',
+      'final-report',
+      'interim-report',
+      'mixed-report',
+      'continuation',
+      'failure',
+      'cancel',
+      'disconnect',
+    ].map((scenario) => ({scenario, task: scenario})),
     ...stdinTasks,
   ]
 ) {
@@ -190,17 +194,34 @@ for (
       }
       if (
         scenario === 'ask' || scenario === 'continuation' ||
-        scenario.startsWith('stdin-')
+        scenario.endsWith('-report') || scenario.startsWith('stdin-')
       ) {
         assert.equal(exit.code, 0, stderr);
         assert.ok(received.some((env) => env.type === 'progress'));
-        assert.ok(received.some((env) => env.type === 'report'));
-        assert.match(
-          readFileSync(join(dir, 'requests.jsonl'), 'utf8'),
-          /chosen test value/,
+        const reports = received.filter((env) => env.type === 'report');
+        assert.equal(reports.length, scenario === 'interim-report' ? 2 : 1);
+        assert.equal(reports.at(-1)!.payload.final, true);
+        assert.equal(reports.at(-1)!.payload.summary, 'headless report');
+        assert.match(requests, /chosen test value/);
+        const followsReport = scenario === 'continuation' ||
+          scenario === 'interim-report' || scenario === 'mixed-report';
+        assert.equal(
+          requests.trim().split('\n').length,
+          followsReport ? 4 : 3,
+          'a final report skips the automatic follow-up, not interim work, mixed batches, or explicit continuation',
         );
         if (scenario === 'continuation') {
           assert.match(done[0].payload.finalText!, /continued final answer/);
+        } else if (scenario === 'mixed-report') {
+          assert.match(requests, /same-batch progress/);
+          assert.equal(done[0].payload.finalText, 'headless final answer');
+        } else {
+          assert.equal(done[0].payload.finalText, undefined);
+        }
+        if (scenario === 'interim-report') {
+          assert.equal(reports[0].payload.final, false);
+          assert.equal(reports[0].payload.summary, 'interim report');
+          assert.match(requests, /report sent/);
         }
       }
     } finally {
@@ -644,6 +665,16 @@ for (
           'explicit false waits for completion',
         );
         assert.equal(visible.finalized, true);
+        assert.equal(visible.execution.processExited, true);
+        assert.equal(visible.execution.processGroupExited, true);
+        const childRequests = readFileSync(
+          join(visible.taskDir, 'requests.jsonl'),
+          'utf8',
+        );
+        assert.equal(childRequests.trim().split('\n').length, 3);
+        assert.deepEqual(toolTexts(childRequests, 'ask'), [
+          '(ask_policy=deny) No answer available; please make a reasonable assumption and note it in your report.',
+        ]);
         assert.equal(
           JSON.parse(readFileSync(join(visible.taskDir, 'meta.json'), 'utf8'))
             .mode,

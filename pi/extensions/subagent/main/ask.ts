@@ -93,10 +93,10 @@ const LLM_FALLBACK_PREFIX = '(ask_policy=llm; model unavailable)';
 const ESCALATED_FALLBACK_PREFIX =
   `(ask_policy=llm; ${LLM_ASK_BUDGET}-answer budget reached; human declined)`;
 
-function buildDenyAnswer(question: string, prefix = DENY_PREFIX): string {
+function buildDenyAnswer(prefix = DENY_PREFIX): string {
   return (
     `${prefix} No answer available; please make a reasonable assumption `
-    + `and note it in your report. Question was: ${question}`
+    + 'and note it in your report.'
   );
 }
 
@@ -161,7 +161,7 @@ async function executeAction(args: {
 
   switch (action) {
     case 'deny':
-      return {text: buildDenyAnswer(question), source: 'policy'};
+      return {text: buildDenyAnswer(), source: 'policy'};
 
     case 'llm': {
       const llm = await tryAnswerWithLlm(ctx, question);
@@ -169,7 +169,7 @@ async function executeAction(args: {
         return {text: llm, source: 'llm'};
       }
       return {
-        text: buildDenyAnswer(question, LLM_FALLBACK_PREFIX),
+        text: buildDenyAnswer(LLM_FALLBACK_PREFIX),
         source: 'llm-fallback',
       };
     }
@@ -191,7 +191,7 @@ async function executeAction(args: {
       }
       // result.kind === 'unavailable'
       return {
-        text: defaultAnswer ?? buildDenyAnswer(question),
+        text: defaultAnswer ?? buildDenyAnswer(),
         source: 'policy',
       };
     }
@@ -212,7 +212,7 @@ async function executeAction(args: {
       // log shows the escalation happened.
       return {
         text: defaultAnswer
-          ?? buildDenyAnswer(question, ESCALATED_FALLBACK_PREFIX),
+          ?? buildDenyAnswer(ESCALATED_FALLBACK_PREFIX),
         source: 'policy-escalated',
       };
     }

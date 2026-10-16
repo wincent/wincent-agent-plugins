@@ -340,11 +340,18 @@ export default function (pi: ExtensionAPI): void {
               }],
             },
           };
-        } else if (isChild && current === 2) {
+        } else if (
+          isChild &&
+          (current === 2 || (scenario === 'interim-report' && current === 3))
+        ) {
           call = {
             name: 'report',
             arguments: {
-              summary: 'headless report',
+              ...(scenario === 'final-report' ? {final: true} : {}),
+              ...(scenario === 'interim-report' ? {final: current === 3} : {}),
+              summary: scenario === 'interim-report' && current === 2
+                ? 'interim report'
+                : 'headless report',
               findings: [{
                 severity: 'info',
                 message: 'detailed finding',
@@ -369,25 +376,34 @@ export default function (pi: ExtensionAPI): void {
         }
         stream.push({type: 'start', partial: output});
         if (call) {
-          const toolCall: ToolCall = {
-            type: 'toolCall',
-            id: `call_${current}`,
-            name: call.name,
-            arguments: {},
-          };
-          output.content.push(toolCall);
-          stream.push({
-            type: 'toolcall_start',
-            contentIndex: 0,
-            partial: output,
-          });
-          toolCall.arguments = call.arguments;
-          stream.push({
-            type: 'toolcall_end',
-            contentIndex: 0,
-            toolCall,
-            partial: output,
-          });
+          const calls = [call];
+          if (isChild && scenario === 'mixed-report' && current === 2) {
+            calls.push({
+              name: 'progress',
+              arguments: {text: 'same-batch progress'},
+            });
+          }
+          for (const [index, call] of calls.entries()) {
+            const toolCall: ToolCall = {
+              type: 'toolCall',
+              id: `call_${current}_${index}`,
+              name: call.name,
+              arguments: {},
+            };
+            output.content.push(toolCall);
+            stream.push({
+              type: 'toolcall_start',
+              contentIndex: index,
+              partial: output,
+            });
+            toolCall.arguments = call.arguments;
+            stream.push({
+              type: 'toolcall_end',
+              contentIndex: index,
+              toolCall,
+              partial: output,
+            });
+          }
           output.stopReason = 'toolUse';
           stream.push({type: 'done', reason: 'toolUse', message: output});
         } else {

@@ -3,9 +3,9 @@
  * Test runner for the subagent extension.
  *
  * Invokes `node --test --import jiti/register` against every tests/*.test.ts
- * file. jiti is borrowed from the discovered Pi installation (it's Pi's runtime
- * extension loader), so the same module-resolution rules apply at test time
- * as at runtime.
+ * and tests/*.test.mjs file. jiti is borrowed from the discovered Pi installation
+ * (it's Pi's runtime extension loader). Runtime-backed unit tests explicitly
+ * alias platform imports to that installation instead of the type-only stubs.
  *
  * Usage:
  *   node pi/extensions/subagent/tests/run.mjs
@@ -34,7 +34,7 @@ function locateJitiRegister() {
 
 const jitiRegister = locateJitiRegister();
 const testFiles = readdirSync(__dirname)
-  .filter((f) => f.endsWith('.test.ts'))
+  .filter((f) => /\.test\.(?:ts|mjs)$/.test(f))
   .map((f) => resolve(__dirname, f));
 
 if (testFiles.length === 0) {
