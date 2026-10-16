@@ -1,7 +1,8 @@
 import type {ExtensionAPI} from '@earendil-works/pi-coding-agent';
 import {spawn} from 'node:child_process';
 import {closeSync, mkdirSync, openSync, writeFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {homedir} from 'node:os';
+import {join, resolve} from 'node:path';
 
 import {SUBAGENT_STATE_ENV} from '../../lib/subagent-state.js';
 import {type PiRuntime, runningPiRuntime} from './runtime.js';
@@ -38,13 +39,21 @@ export interface SpawnedProcess {
 
 const BUS_TOOL_NAMES = ['report', 'progress', 'ask'] as const;
 
+// Match total-cost.ts: transcripts are durable, unlike XDG task artifacts.
+export function subagentSessionDir(taskId: string): string {
+  const base = process.env.PI_CODING_AGENT_DIR?.trim() ||
+    join(homedir(), '.pi', 'agent');
+  // Resolve before the wrapper changes cwd (which may be a worker worktree).
+  return resolve(base, 'subagent-sessions', taskId);
+}
+
 export async function spawnSubagent(
   args: SpawnArgs,
   runtime: PiRuntime = runningPiRuntime(),
 ): Promise<SpawnedProcess> {
   validateTask(args.task);
-  // Keep transcripts with the retained task, outside Pi's resume index.
-  mkdirSync(join(args.taskDir, 'sessions'), {recursive: true, mode: 0o700});
+  // A storage error must fail launch, never fall back to ephemeral sessions.
+  mkdirSync(subagentSessionDir(args.taskId), {recursive: true, mode: 0o700});
   writeFileSync(join(args.taskDir, 'task.txt'), args.task, {
     encoding: 'utf-8',
     mode: 0o600,
@@ -210,7 +219,7 @@ export function renderWrapper(
     '--append-system-prompt',
     shellQuote(args.systemPromptPath),
     '--session-dir',
-    shellQuote(join(args.taskDir, 'sessions')),
+    shellQuote(subagentSessionDir(args.taskId)),
   ];
   if (args.model) {
     piArgs.push(

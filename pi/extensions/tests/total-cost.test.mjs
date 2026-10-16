@@ -55,16 +55,16 @@ function toolResult(cost, timestamp, extra = {}) {
 async function report(t, files, args = '', context = {hasUI: false}, options = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'total-cost-test-'));
   const previous = Object.fromEntries(['PI_CODING_AGENT_DIR', 'XDG_STATE_HOME', 'HOME'].map((key) => [key, process.env[key]]));
-  const stateDir = options.defaultState ? join(dir, '.local', 'state') : join(dir, 'state');
-  process.env.PI_CODING_AGENT_DIR = dir;
-  if (options.defaultState) {
+  const stateDir = join(dir, 'state');
+  const agentDir = options.defaultAgent ? join(dir, '.pi', 'agent') : dir;
+  process.env.XDG_STATE_HOME = stateDir;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  if (options.defaultAgent) {
     process.env.HOME = dir;
-    delete process.env.XDG_STATE_HOME;
-  } else {
-    process.env.XDG_STATE_HOME = stateDir;
+    delete process.env.PI_CODING_AGENT_DIR;
   }
   try {
-    const project = join(dir, 'sessions', 'project');
+    const project = join(agentDir, 'sessions', 'project');
     await mkdir(project, {recursive: true});
     for (const [index, entries] of files.entries()) {
       await writeFile(
@@ -73,13 +73,13 @@ async function report(t, files, args = '', context = {hasUI: false}, options = {
           '\n{broken\n',
       );
     }
-    const subagentRoot = join(stateDir, 'pi', 'subagent');
+    const subagentRoot = join(agentDir, 'subagent-sessions');
     for (const [index, entries] of (options.subagentFiles ?? []).entries()) {
-      const sessions = join(subagentRoot, `task_${index}`, 'sessions');
+      const sessions = join(subagentRoot, `task_${index}`);
       await mkdir(sessions, {recursive: true});
       await writeFile(join(sessions, 'child.jsonl'), entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n{partial');
     }
-    await options.setup?.({dir, project, subagentRoot});
+    await options.setup?.({dir, agentDir, stateDir, project, subagentRoot});
     let handler;
     extension({
       registerCommand(name, command) {
@@ -135,12 +135,12 @@ test('includes retained subagent messages, usage entries, and tool costs', async
     ['2026-09', '$8.50', '2', '2'],
     ['Total', '$8.50', '2', '2'],
   ]);
-  assert.match(output, /Scanned 2 session file\(s\).*pi\/subagent\/\*\/sessions/);
+  assert.match(output, /Scanned 2 session file\(s\).*subagent-sessions/);
 });
 
-test('child model filters and UTC months work with the default state root', async (t) => {
+test('child model filters and UTC months work with the default agent directory', async (t) => {
   const output = await report(t, mixedFiles, 'worker', undefined, {
-    defaultState: true,
+    defaultAgent: true,
     subagentFiles: [[
       assistant('worker-model', 2, '2026-09-01T00:30:00+02:00'),
       usage('worker-model', 0.5, '2026-09-01'),
@@ -151,23 +151,25 @@ test('child model filters and UTC months work with the default state root', asyn
     ['2026-08', '$2.00', '$2.00', '1', '1'],
     ['Total', '$2.50', '$2.50', '1', '1'],
   ]);
-  assert.match(output, /\.local\/state\/pi\/subagent/);
+  assert.match(output, /\.pi\/agent\/subagent-sessions/);
 });
 
 test('scans child sessions without parent sessions, ignoring other task artifacts', async (t) => {
   const output = await report(t, [], '', undefined, {
     subagentFiles: [[assistant('child', 2, '2026-09-21')]],
-    async setup({dir, subagentRoot}) {
-      await rm(join(dir, 'sessions'), {recursive: true});
+    async setup({agentDir, stateDir, subagentRoot}) {
+      await rm(join(agentDir, 'sessions'), {recursive: true});
       const unrelated = JSON.stringify(assistant('not-a-session', 1000, '2026-09-21'));
-      await writeFile(join(subagentRoot, 'task_0', 'bus.jsonl'), unrelated);
-      await writeFile(join(subagentRoot, 'task_0', 'requests.jsonl'), unrelated);
-      await writeFile(join(subagentRoot, 'task_0', 'sessions', 'ignore.log'), unrelated);
-      await mkdir(join(subagentRoot, 'legacy-task'));
-      await writeFile(join(subagentRoot, 'legacy-task', 'bus.jsonl'), unrelated);
+      const task = join(stateDir, 'pi', 'subagent', 'task_0');
+      await mkdir(join(task, 'sessions'), {recursive: true});
+      await writeFile(join(task, 'bus.jsonl'), unrelated);
+      await writeFile(join(task, 'requests.jsonl'), unrelated);
+      // Legacy transcripts must be migrated explicitly, never counted twice.
+      await writeFile(join(task, 'sessions', 'old.jsonl'), unrelated);
+      await writeFile(join(subagentRoot, 'task_0', 'ignore.log'), unrelated);
       await writeFile(join(subagentRoot, 'not-a-directory'), unrelated);
-      await mkdir(join(subagentRoot, 'task_0', 'worktree'));
-      await writeFile(join(subagentRoot, 'task_0', 'worktree', 'other.jsonl'), unrelated);
+      await mkdir(join(task, 'worktree'));
+      await writeFile(join(task, 'worktree', 'other.jsonl'), unrelated);
     },
   });
   assert.deepEqual(rows(output), [

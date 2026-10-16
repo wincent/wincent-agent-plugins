@@ -3,8 +3,8 @@
  *
  * Adds a `/total-cost` command that scans every saved pi session under
  * `$PI_CODING_AGENT_DIR/sessions` (default `~/.pi/agent/sessions`) and retained
- * subagent transcripts under `$XDG_STATE_HOME/pi/subagent/<task_id>/sessions` (default
- * state root: `~/.local/state`). Shows cumulative LLM cost, message count, and
+ * child transcripts under `$PI_CODING_AGENT_DIR/subagent-sessions/<task_id>`.
+ * Shows cumulative LLM cost, message count, and
  * distinct sessions that contributed. By default the cost is also broken down
  * per model, with one extra column per model. In the TUI, Month and Cost stay
  * fixed while Left/Right scroll the remaining columns; Home/End jump to either
@@ -81,27 +81,19 @@ interface Totals {
   modelTotals: Map<string, number>;
 }
 
-function getSessionsDir(): string {
+function getSessionsDir(
+  directory: 'sessions' | 'subagent-sessions' = 'sessions',
+): string {
   const base = process.env.PI_CODING_AGENT_DIR?.trim() ||
     join(homedir(), '.pi', 'agent');
-  return join(base, 'sessions');
-}
-
-// Match subagent/main/state.ts; task artifacts are independent of agent config.
-function getSubagentStateRoot(): string {
-  const state = process.env.XDG_STATE_HOME ||
-    join(homedir(), '.local', 'state');
-  return join(state, 'pi', 'subagent');
+  return join(base, directory);
 }
 
 function sessionSources(): string {
-  return `${getSessionsDir()} and ${getSubagentStateRoot()}/*/sessions`;
+  return `${getSessionsDir()} and ${getSessionsDir('subagent-sessions')}`;
 }
 
-async function listSessionFiles(
-  dir: string,
-  childDirectory?: string,
-): Promise<string[]> {
+async function listSessionFiles(dir: string): Promise<string[]> {
   const result: string[] = [];
   let projectDirs: string[];
   try {
@@ -112,22 +104,19 @@ async function listSessionFiles(
 
   for (const project of projectDirs) {
     const projectPath = join(dir, project);
-    const sessionPath = childDirectory
-      ? join(projectPath, childDirectory)
-      : projectPath;
     let files: string[];
     try {
       const st = await stat(projectPath);
       if (!st.isDirectory()) {
         continue;
       }
-      files = await readdir(sessionPath);
+      files = await readdir(projectPath);
     } catch {
       continue;
     }
     for (const file of files) {
       if (file.endsWith('.jsonl')) {
-        result.push(join(sessionPath, file));
+        result.push(join(projectPath, file));
       }
     }
   }
@@ -153,7 +142,7 @@ async function collectData(): Promise<RawData> {
   // Only scan the known session layouts, never bus logs or arbitrary task files.
   const files = [
     ...await listSessionFiles(getSessionsDir()),
-    ...await listSessionFiles(getSubagentStateRoot(), 'sessions'),
+    ...await listSessionFiles(getSessionsDir('subagent-sessions')),
   ];
 
   const months = new Map<string, Map<string, ModelStats>>();

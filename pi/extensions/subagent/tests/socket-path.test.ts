@@ -14,7 +14,7 @@ import {
 } from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
-import {test} from 'node:test';
+import {beforeEach, test} from 'node:test';
 
 import {AuditLog} from '../bus/audit-log.js';
 import {Bus} from '../bus/bus.js';
@@ -22,7 +22,9 @@ import {allocateTaskSocket, validateSocketPath} from '../bus/socket-path.js';
 import {connectToPeer, listenForPeer} from '../bus/transport-uds.js';
 import {launchSubagent} from '../main/launch.js';
 import {terminateProcess, waitForExit} from '../main/spawn.js';
-import {spawnFakeChild} from './fixtures/runtime.js';
+import {isolateAgentDir, spawnFakeChild} from './fixtures/runtime.js';
+
+beforeEach(isolateAgentDir);
 
 async function withRoot(fn: (root: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'ss-'));

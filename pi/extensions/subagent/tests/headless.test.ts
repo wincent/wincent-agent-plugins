@@ -100,8 +100,12 @@ function setup() {
   };
 }
 
-function sessionEntries(taskDir: string) {
-  const dir = join(taskDir, 'sessions');
+function sessionEntries(taskId: string) {
+  const dir = join(
+    process.env.PI_CODING_AGENT_DIR!,
+    'subagent-sessions',
+    taskId,
+  );
   const files = readdirSync(dir).filter((name) => name.endsWith('.jsonl'));
   assert.equal(files.length, 1, 'Each child retains one session transcript');
   assert.equal(statSync(dir).mode & 0o777, 0o700);
@@ -191,7 +195,8 @@ for (
       );
       assert.deepEqual(initial.content, [{type: 'text', text: task.trim()}]);
       assert.equal(readFileSync(join(dir, 'task.txt'), 'utf8'), task);
-      const savedUser = sessionEntries(dir).find((entry) =>
+      assert.ok(!existsSync(join(dir, 'sessions')));
+      const savedUser = sessionEntries('test_headless').find((entry) =>
         entry.type === 'message' && entry.message.role === 'user'
       );
       assert.deepEqual(savedUser.message.content, initial.content);
@@ -381,7 +386,8 @@ test(
       );
       assert.equal(result.status, 'ok');
       assert.equal(result.execution.processGroupExited, true);
-      const entries = sessionEntries(result.taskDir);
+      const entries = sessionEntries(result.taskId);
+      assert.ok(!existsSync(join(result.taskDir, 'sessions')));
       assert.equal(entries[0].type, 'session');
       assert.equal(entries[0].cwd, realpathSync(dir));
       const messages = entries.filter((entry) => entry.type === 'message').map(
@@ -425,6 +431,12 @@ test(
         'Explicit child directory overrides inherited session storage',
       );
       assert.ok(existsSync(result.resultPath));
+      rmSync(result.taskDir, {recursive: true});
+      assert.deepEqual(
+        sessionEntries(result.taskId),
+        entries,
+        'Task cleanup leaves durable transcripts intact',
+      );
     } finally {
       cleanup();
     }

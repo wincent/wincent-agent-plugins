@@ -12,8 +12,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import {tmpdir} from 'node:os';
-import {dirname, join} from 'node:path';
-import {test} from 'node:test';
+import {dirname, join, relative, resolve} from 'node:path';
+import {beforeEach, test} from 'node:test';
 
 import {SUBAGENT_STATE_ENV} from '../../lib/subagent-state.js';
 import {AuditLog} from '../bus/audit-log.js';
@@ -26,11 +26,14 @@ import {
   type SpawnedProcess,
   renderWrapper,
   spawnSubagent,
+  subagentSessionDir,
   terminateProcess,
   waitForExit,
 } from '../main/spawn.js';
-import {spawnFakeChild} from './fixtures/runtime.js';
+import {isolateAgentDir, spawnFakeChild} from './fixtures/runtime.js';
 import {stdinTasks} from './fixtures/tasks.js';
+
+beforeEach(isolateAgentDir);
 
 function argsFor(dir: string, task = 'Inspect the code'): SpawnArgs {
   return {
@@ -80,11 +83,14 @@ async function capturePiInput(
     assert.ok(!readFileSync(join(dir, 'run.sh'), 'utf8').includes(args.task));
     assert.equal(argv.at(-1), '--');
     assert.equal(statSync(join(dir, 'run.sh')).mode & 0o777, 0o700);
-    assert.equal(statSync(join(dir, 'sessions')).mode & 0o777, 0o700);
-    assert.equal(
-      argv[argv.indexOf('--session-dir') + 1],
-      join(dir, 'sessions'),
+    const sessionDir = join(
+      process.env.PI_CODING_AGENT_DIR!,
+      'subagent-sessions',
+      args.taskId,
     );
+    assert.equal(statSync(sessionDir).mode & 0o777, 0o700);
+    assert.equal(argv[argv.indexOf('--session-dir') + 1], sessionDir);
+    assert.ok(!existsSync(join(dir, 'sessions')));
     for (const name of ['stdout.log', 'stderr.log', 'task.txt']) {
       assert.equal(statSync(join(dir, name)).mode & 0o777, 0o600);
     }
@@ -105,6 +111,43 @@ function restoreEnv(key: string, value: string | undefined): void {
     process.env[key] = value;
   }
 }
+
+test('session storage defaults to the agent directory under HOME', () => {
+  const previousHome = process.env.HOME;
+  process.env.HOME = process.env.PI_CODING_AGENT_DIR;
+  delete process.env.PI_CODING_AGENT_DIR;
+  try {
+    assert.equal(
+      subagentSessionDir('task_test'),
+      join(process.env.HOME!, '.pi', 'agent', 'subagent-sessions', 'task_test'),
+    );
+  } finally {
+    restoreEnv('HOME', previousHome);
+  }
+});
+
+test('relative agent directory is resolved before changing child cwd', () => {
+  const base = process.env.PI_CODING_AGENT_DIR!;
+  process.env.PI_CODING_AGENT_DIR = relative(process.cwd(), base);
+  assert.equal(
+    subagentSessionDir('task_test'),
+    resolve(base, 'subagent-sessions', 'task_test'),
+  );
+});
+
+test('session storage failure stops launch without an ephemeral fallback', async () => {
+  const base = process.env.PI_CODING_AGENT_DIR!;
+  writeFileSync(join(base, 'subagent-sessions'), 'not a directory');
+  await assert.rejects(
+    spawnSubagent(argsFor(base), {
+      executable: join(base, 'must-not-run'),
+      args: [],
+    }),
+    {code: 'ENOTDIR'},
+  );
+  assert.ok(!existsSync(join(base, 'run.sh')));
+  assert.ok(!existsSync(join(base, 'sessions')));
+});
 
 test('wrapper passes the exact model and thinking level in headless mode', async () => {
   const {args} = await capturePiInput({

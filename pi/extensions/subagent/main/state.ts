@@ -8,8 +8,9 @@
  *     result.json         # final model-visible result, retained after completion
  *     bus.jsonl           # append-only audit log
  *     system-prompt.md    # rendered system prompt for the subagent
- *     sessions/           # retained Pi session JSONL, including tools and usage
  *     worktree            # symlink to the actual worktree, when used
+ *
+ * Durable transcripts are separate: <agent-dir>/subagent-sessions/<task_id>/.
  */
 
 import type {SpawnArgs} from './spawn.js';
