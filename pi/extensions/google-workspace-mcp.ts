@@ -46,13 +46,19 @@ const DCR_TOKEN_ENDPOINT_AUTH_METHOD = 'none';
 const MAX_TOOLS = 100;
 
 const READ_ONLY_TOOL_NAMES = new Set([
+  'get_comment',
+  'get_doc_as_markdown',
   'get_file_content',
   'get_file_metadata',
   'get_presentation',
   'get_slide',
   'get_slide_thumbnail',
   'get_spreadsheet_metadata',
+  'list_file_comments',
   'list_folder_contents',
+  'list_sheet_comments',
+  'list_tabs',
+  'ping',
   'read_document',
   'read_sheet',
   'search_files',
