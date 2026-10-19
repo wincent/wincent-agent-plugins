@@ -21,7 +21,9 @@ Plugins live under [`claude/`](./claude):
 
 #### Prompt templates
 
-Pi prompt templates live under [`pi/prompts`](./pi/prompts/) (or rather, they would if we had any).
+Pi prompt templates live under [`pi/prompts`](./pi/prompts/):
+
+- [`/sweep`](./pi/prompts/sweep.md): Coordinate a campaign of worker subagents, each making a focused change in its own worktree. Requires the [subagent extension](./pi/extensions/subagent/).
 
 #### Skills
 

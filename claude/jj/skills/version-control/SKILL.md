@@ -36,7 +36,7 @@ Jujutsu's most distinctive feature is that it does not have a staging area. Any 
 
 ## Creating commits
 
-For specific details on selecting which changes to include in a commit, and how to craft commit messages, see the `/jj:commit` skill.
+For specific details on selecting which changes to include in a commit, and how to craft commit messages, see the commit skill: `/skill:jj-commit` in Pi or `/jj:commit` in Claude.
 
 Note that you will never run `jj commit` without file arguments unless your user instructs you to do so; instead pass explicit files to be included.
 

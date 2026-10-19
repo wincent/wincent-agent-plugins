@@ -6,7 +6,7 @@ Delegate tasks to specialized agents running as headless Pi child processes. The
 
 Load the extension as described in the [parent README](../README.md). The six bundled agents are auto-discovered. Add or override agents with `.md` files under `<repo>/.pi/agents/` (project-scoped) or `~/.pi/agent/agents/` (user-scoped); project agents take precedence over user agents, then bundled agents.
 
-The companion [skill](../../skills/subagent/) and workflow prompts under `prompts/` must be discoverable by Pi separately.
+The companion [skill](../../skills/subagent/) and [`/sweep` workflow prompt](../../prompts/sweep.md) are loaded by the skill and prompt paths in the [top-level Pi setup](../../../README.md#pi-setup). Loading only the extension does not load these resources. For a standalone installation, add this repository's `pi/skills/subagent` to Pi's `skills` setting and `pi/prompts` to its `prompts` setting, then run `/reload` (or start a new session). Configure only one prompt path for `/sweep`; do not also add the extension's `prompts` directory.
 
 Requires an installed Node/Bun Pi CLI, a POSIX environment with `bash`, Unix domain sockets, and process-group signals. SDK hosts and standalone compiled binaries are not supported. Workers require git; isolated worktrees require a repository with at least one commit.
 
