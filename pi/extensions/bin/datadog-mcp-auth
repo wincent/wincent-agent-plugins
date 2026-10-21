@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""Host-only Datadog MCP OAuth helper (Python standard library, macOS/Linux).
+
+Only `token` writes a secret to stdout; other commands report nonsecret status.
+"""
+
+import argparse
+import base64
+import contextlib
+import fcntl
+import hashlib
+import hmac
+import http.client
+import http.server
+import json
+import math
+import os
+from pathlib import Path
+import re
+import secrets
+import signal
+import stat
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+
+DEFAULT_DOMAIN = 'mcp.datadoghq.com'
+REFRESH_BUFFER_MS = 300_000
+HTTP_TIMEOUT = 10
+LOCK_TIMEOUT = 10
+LOGIN_TIMEOUT = 300
+MAX_JSON_BYTES = 65_536
+LOGIN_HINT = 'Run datadog-mcp-auth login on the host.'
+
+
+class AuthError(Exception):
+    pass
+
+
+def resolve_domain():
+    domain = os.environ.get('DATADOG_MCP_DOMAIN', '').strip() or DEFAULT_DOMAIN
+    if len(domain) > 253 or not all(
+        re.fullmatch(r'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?', label)
+        for label in domain.split('.')
+    ) or '.' not in domain:
+        raise AuthError('DATADOG_MCP_DOMAIN must be a DNS hostname, not a URL or path.')
+    return domain.lower()
+
+
+def store_directory(domain):
+    xdg = os.environ.get('XDG_STATE_HOME', '')
+    root = Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / '.local/state'
+    return root / 'pi/datadog-mcp' / domain
+
+
+def private_directory(path):
+    path.mkdir(parents=True, mode=0o700, exist_ok=True)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise AuthError('Credential directory must be an owned directory, not a symlink.')
+    path.chmod(0o700)
+
+
+def private_open(path, flags):
+    fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    info = os.fstat(fd)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
+        os.close(fd)
+        raise AuthError('Credential files must be private, owned, regular files without hard links.')
+    return fd
+
+
+@contextlib.contextmanager
+def locked(directory):
+    private_directory(directory.parent)
+    private_directory(directory)
+    # Never unlink the lock: waiters must keep referring to the same inode.
+    with os.fdopen(private_open(directory / '.lock', os.O_CREAT | os.O_RDWR), 'r+') as lock:
+        end = time.monotonic() + LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= end:
+                    raise AuthError('Credential store is busy; retry after the other auth command finishes.')
+                time.sleep(0.05)
+        yield
+
+
+def read_json(path):
+    try:
+        fd = private_open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, 'rb') as file:
+        raw = file.read(MAX_JSON_BYTES + 1)
+    if len(raw) > MAX_JSON_BYTES:
+        raise AuthError('Credential file is too large.')
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise AuthError('Credential file contains invalid JSON.') from None
+    if not isinstance(value, dict):
+        raise AuthError('Credential file must contain a JSON object.')
+    return value
+
+
+def write_json(path, value):
+    fd, temporary = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as file:
+            json.dump(value, file, allow_nan=False)
+            file.write('\n')
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+        sync_directory(path.parent)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def sync_directory(directory):
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def nonempty(value):
+    return isinstance(value, str) and bool(value.strip()) and not any(ord(c) < 32 or ord(c) == 127 for c in value)
+
+
+def positive_number(value):
+    try:
+        return type(value) in (int, float) and math.isfinite(value) and value > 0
+    except OverflowError:
+        return False
+
+
+def https_url(value):
+    if not nonempty(value) or any(c.isspace() for c in value):
+        raise AuthError('OAuth endpoints and resources must be HTTPS URLs.')
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        valid = (parsed.scheme == 'https' and parsed.hostname and not parsed.username
+                 and not parsed.password and not parsed.fragment)
+        parsed.port  # Reject malformed ports as well.
+    except ValueError:
+        valid = False
+    if not valid:
+        raise AuthError('OAuth endpoints and resources must be HTTPS URLs without userinfo or fragments.')
+    return value
+
+
+def validate_client(value):
+    if not isinstance(value, dict) or not nonempty(value.get('client_id')):
+        raise AuthError('Missing or invalid client registration. ' + LOGIN_HINT)
+    for key in ('authorization_endpoint', 'token_endpoint', 'mcp_resource_uri'):
+        https_url(value.get(key))
+    if not isinstance(value.get('redirect_uris'), list) or not all(nonempty(uri) for uri in value['redirect_uris']):
+        raise AuthError('Invalid client redirect URIs.')
+    return value
+
+
+def validate_tokens(value):
+    if not isinstance(value, dict) or not nonempty(value.get('accessToken')) or not positive_number(value.get('expiresAt')):
+        raise AuthError('Missing or invalid saved tokens. ' + LOGIN_HINT)
+    for key in ('refreshToken', 'scope'):
+        if key in value and (not isinstance(value[key], str) or (key == 'refreshToken' and not nonempty(value[key]))):
+            raise AuthError('Invalid saved token metadata.')
+    return value
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def request_json(url, body=None, form=False):
+    https_url(url)
+    headers = {'Accept': 'application/json'}
+    data = None
+    if body is not None:
+        data = (urllib.parse.urlencode(body) if form else json.dumps(body)).encode()
+        headers['Content-Type'] = 'application/x-www-form-urlencoded' if form else 'application/json'
+    # Host-side auth must not recurse through the agent's credential proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    try:
+        with opener.open(urllib.request.Request(url, data=data, headers=headers), timeout=HTTP_TIMEOUT) as response:
+            raw = response.read(MAX_JSON_BYTES + 1)
+    except urllib.error.HTTPError as error:
+        error.close()
+        raise AuthError(f'OAuth request failed (HTTP {error.code}). No automatic retry. ' + LOGIN_HINT) from None
+    except (OSError, http.client.HTTPException):
+        raise AuthError('OAuth request failed or timed out. No automatic retry; check host connectivity and auth status.') from None
+    if len(raw) > MAX_JSON_BYTES:
+        raise AuthError('OAuth response is too large.')
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise AuthError('OAuth response contains invalid JSON.') from None
+    if not isinstance(value, dict) or 'error' in value:
+        raise AuthError('OAuth request was rejected. ' + LOGIN_HINT)
+    return value
+
+
+def normalize_tokens(response, previous=None):
+    previous = previous or {}
+    if not nonempty(response.get('access_token')):
+        raise AuthError('OAuth response did not contain a usable access token. ' + LOGIN_HINT)
+    token_type = response.get('token_type', 'Bearer')
+    if not isinstance(token_type, str) or token_type.lower() != 'bearer':
+        raise AuthError('OAuth response used an unsupported token type.')
+    lifetime = response.get('expires_in', 3600)
+    if not positive_number(lifetime):
+        raise AuthError('OAuth response contained an invalid expiry.')
+    tokens = {'accessToken': response['access_token'], 'expiresAt': time.time() * 1000 + lifetime * 1000}
+    for source, target in [('refresh_token', 'refreshToken'), ('scope', 'scope')]:
+        if source in response:
+            tokens[target] = response[source]
+        elif target in previous:
+            tokens[target] = previous[target]
+    return validate_tokens(tokens)
+
+
+def token(directory, force_refresh=False):
+    tokens = validate_tokens(read_json(directory / 'tokens.json'))
+    if not force_refresh and tokens['expiresAt'] - REFRESH_BUFFER_MS > time.time() * 1000:
+        return tokens['accessToken']
+    client = validate_client(read_json(directory / 'client.json'))
+    if not tokens.get('refreshToken'):
+        raise AuthError('No refresh token is available. ' + LOGIN_HINT)
+    response = request_json(client['token_endpoint'], {
+        'grant_type': 'refresh_token',
+        'refresh_token': tokens['refreshToken'],
+        'client_id': client['client_id'],
+        'resource': client['mcp_resource_uri'],
+    }, form=True)
+    refreshed = normalize_tokens(response, tokens)
+    # A short-lived helper must save rotated tokens BEFORE releasing a token.
+    write_json(directory / 'tokens.json', refreshed)
+    return refreshed['accessToken']
+
+
+def callback_url():
+    raw = os.environ.get('DATADOG_MCP_CALLBACK_PORT', '') or '19876'
+    if not raw.isascii() or not raw.isdecimal() or not 1 <= int(raw) <= 65535:
+        raise AuthError('DATADOG_MCP_CALLBACK_PORT must be an integer from 1 to 65535.')
+    return f'http://localhost:{int(raw)}/callback'
+
+
+def register_client(domain, redirect):
+    metadata = request_json(f'https://{domain}/.well-known/oauth-authorization-server')
+    registration = request_json(https_url(metadata.get('registration_endpoint')), {
+        'client_name': 'pi-datadog-mcp',
+        'redirect_uris': [redirect],
+        'grant_types': ['authorization_code', 'refresh_token'],
+        'response_types': ['code'],
+        'token_endpoint_auth_method': 'none',
+    })
+    # Preserve Datadog's endpoint/resource overrides. Do not invent OAuth scopes.
+    return validate_client({
+        'client_id': registration.get('client_id'),
+        'authorization_endpoint': registration.get('authorization_endpoint', metadata.get('authorization_endpoint')),
+        'token_endpoint': registration.get('token_endpoint', metadata.get('token_endpoint')),
+        'mcp_resource_uri': registration.get('mcp_resource_uri', f'https://{domain}/v1/mcp'),
+        'redirect_uris': registration.get('redirect_uris', [redirect]),
+    })
+
+
+class CallbackServer(http.server.HTTPServer):
+    def get_request(self):
+        connection, address = super().get_request()
+        connection.settimeout(1)
+        return connection, address
+
+    def handle_error(self, request, client_address):
+        # socketserver otherwise swallows cancellation and prints tracebacks.
+        if isinstance(sys.exc_info()[1], AuthError):
+            self.shutdown_request(request)
+            raise
+        # Malformed/disconnected loopback clients must not leak request data.
+
+
+def login(directory, domain):
+    redirect = callback_url()
+    old_client = read_json(directory / 'client.json')
+    client = validate_client(old_client) if old_client is not None else None
+    if client is None or redirect not in client['redirect_uris']:
+        client = register_client(domain, redirect)
+    if redirect not in client['redirect_uris']:
+        raise AuthError('Registration did not accept the callback URI.')
+    state = secrets.token_urlsafe(32)
+    verifier = secrets.token_urlsafe(32)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+    result = {}
+
+    class Callback(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass  # Never log authorization codes or query strings.
+
+        def do_GET(self):
+            parsed = urllib.parse.urlsplit(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            states = params.get('state', [])
+            valid_state = len(states) == 1 and hmac.compare_digest(states[0].encode(), state.encode())
+            code = params.get('code', [])
+            valid = parsed.path == '/callback' and valid_state
+            if valid and ('error' in params or len(code) != 1 or not nonempty(code[0])):
+                result['error'] = True
+            elif valid:
+                result['code'] = code[0]
+            self.send_response(200 if valid and 'code' in result else 400)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(b'Authorization received. Return to the terminal.' if valid else b'Invalid callback.')
+
+    # Bind before opening the browser; hold the store lock for the whole login.
+    with CallbackServer(('127.0.0.1', urllib.parse.urlsplit(redirect).port), Callback) as server:
+        params = {
+            'response_type': 'code', 'client_id': client['client_id'],
+            'redirect_uri': redirect, 'state': state,
+            'code_challenge': challenge, 'code_challenge_method': 'S256',
+            'resource': client['mcp_resource_uri'],
+        }
+        endpoint = urllib.parse.urlsplit(client['authorization_endpoint'])
+        query = [(key, value) for key, value in urllib.parse.parse_qsl(endpoint.query) if key not in params]
+        url = urllib.parse.urlunsplit(endpoint._replace(query=urllib.parse.urlencode(query + list(params.items()))))
+        print('Open this URL to sign in:\n' + url, file=sys.stderr)
+        try:
+            webbrowser.open(url)
+        except (OSError, webbrowser.Error):
+            pass  # The printed URL also supports manual sign-in.
+        end = time.monotonic() + LOGIN_TIMEOUT
+        while not result:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                raise AuthError('Login timed out; no credentials were changed.')
+            server.timeout = min(1, remaining)
+            server.handle_request()
+    if 'error' in result:
+        raise AuthError('Login was denied or returned an invalid callback.')
+    tokens = normalize_tokens(request_json(client['token_endpoint'], {
+        'grant_type': 'authorization_code', 'code': result['code'],
+        'redirect_uri': redirect, 'client_id': client['client_id'],
+        'code_verifier': verifier, 'resource': client['mcp_resource_uri'],
+    }, form=True))
+    if client != old_client:
+        # Never pair an old grant with a new client, even if interrupted between writes.
+        (directory / 'tokens.json').unlink(missing_ok=True)
+        sync_directory(directory)
+        write_json(directory / 'client.json', client)
+    write_json(directory / 'tokens.json', tokens)
+
+
+def status(directory):
+    client = read_json(directory / 'client.json')
+    tokens = read_json(directory / 'tokens.json')
+    if client is not None:
+        validate_client(client)
+    if tokens is None:
+        return {'state': 'not_signed_in', 'client_registered': client is not None}
+    validate_tokens(tokens)
+    return {
+        'state': 'expired' if tokens['expiresAt'] <= time.time() * 1000 else 'access_token_valid',
+        'client_registered': client is not None,
+        'refresh_token_present': bool(tokens.get('refreshToken')),
+        'expires_at_ms': tokens['expiresAt'],
+        'refresh_validity': 'not_checked',
+    }
+
+
+def interrupt(_signum, _frame):
+    raise AuthError('Auth command interrupted or timed out; inspect status before retrying.')
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=['token', 'login', 'status', 'logout'])
+    parser.add_argument('--refresh', action='store_true', help='force refresh with token (no automatic login)')
+    args = parser.parse_args(argv)
+    if args.refresh and args.command != 'token':
+        parser.error('--refresh is only valid with token')
+    # Overall deadline also bounds slow response bodies and loopback clients.
+    for signum in (signal.SIGALRM, signal.SIGTERM):
+        signal.signal(signum, interrupt)
+    signal.alarm(360 if args.command == 'login' else 25)
+    try:
+        domain = resolve_domain()
+        directory = store_directory(domain)
+        with locked(directory):
+            if args.command == 'token':
+                print(token(directory, args.refresh))
+            elif args.command == 'login':
+                login(directory, domain)
+                print('Signed in to Datadog.')
+            elif args.command == 'logout':
+                (directory / 'tokens.json').unlink(missing_ok=True)
+                sync_directory(directory)
+                print('Local tokens removed; server-side grant was not revoked.')
+            else:
+                print(json.dumps(status(directory)))
+        return 0
+    except AuthError as error:
+        print(f'datadog-mcp-auth: {error}', file=sys.stderr)
+    except (OSError, ValueError, KeyboardInterrupt):
+        # Neither raw I/O errors nor provider responses belong in proxy logs.
+        print('datadog-mcp-auth: auth operation failed; check host configuration and credential-store access.', file=sys.stderr)
+    finally:
+        signal.alarm(0)
+    return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
