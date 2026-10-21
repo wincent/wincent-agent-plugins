@@ -69,10 +69,8 @@ const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_TOOLS = 400;
 
-// Verb tokens that imply mutation. The server's `readOnlyHint` annotation, when
-// present, takes precedence (see makeIsWriteTool). Intentionally
-// over-inclusive: a false positive only adds a confirmation prompt; a false
-// negative could let the agent mutate Datadog without a gate.
+// Mutation verbs override readOnlyHint (see makeIsWriteTool). Unannotated
+// tools also require confirmation; false positives only add a prompt.
 const MUTATING_VERBS = new Set([
   'add',
   'archive',

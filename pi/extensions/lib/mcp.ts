@@ -494,28 +494,26 @@ export function summarizeDescription(desc: string | undefined): string {
   return (firstSentence ? firstSentence[0] : flat).slice(0, 240);
 }
 
-// Builds an `isWriteTool` predicate. The server's `readOnlyHint` annotation,
-// when present, takes precedence; otherwise the tool name is split on common
-// separators and considered mutating if any token is in `verbs`. This is
-// intentionally over-inclusive: a false positive only adds a confirmation
-// prompt; a false negative could let the agent mutate without a gate.
+// Only explicitly read-only tools can bypass confirmation. Destructive hints
+// and mutation verbs override readOnlyHint, including in camelCase/PascalCase
+// names. Unknown or unannotated operations fail closed: an extra prompt is
+// preferable to an unconfirmed mutation.
 export function makeIsWriteTool(
   verbs: Set<string>,
 ): (tool: McpTool) => boolean {
   return (tool: McpTool): boolean => {
-    const hint = tool.annotations?.readOnlyHint;
-    if (hint === true) {
-      return false;
-    }
-    if (hint === false) {
+    if (
+      tool.annotations?.readOnlyHint !== true ||
+      tool.annotations?.destructiveHint === true
+    ) {
       return true;
     }
-    for (const tok of tool.name.toLowerCase().split(/[._\-]+/)) {
-      if (verbs.has(tok)) {
-        return true;
-      }
-    }
-    return false;
+    const tokens = tool.name
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+      .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/);
+    return tokens.some((token) => verbs.has(token));
   };
 }
 

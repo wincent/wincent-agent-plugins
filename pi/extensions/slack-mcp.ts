@@ -61,10 +61,8 @@ function resolveCredKeyFromBlob(blob: ClaudeCredentials): string {
 
 const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
-// Verb tokens that imply mutation. The server's `readOnlyHint` annotation, when
-// present, takes precedence (see makeIsWriteTool). This is intentionally
-// over-inclusive: a false positive only adds a confirmation prompt; a false
-// negative could let the agent post to Slack without a gate.
+// Mutation verbs override readOnlyHint (see makeIsWriteTool). Unannotated
+// tools also require confirmation; false positives only add a prompt.
 const MUTATING_VERBS = new Set([
   'acknowledge',
   'add',
