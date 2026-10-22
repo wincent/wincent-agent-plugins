@@ -24,7 +24,7 @@ try {
   ({default: slack} = await import('../slack-mcp.ts'));
   ({default: datadog} = await import('../datadog-mcp.ts'));
   ({default: workspace} = await import('../google-workspace-mcp.ts'));
-  ({queueMcpConfirmation} = await import('../lib/mcp.ts?caller=legacy'));
+  ({queueMcpConfirmation} = await import('../lib/mcp.ts?caller=direct'));
 } finally {
   hooks.deregister();
 }
@@ -43,7 +43,7 @@ function gate(extension, name, ui) {
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-test('independent module instances serialize mixed-server and legacy confirmations', async () => {
+test('independent module instances serialize mixed-server and direct confirmations', async () => {
   const dialogs = [];
   const ui = {confirm: (title) => new Promise((resolve, reject) => dialogs.push({title, resolve, reject}))};
   const slackCall = gate(slack, 'mcp__slack__slack_send_message', ui);
@@ -52,7 +52,7 @@ test('independent module instances serialize mixed-server and legacy confirmatio
   const first = slackCall();
   const second = datadogCall();
   const third = workspaceCall();
-  const fourth = queueMcpConfirmation(ui, () => ui.confirm('Legacy MCP'));
+  const fourth = queueMcpConfirmation(ui, () => ui.confirm('Direct confirmation'));
   await tick();
   assert.deepEqual(dialogs.map(({title}) => title), ['Slack write operation']);
   dialogs[0].resolve(false);
@@ -66,7 +66,7 @@ test('independent module instances serialize mixed-server and legacy confirmatio
   dialogs[2].resolve(true);
   assert.equal(await third, undefined);
   await tick();
-  assert.equal(dialogs[3].title, 'Legacy MCP');
+  assert.equal(dialogs[3].title, 'Direct confirmation');
   dialogs[3].resolve(false);
   assert.equal(await fourth, false);
   const fifth = workspaceCall();
