@@ -55,17 +55,11 @@ Delegates focused tasks to headless Pi agents, with progress in the controlling 
 
 ### `datadog-mcp.ts`
 
-Talks to Datadog's MCP server.
+Requires per-call confirmation for writes through Pi's native MCP server named `datadog`, including calls made inside codemode. Unknown or unannotated tools require confirmation too; without a UI they are blocked. Enable built-in MCP and configure the server in `mcp.json` with an `Authorization` header containing the credential proxy's phantom token, not a real credential. Use `/mcp` for connection status and reconnection. The companion `datadog-mcp` skill explains discovery and calls.
 
-Registers three slash commands:
+Run `bin/datadog-mcp-auth login`, `status`, or `logout` on the host to manage authentication. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token without displaying it. Do not use Pi's native OAuth login for this server or run a legacy Datadog extension against the same grant.
 
-- `/datadog-login` signs in via the browser.
-- `/datadog-logout` clears stored tokens for the current domain.
-- `/datadog-status` shows connection status (no token material).
-
-A companion `datadog-mcp` skill under `pi/skills/datadog-mcp/` teaches the agent the `list_tools`, `describe_tool`, and `call_tool` pattern. Mutating tools always require a confirmation prompt. The target site defaults to `mcp.datadoghq.com`, overridable via `DATADOG_MCP_DOMAIN`.
-
-The dynamic client registration metadata and OAuth tokens are stored as plaintext JSON under `$XDG_STATE_HOME/pi/datadog-mcp/` (default `~/.local/state/pi/datadog-mcp/`). An unset, empty, or relative `XDG_STATE_HOME` uses the default. This state is independent of `PI_CODING_AGENT_DIR`, keeping credentials outside configuration directories that may be version-controlled. Directories and files are restricted to modes `0700` and `0600` on POSIX systems. This is not an OS credential store.
+The helper defaults to `mcp.datadoghq.com`; `DATADOG_MCP_DOMAIN` selects another site and must match the proxy route and MCP URL. Registrations and tokens remain in private plaintext JSON under the host's `$XDG_STATE_HOME/pi/datadog-mcp/` (default `~/.local/state/pi/datadog-mcp/`). An unset, empty, or relative `XDG_STATE_HOME` uses the default. Never copy this state to a sandbox or VM.
 
 ### `google-workspace-mcp.ts`
 
