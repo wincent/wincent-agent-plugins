@@ -15,6 +15,28 @@ import {
 import {type Static, type TSchema, Type} from 'typebox';
 import {Check, Errors} from 'typebox/value';
 
+// Pi loads extensions with separate module caches. Share queues per UI even
+// across those module instances, without retaining retired UI objects.
+const confirmationQueuesKey = Symbol.for(
+  'wincent-agent-plugins.mcp-confirmations',
+);
+const confirmationState = globalThis as typeof globalThis & {
+  [confirmationQueuesKey]?: WeakMap<object, Promise<void>>;
+};
+const confirmationQueues = confirmationState[confirmationQueuesKey] ??=
+  new WeakMap<object, Promise<void>>();
+
+export function queueMcpConfirmation(
+  ui: object,
+  prompt: () => Promise<boolean>,
+): Promise<boolean> {
+  const result = (confirmationQueues.get(ui) ?? Promise.resolve())
+    .then(prompt)
+    .then((approved) => approved === true, () => false);
+  confirmationQueues.set(ui, result.then(() => {}));
+  return result;
+}
+
 // ── Validation helper ──────────────────────────────────────────────────────
 
 export function describeValidationFailure(
@@ -761,10 +783,11 @@ export function defineMcpProxyTool(opts: ProxyToolOptions) {
 
           if (opts.isWriteTool(tool)) {
             const argPreview = JSON.stringify(args, null, 2).slice(0, 1500);
-            const ok = await ctx.ui.confirm(
-              opts.writeGate.title,
-              `pi wants to call mutating ${opts.label} tool:\n  ${toolName}\n\nArgs:\n${argPreview}`,
-            );
+            const ok = await queueMcpConfirmation(ctx.ui, () =>
+              ctx.ui.confirm(
+                opts.writeGate.title,
+                `pi wants to call mutating ${opts.label} tool:\n  ${toolName}\n\nArgs:\n${argPreview}`,
+              ));
             if (!ok) {
               throw new Error(`Blocked by user: ${toolName}`);
             }

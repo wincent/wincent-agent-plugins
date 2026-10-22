@@ -1,6 +1,6 @@
 /** Per-call write confirmation for the native MCP server named `datadog`. */
 import {type ExtensionAPI} from '@earendil-works/pi-coding-agent';
-import {makeIsWriteTool} from './lib/mcp.js';
+import {makeIsWriteTool, queueMcpConfirmation} from './lib/mcp.js';
 
 const isWriteTool = makeIsWriteTool(
   new Set([
@@ -47,9 +47,6 @@ const isWriteTool = makeIsWriteTool(
 );
 
 export default function datadogMcp(pi: ExtensionAPI) {
-  // Parallel codemode calls must not replace one another's dialogs.
-  let confirmation = Promise.resolve();
-
   pi.on('tool_call', async (event, ctx) => {
     if (!event.toolName.startsWith('mcp__datadog__')) {
       return;
@@ -66,18 +63,15 @@ export default function datadogMcp(pi: ExtensionAPI) {
     if (!ctx.hasUI) {
       return blocked;
     }
-    const pending = confirmation.then(async () => {
-      try {
-        const approved = await ctx.ui.confirm(
+    try {
+      const approved = await queueMcpConfirmation(ctx.ui, () =>
+        ctx.ui.confirm(
           'Datadog write operation',
           `Allow ${event.toolName}?\n\n${JSON.stringify(event.input, null, 2)}`,
-        );
-        return approved ? undefined : blocked;
-      } catch {
-        return blocked;
-      }
-    });
-    confirmation = pending.then(() => {});
-    return pending;
+        ));
+      return approved ? undefined : blocked;
+    } catch {
+      return blocked;
+    }
   });
 }

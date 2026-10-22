@@ -77,14 +77,11 @@ The dynamic client registration metadata and OAuth tokens are stored as plaintex
 
 ### `slack-mcp.ts`
 
-Uses an OAuth grant previously obtained from Claude to talk to Slack's MCP server.
+Requires per-call confirmation for writes through Pi's native MCP server named `slack`, including calls inside codemode. Unknown or unannotated tools require confirmation too; without a UI they are blocked. Configure `https://mcp.slack.com/mcp` in `mcp.json` with an `Authorization` header containing the credential proxy's phantom token, not a real credential. Use `/mcp` for connection status and reconnection. The companion `slack-mcp` skill explains discovery and calls.
 
-Registers two slash commands:
+Run `bin/slack-mcp-auth login`, `status`, or `logout` on the host to manage authentication. Select the intended workspace on the consent screen. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token without displaying it. Do not use Pi's native OAuth login for this server or run a legacy refresher against the same grant.
 
-- `/slack-status` shows status of Slack connection.
-- `/slack-refresh` forces a token refresh.
-
-A companion `slack-mcp` skill under `pi/skills/slack-mcp/` teaches the agent how to use the `list_tools`, `describe_tool`, and `call_tool` commands. Mutating tools always require a confirmation prompt.
+Credentials remain in private plaintext JSON under the host's `$XDG_STATE_HOME/pi/slack-mcp/` (default `~/.local/state/pi/slack-mcp/`). An unset, empty, or relative `XDG_STATE_HOME` uses the default. No Claude installation or credential-store access is needed; the public app registration still attributes Slack activity to Claude Code. Never copy credentials to a sandbox or VM.
 
 ### `context-breakdown.ts`
 
