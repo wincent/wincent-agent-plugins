@@ -1,0 +1,493 @@
+#!/usr/bin/env python3
+"""Host-only Google Workspace MCP OAuth helper for Pi (Python standard library).
+
+Only token prints credentials. Uses a separate store, never the legacy grant.
+The configured service owns Google OAuth and account-domain enforcement.
+Logout clears the local client and tokens, without revoking Google access.
+"""
+import argparse
+import base64
+import contextlib
+import fcntl
+import hashlib
+import hmac
+import http.client
+import http.server
+import json
+import math
+import os
+from pathlib import Path
+import re
+import secrets
+import signal
+import stat
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+
+
+REFRESH_BUFFER_MS = 300_000
+HTTP_TIMEOUT = 10
+LOCK_TIMEOUT = 10
+LOGIN_TIMEOUT = 300
+MAX_JSON_BYTES = 65_536
+LOGIN_HINT = 'Run google-workspace-mcp-auth login on the host.'
+SCOPES = (
+    'openid', 'email', 'profile',
+    'https://www.googleapis.com/auth/drive.readonly',
+    'https://www.googleapis.com/auth/drive.file',
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/documents',
+    'https://www.googleapis.com/auth/presentations',
+)
+SCOPE_ALIASES = {
+    'https://www.googleapis.com/auth/userinfo.email': 'email',
+    'https://www.googleapis.com/auth/userinfo.profile': 'profile',
+}
+OAUTH_ERRORS = frozenset((
+    'invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client',
+    'unsupported_grant_type', 'invalid_scope', 'invalid_target', 'access_denied',
+    'server_error', 'temporarily_unavailable',
+))
+
+
+class AuthError(Exception):
+    pass
+
+
+def resource_url():
+    raw = os.environ.get('GOOGLE_WORKSPACE_MCP_URL', '').strip()
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        valid = (parsed.scheme == 'https' and parsed.hostname and not parsed.username
+                 and not parsed.password and parsed.port in (None, 443)
+                 and parsed.path == '/mcp' and not parsed.query and not parsed.fragment
+                 and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in raw)
+                 and all(re.fullmatch(r'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?', part)
+                         for part in parsed.hostname.split('.')))
+    except ValueError:
+        valid = False
+    if not valid:
+        raise AuthError('GOOGLE_WORKSPACE_MCP_URL must be an HTTPS /mcp URL without credentials, query, or fragment.')
+    return urllib.parse.urlunsplit(parsed._replace(netloc=parsed.netloc.lower()))
+
+
+def origin(resource):
+    return resource[:-len('/mcp')]
+
+
+def store_directory(resource):
+    xdg = os.environ.get('XDG_STATE_HOME', '')
+    root = Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / '.local/state'
+    # Separate from the legacy extension, with an unambiguous endpoint key.
+    key = hashlib.sha256(resource.encode()).hexdigest()
+    return root / 'pi/google-workspace-mcp-host' / key
+
+
+def valid_callback(value):
+    if not isinstance(value, str):
+        return False
+    match = re.fullmatch(r'http://127\.0\.0\.1:([0-9]{1,5})/callback', value)
+    return bool(match and 1 <= int(match[1]) <= 65535)
+
+
+def callback_url():
+    port = os.environ.get('GOOGLE_WORKSPACE_MCP_CALLBACK_PORT', '') or '19877'
+    if not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
+        raise AuthError('GOOGLE_WORKSPACE_MCP_CALLBACK_PORT must be an integer from 1 to 65535.')
+    return f'http://127.0.0.1:{int(port)}/callback'
+
+
+def private_directory(path):
+    path.mkdir(parents=True, mode=0o700, exist_ok=True)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise AuthError('Credential directory must be owned and must not be a symlink.')
+    path.chmod(0o700)
+
+
+def private_open(path, flags):
+    fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    info = os.fstat(fd)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
+        os.close(fd)
+        raise AuthError('Credential files must be private, owned, regular files without hard links.')
+    return fd
+
+
+@contextlib.contextmanager
+def locked(directory):
+    private_directory(directory.parent)
+    private_directory(directory)
+    # Keep the inode stable for other processes waiting on this lock.
+    with os.fdopen(private_open(directory / '.lock', os.O_CREAT | os.O_RDWR), 'r+') as lock:
+        end = time.monotonic() + LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= end:
+                    raise AuthError('Credential store is busy; retry after the other auth command finishes.')
+                time.sleep(0.05)
+        yield
+
+
+def read_json(path):
+    try:
+        fd = private_open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, 'rb') as file:
+        raw = file.read(MAX_JSON_BYTES + 1)
+    if len(raw) > MAX_JSON_BYTES:
+        raise AuthError('Credential file is too large.')
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise AuthError('Credential file contains invalid JSON.') from None
+    if not isinstance(value, dict):
+        raise AuthError('Credential file must contain a JSON object.')
+    return value
+
+
+def write_json(path, value):
+    fd, temporary = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as file:
+            json.dump(value, file, allow_nan=False)
+            file.write('\n')
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+        sync_directory(path.parent)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def sync_directory(directory):
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def credential(value):
+    return isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9._~+/-]+=*', value) is not None
+
+
+def positive_number(value):
+    try:
+        return type(value) in (int, float) and math.isfinite(value) and value > 0
+    except OverflowError:
+        return False
+
+
+
+def valid_scope(value):
+    return (isinstance(value, str) and not any(ord(c) < 32 or ord(c) == 127 for c in value)
+            and set(value.split()) == set(SCOPES))
+
+
+def validate_client(value, resource):
+    if (not isinstance(value, dict) or not credential(value.get('clientId'))
+            or value.get('resourceUri') != resource or value.get('issuer') not in (origin(resource), origin(resource) + '/')
+            or value.get('tokenEndpointAuthMethod') != 'none'
+            or not valid_callback(value.get('redirectUri')) or not valid_scope(value.get('scope'))):
+        raise AuthError('Invalid or mismatched Workspace client registration. ' + LOGIN_HINT)
+    return value
+
+
+def validate_tokens(value, client):
+    if (not isinstance(value, dict)
+            or not all(credential(value.get(k)) for k in ('accessToken', 'refreshToken'))
+            or not positive_number(value.get('expiresAt'))
+            or value.get('clientId') != client['clientId']
+            or value.get('resourceUri') != client['resourceUri']
+            or not valid_scope(value.get('scope'))):
+        raise AuthError('Invalid or mismatched Workspace tokens. ' + LOGIN_HINT)
+    return value
+
+
+def read_grant(directory, resource):
+    grant = read_json(directory / 'grant.json')
+    if grant is not None:
+        client = validate_client(grant.get('client'), resource)
+        validate_tokens(grant.get('tokens'), client)
+    return grant
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def request_json(resource, url, body=None, form=False):
+    base = origin(resource)
+    allowed = {base + path for path in (
+        '/.well-known/oauth-protected-resource/mcp',
+        '/.well-known/oauth-authorization-server', '/register', '/token',
+    )}
+    if url not in allowed:
+        raise AuthError('Refusing an unexpected Workspace OAuth endpoint.')
+    headers = {'Accept': 'application/json'}
+    data = None
+    if body is not None:
+        data = (urllib.parse.urlencode(body) if form else json.dumps(body)).encode()
+        headers['Content-Type'] = 'application/x-www-form-urlencoded' if form else 'application/json'
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    try:
+        with opener.open(urllib.request.Request(url, data=data, headers=headers), timeout=HTTP_TIMEOUT) as response:
+            raw = response.read(MAX_JSON_BYTES + 1)
+    except urllib.error.HTTPError as error:
+        # Only fixed OAuth codes may enter logs, never response descriptions.
+        code = ''
+        try:
+            raw = error.read(MAX_JSON_BYTES + 1)
+            value = json.loads(raw) if len(raw) <= MAX_JSON_BYTES else None
+            candidate = value.get('error') if isinstance(value, dict) else None
+            if isinstance(candidate, str) and candidate in OAUTH_ERRORS:
+                code = ', ' + candidate
+        except (ValueError, OSError, http.client.HTTPException):
+            pass
+        finally:
+            error.close()
+        raise AuthError(f'Workspace OAuth request failed (HTTP {error.code}{code}); no automatic retry. ' + LOGIN_HINT) from None
+    except (OSError, http.client.HTTPException):
+        raise AuthError('Workspace OAuth request failed or timed out; no automatic retry. Check host connectivity.') from None
+    if len(raw) > MAX_JSON_BYTES:
+        raise AuthError('OAuth response is too large.')
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise AuthError('OAuth response contains invalid JSON.') from None
+    if not isinstance(value, dict) or 'error' in value:
+        raise AuthError('Workspace rejected the OAuth request. ' + LOGIN_HINT)
+    return value
+
+
+def discover(resource):
+    base = origin(resource)
+    protected = request_json(resource, base + '/.well-known/oauth-protected-resource/mcp')
+    servers = protected.get('authorization_servers')
+    if (protected.get('resource') != resource
+            or servers not in ([base], [base + '/'])
+            or not isinstance(protected.get('scopes_supported'), list)
+            or not all(isinstance(s, str) for s in protected['scopes_supported'])
+            or set(protected['scopes_supported']) != set(SCOPES)):
+        raise AuthError('Workspace resource metadata changed; review configuration and scopes before login.')
+    metadata = request_json(resource, base + '/.well-known/oauth-authorization-server')
+    issuer = servers[0]
+    if (metadata.get('issuer') != issuer
+            or any(metadata.get(key) != base + path for key, path in (
+                ('authorization_endpoint', '/authorize'), ('token_endpoint', '/token'),
+                ('registration_endpoint', '/register')))):
+        raise AuthError('Workspace OAuth metadata returned unexpected endpoints.')
+    for key, required in (
+        ('code_challenge_methods_supported', {'S256'}),
+        ('response_types_supported', {'code'}),
+        ('grant_types_supported', {'authorization_code', 'refresh_token'}),
+    ):
+        values = metadata.get(key)
+        if not isinstance(values, list) or not all(isinstance(v, str) for v in values) or not required.issubset(values):
+            raise AuthError('Workspace OAuth metadata lacks required protocol support.')
+    # FastMCP OAuthProxy stores public clients even when metadata lists only
+    # secret-based methods. Registration explicitly requests none; no fallback.
+    methods = metadata.get('token_endpoint_auth_methods_supported')
+    if (not isinstance(methods, list) or not methods or not all(
+            method in ('none', 'client_secret_post', 'client_secret_basic') for method in methods)):
+        raise AuthError('Unexpected Workspace client-authentication metadata.')
+    return issuer
+
+
+def register_client(resource, redirect, issuer):
+    response = request_json(resource, origin(resource) + '/register', {
+        'client_name': 'pi-google-workspace-mcp', 'redirect_uris': [redirect],
+        'grant_types': ['authorization_code', 'refresh_token'], 'response_types': ['code'],
+        'token_endpoint_auth_method': 'none', 'scope': ' '.join(SCOPES),
+    })
+    if (response.get('token_endpoint_auth_method', 'none') != 'none'
+            or not isinstance(response.get('redirect_uris'), list)
+            or redirect not in response['redirect_uris']
+            or not valid_scope(response.get('scope', ' '.join(SCOPES)))):
+        raise AuthError('Workspace registration did not accept the public-client callback and scopes.')
+    return validate_client({
+        'clientId': response.get('client_id'), 'resourceUri': resource, 'issuer': issuer,
+        'tokenEndpointAuthMethod': 'none', 'redirectUri': redirect, 'scope': ' '.join(SCOPES),
+    }, resource)
+
+
+def normalize_tokens(response, client, previous=None):
+    if (not isinstance(response.get('token_type'), str) or response['token_type'].lower() != 'bearer'
+            or not positive_number(response.get('expires_in')) or 'error' in response):
+        raise AuthError('Expected a successful, expiring Workspace bearer-token response.')
+    previous = previous or {}
+    scope = response.get('scope', previous.get('scope', client['scope']))
+    if isinstance(scope, str):
+        # Google may return the full userinfo scope names for OIDC shortcuts.
+        # Split only on spaces so invalid control characters still fail validation.
+        scope = ' '.join(SCOPE_ALIASES.get(part, part) for part in scope.split(' '))
+    tokens = {
+        'accessToken': response.get('access_token'),
+        'refreshToken': response.get('refresh_token', previous.get('refreshToken')),
+        'expiresAt': time.time() * 1000 + float(response['expires_in']) * 1000,
+        'scope': scope,
+        'clientId': client['clientId'], 'resourceUri': client['resourceUri'],
+    }
+    return validate_tokens(tokens, client)
+
+
+def token(directory, resource, force_refresh=False):
+    grant = read_grant(directory, resource)
+    if grant is None:
+        raise AuthError('No Pi-owned Workspace grant. ' + LOGIN_HINT)
+    client, tokens = grant['client'], grant['tokens']
+    if not force_refresh and tokens['expiresAt'] - REFRESH_BUFFER_MS > time.time() * 1000:
+        return tokens['accessToken']
+    # Omitted scope retains the original grant, without re-requesting aliases
+    # that a server might compare literally against the granted scope names.
+    response = request_json(resource, origin(resource) + '/token', {
+        'grant_type': 'refresh_token', 'refresh_token': tokens['refreshToken'],
+        'client_id': client['clientId'], 'resource': resource,
+    }, form=True)
+    refreshed = normalize_tokens(response, client, tokens)
+    write_json(directory / 'grant.json', {'client': client, 'tokens': refreshed})
+    return refreshed['accessToken']
+
+
+class CallbackServer(http.server.HTTPServer):
+    def get_request(self):
+        connection, address = super().get_request()
+        connection.settimeout(1)
+        return connection, address
+
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], AuthError):
+            self.shutdown_request(request)
+            raise
+        # Never print callback codes or request data in a traceback.
+
+
+
+def login(directory, resource):
+    redirect = callback_url()
+    grant = read_grant(directory, resource)
+    issuer = discover(resource)
+    result = {}
+    state = secrets.token_urlsafe(32)
+    verifier = secrets.token_urlsafe(32)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+
+    class Callback(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            parsed = urllib.parse.urlsplit(self.path)
+            params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+            states = params.get('state', [])
+            valid = (parsed.path == '/callback' and len(states) == 1
+                     and hmac.compare_digest(states[0].encode(), state.encode()))
+            codes = params.get('code', [])
+            if valid and ('error' in params or len(codes) != 1 or not credential(codes[0])
+                          or ('iss' in params and params['iss'] != [issuer])):
+                result['error'] = True
+            elif valid:
+                result['code'] = codes[0]
+            self.send_response(200 if valid and 'code' in result else 400)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(b'Authorization received. Return to the terminal.' if valid else b'Invalid callback.')
+
+    # Bind before registration/browser side effects. Preserve the old grant
+    # until the complete new client/token pair can be atomically saved.
+    with CallbackServer(('127.0.0.1', urllib.parse.urlsplit(redirect).port), Callback) as server:
+        compatible = grant and grant['client']['redirectUri'] == redirect and grant['client']['issuer'] == issuer
+        client = grant['client'] if compatible else register_client(resource, redirect, issuer)
+        params = {
+            'response_type': 'code', 'client_id': client['clientId'],
+            'redirect_uri': redirect, 'state': state,
+            'code_challenge': challenge, 'code_challenge_method': 'S256',
+            'resource': resource, 'scope': client['scope'],
+        }
+        url = origin(resource) + '/authorize?' + urllib.parse.urlencode(params)
+        print('Choose your work Google account. This helper does not verify account identity.\nOpen this URL:\n' + url, file=sys.stderr)
+        try:
+            webbrowser.open(url)
+        except (OSError, webbrowser.Error):
+            pass
+        end = time.monotonic() + LOGIN_TIMEOUT
+        while not result:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                raise AuthError('Login timed out; no local grant was changed.')
+            server.timeout = min(1, remaining)
+            server.handle_request()
+    if 'error' in result:
+        raise AuthError('Login was denied or returned an invalid callback.')
+    response = request_json(resource, origin(resource) + '/token', {
+        'grant_type': 'authorization_code', 'code': result['code'],
+        'redirect_uri': redirect, 'client_id': client['clientId'],
+        'code_verifier': verifier, 'resource': resource,
+    }, form=True)
+    write_json(directory / 'grant.json', {'client': client, 'tokens': normalize_tokens(response, client)})
+
+
+def status(directory, resource):
+    grant = read_grant(directory, resource)
+    if grant is None:
+        return {'state': 'not_signed_in'}
+    return {
+        'state': 'expired' if grant['tokens']['expiresAt'] <= time.time() * 1000 else 'access_token_valid',
+        'expires_at_ms': grant['tokens']['expiresAt'],
+        'refresh_token_present': True, 'refresh_validity': 'not_checked',
+    }
+
+
+def interrupt(_signum, _frame):
+    raise AuthError('Auth command interrupted or timed out; inspect status before retrying.')
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=['login', 'token', 'status', 'logout'])
+    parser.add_argument('--refresh', action='store_true', help='force refresh with token (never opens a browser)')
+    args = parser.parse_args(argv)
+    if args.refresh and args.command != 'token':
+        parser.error('--refresh is only valid with token')
+    for signum in (signal.SIGALRM, signal.SIGTERM):
+        signal.signal(signum, interrupt)
+    signal.alarm(360 if args.command == 'login' else 25)
+    try:
+        resource = resource_url()
+        directory = store_directory(resource)
+        with locked(directory):
+            if args.command == 'token':
+                print(token(directory, resource, args.refresh))
+            elif args.command == 'login':
+                login(directory, resource)
+                print('Workspace MCP grant saved in the Pi host store.')
+            elif args.command == 'logout':
+                (directory / 'grant.json').unlink(missing_ok=True)
+                sync_directory(directory)
+                print('Local grant removed; no server or Google authorization was revoked.')
+            else:
+                print(json.dumps(status(directory, resource)))
+        return 0
+    except AuthError as error:
+        print(f'google-workspace-mcp-auth: {error}', file=sys.stderr)
+    except (OSError, ValueError, KeyboardInterrupt):
+        print('google-workspace-mcp-auth: auth operation failed; check host configuration and credential-store access.', file=sys.stderr)
+    finally:
+        signal.alarm(0)
+    return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
