@@ -63,17 +63,13 @@ The helper defaults to `mcp.datadoghq.com`; `DATADOG_MCP_DOMAIN` selects another
 
 ### `google-workspace-mcp.ts`
 
-Talks to a configured Google Workspace MCP server that provides access to Google Drive, Sheets, Docs, and Slides.
+Requires per-call confirmation for writes through Pi's native MCP server named `google_workspace`, including calls inside codemode. Only the local allowlist of known reads bypasses confirmation; explicit destructive or non-read-only annotations override that allowlist. Unknown tools require confirmation even when the server labels them read-only. Without a confirmation UI, these calls are blocked.
 
-Registers three slash commands:
+Enable built-in MCP and configure the service's literal HTTPS `/mcp` URL in `mcp.json` with `Authorization: Bearer ${GOOGLE_WORKSPACE_MCP_TOKEN}`, using the credential proxy's phantom token rather than a real credential. Use `/mcp` for connection status and reconnection. The companion `google-workspace-mcp` skill explains native discovery and calls.
 
-- `/google-workspace-login` signs in through the browser using OAuth with PKCE and dynamic client registration.
-- `/google-workspace-logout` clears locally stored tokens; pass `all` to also clear the dynamic client registration.
-- `/google-workspace-status` shows connection status without exposing token material.
+On the host, set `GOOGLE_WORKSPACE_MCP_URL` to the matching resource URL and use `bin/google-workspace-mcp-auth login`, `status`, or `logout`. Login uses public-client registration and PKCE; select the work account authorized for the configured service. The callback defaults to port `19877`, overridable with `GOOGLE_WORKSPACE_MCP_CALLBACK_PORT`. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token. Do not use Pi's native OAuth login for this server.
 
-A companion `google-workspace-mcp` skill under `pi/skills/google-workspace-mcp/` teaches the agent the `list_tools`, `describe_tool`, and `call_tool` pattern. Mutating tools always require a confirmation prompt; only a local allowlist of known read operations bypasses the gate, so unknown server tools default to mutating. `GOOGLE_WORKSPACE_MCP_URL` is required. `GOOGLE_WORKSPACE_MCP_ACCOUNT_DOMAIN` optionally customizes account guidance, and the local OAuth callback port defaults to `19877` with an override available through `GOOGLE_WORKSPACE_MCP_CALLBACK_PORT`.
-
-The dynamic client registration metadata and OAuth tokens are stored as plaintext JSON under `$XDG_STATE_HOME/pi/google-workspace-mcp/` (default `~/.local/state/pi/google-workspace-mcp/`). An unset, empty, or relative `XDG_STATE_HOME` uses the default. This state is independent of `PI_CODING_AGENT_DIR`, keeping credentials outside configuration directories that may be version-controlled. Directories and files are restricted to modes `0700` and `0600` on POSIX systems. This is not an OS credential store.
+Credentials remain in private plaintext JSON under the host's `$XDG_STATE_HOME/pi/google-workspace-mcp-host/` (default `~/.local/state/pi/google-workspace-mcp-host/`). An unset, empty, or relative `XDG_STATE_HOME` uses the default. This store is separate from the legacy extension's grant; it is not imported or deleted automatically. Logout removes the helper's local client and tokens, not server or Google authorization. Never copy credentials or the host helper to a VM.
 
 ### `slack-mcp.ts`
 

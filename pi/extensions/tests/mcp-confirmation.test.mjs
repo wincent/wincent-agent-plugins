@@ -19,10 +19,11 @@ const hooks = registerHooks({
     return packages.resolve(specifier, context, nextResolve);
   },
 });
-let slack, datadog, queueMcpConfirmation;
+let slack, datadog, workspace, queueMcpConfirmation;
 try {
   ({default: slack} = await import('../slack-mcp.ts'));
   ({default: datadog} = await import('../datadog-mcp.ts'));
+  ({default: workspace} = await import('../google-workspace-mcp.ts'));
   ({queueMcpConfirmation} = await import('../lib/mcp.ts?caller=legacy'));
 } finally {
   hooks.deregister();
@@ -47,9 +48,11 @@ test('independent module instances serialize mixed-server and legacy confirmatio
   const ui = {confirm: (title) => new Promise((resolve, reject) => dialogs.push({title, resolve, reject}))};
   const slackCall = gate(slack, 'mcp__slack__slack_send_message', ui);
   const datadogCall = gate(datadog, 'mcp__datadog__create_dashboard', ui);
+  const workspaceCall = gate(workspace, 'mcp__google_workspace__create_document', ui);
   const first = slackCall();
   const second = datadogCall();
-  const third = queueMcpConfirmation(ui, () => ui.confirm('Legacy MCP'));
+  const third = workspaceCall();
+  const fourth = queueMcpConfirmation(ui, () => ui.confirm('Legacy MCP'));
   await tick();
   assert.deepEqual(dialogs.map(({title}) => title), ['Slack write operation']);
   dialogs[0].resolve(false);
@@ -59,14 +62,18 @@ test('independent module instances serialize mixed-server and legacy confirmatio
   dialogs[1].reject(new Error('UI unavailable'));
   assert.equal((await second).block, true);
   await tick();
-  assert.equal(dialogs[2].title, 'Legacy MCP');
+  assert.equal(dialogs[2].title, 'Google Workspace write operation');
   dialogs[2].resolve(true);
-  assert.equal(await third, true);
-  const fourth = slackCall();
+  assert.equal(await third, undefined);
   await tick();
-  assert.equal(dialogs.length, 4);
+  assert.equal(dialogs[3].title, 'Legacy MCP');
   dialogs[3].resolve(false);
-  assert.equal((await fourth).block, true);
+  assert.equal(await fourth, false);
+  const fifth = workspaceCall();
+  await tick();
+  assert.equal(dialogs.length, 5);
+  dialogs[4].resolve(false);
+  assert.equal((await fifth).block, true);
 });
 
 test('a pending dialog does not block a different UI', async () => {
