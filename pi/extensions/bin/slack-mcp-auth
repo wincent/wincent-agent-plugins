@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""Host-only Slack MCP OAuth helper for Pi (Python standard library).
+
+Only `token` prints credentials. Stop legacy Slack refreshers before use.
+Uses the publicly documented Claude Code Slack app registration, but never
+reads or writes Claude credentials. Slack app attribution remains Claude Code.
+"""
+
+import argparse
+import base64
+import contextlib
+import fcntl
+import hashlib
+import hmac
+import http.client
+import http.server
+import json
+import math
+import os
+from pathlib import Path
+import re
+import secrets
+import signal
+import stat
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+
+# https://docs.slack.dev/ai/slack-mcp-server/connect-to-claude/
+CLIENT_ID = '1601185624273.8899143856786'
+REDIRECT_URI = 'http://localhost:3118/callback'
+RESOURCE = 'https://mcp.slack.com'
+METADATA_URL = RESOURCE + '/.well-known/oauth-authorization-server'
+AUTHORIZE_URL = 'https://slack.com/oauth/v2_user/authorize'
+TOKEN_URL = 'https://slack.com/api/oauth.v2.user.access'
+REFRESH_BUFFER_MS = 300_000
+HTTP_TIMEOUT = 10
+LOCK_TIMEOUT = 10
+LOGIN_TIMEOUT = 300
+MAX_JSON_BYTES = 65_536
+LOGIN_HINT = 'Run slack-mcp-auth login on the host; do not run legacy Slack refreshers.'
+
+
+class AuthError(Exception):
+    pass
+
+
+def store_directory():
+    xdg = os.environ.get('XDG_STATE_HOME', '')
+    root = Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / '.local/state'
+    return root / 'pi/slack-mcp'
+
+
+def private_directory(path):
+    path.mkdir(parents=True, mode=0o700, exist_ok=True)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise AuthError('Credential directory must be owned and must not be a symlink.')
+    path.chmod(0o700)
+
+
+def private_open(path, flags):
+    fd = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    info = os.fstat(fd)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
+        os.close(fd)
+        raise AuthError('Credential files must be private, owned, regular files without hard links.')
+    return fd
+
+
+@contextlib.contextmanager
+def locked(directory):
+    private_directory(directory.parent)
+    private_directory(directory)
+    # Keep the inode stable for other processes waiting on this lock.
+    with os.fdopen(private_open(directory / '.lock', os.O_CREAT | os.O_RDWR), 'r+') as lock:
+        end = time.monotonic() + LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= end:
+                    raise AuthError('Credential store is busy; retry after the other auth command finishes.')
+                time.sleep(0.05)
+        yield
+
+
+def read_tokens(directory):
+    try:
+        fd = private_open(directory / 'tokens.json', os.O_RDONLY)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, 'rb') as file:
+        raw = file.read(MAX_JSON_BYTES + 1)
+    if len(raw) > MAX_JSON_BYTES:
+        raise AuthError('Credential file is too large.')
+    try:
+        return validate_tokens(json.loads(raw))
+    except (ValueError, UnicodeError):
+        raise AuthError('Credential file contains invalid JSON.') from None
+
+
+def sync_directory(directory):
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_tokens(directory, tokens):
+    validate_tokens(tokens)
+    fd, temporary = tempfile.mkstemp(prefix='tokens.', suffix='.tmp', dir=directory)
+    try:
+        with os.fdopen(fd, 'w') as file:
+            json.dump(tokens, file, allow_nan=False)
+            file.write('\n')
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, directory / 'tokens.json')
+        sync_directory(directory)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def credential(value):
+    return isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9._~+/-]+=*', value) is not None
+
+
+def positive_number(value):
+    try:
+        return type(value) in (int, float) and math.isfinite(value) and value > 0
+    except OverflowError:
+        return False
+
+
+def validate_tokens(value):
+    if (not isinstance(value, dict) or value.get('clientId') != CLIENT_ID
+            or not all(credential(value.get(key)) for key in ('accessToken', 'refreshToken'))
+            or not positive_number(value.get('expiresAt'))):
+        raise AuthError('Missing or invalid Pi-owned Slack tokens. ' + LOGIN_HINT)
+    scope = value.get('scope', '')
+    if not isinstance(scope, str) or any(ord(c) < 32 or ord(c) == 127 for c in scope):
+        raise AuthError('Invalid saved scope metadata.')
+    return value
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def request_json(url, body=None):
+    if url not in (METADATA_URL, TOKEN_URL):
+        raise AuthError('Refusing an unexpected OAuth endpoint.')
+    headers = {'Accept': 'application/json'}
+    data = None
+    if body is not None:
+        data = urllib.parse.urlencode(body).encode()
+        headers['Content-Type'] = 'application/x-www-form-urlencoded'
+    # Auth runs on the host, not recursively through the credential proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    try:
+        with opener.open(urllib.request.Request(url, data=data, headers=headers), timeout=HTTP_TIMEOUT) as response:
+            raw = response.read(MAX_JSON_BYTES + 1)
+    except urllib.error.HTTPError as error:
+        error.close()
+        raise AuthError(f'Slack OAuth request failed (HTTP {error.code}); no automatic retry. ' + LOGIN_HINT) from None
+    except (OSError, http.client.HTTPException):
+        raise AuthError('Slack OAuth request failed or timed out; no automatic retry. Check host connectivity.') from None
+    if len(raw) > MAX_JSON_BYTES:
+        raise AuthError('OAuth response is too large.')
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise AuthError('OAuth response contains invalid JSON.') from None
+    if not isinstance(value, dict) or 'error' in value or value.get('ok', True) is not True:
+        raise AuthError('Slack rejected the OAuth request. ' + LOGIN_HINT)
+    return value
+
+
+def normalize_tokens(response, previous=None):
+    # Slack labels user tokens `user`; Bearer is the corresponding HTTP scheme.
+    if (response.get('ok') is not True or 'error' in response
+            or response.get('token_type') not in ('user', 'bearer', 'Bearer')
+            or not positive_number(response.get('expires_in'))):
+        raise AuthError('Expected a successful, expiring Slack user-token response. ' + LOGIN_HINT)
+    tokens = {
+        'clientId': CLIENT_ID,
+        'accessToken': response.get('access_token'),
+        # Never fall back to the spent refresh token after rotation.
+        'refreshToken': response.get('refresh_token'),
+        'expiresAt': time.time() * 1000 + float(response['expires_in']) * 1000,
+    }
+    user = response.get('authed_user')
+    scope = response.get('scope', user.get('scope') if isinstance(user, dict) else None)
+    if scope is not None:
+        tokens['scope'] = scope
+    elif previous and 'scope' in previous:
+        tokens['scope'] = previous['scope']
+    return validate_tokens(tokens)
+
+
+def token(directory, force_refresh=False):
+    tokens = validate_tokens(read_tokens(directory))
+    if not force_refresh and tokens['expiresAt'] - REFRESH_BUFFER_MS > time.time() * 1000:
+        return tokens['accessToken']
+    response = request_json(TOKEN_URL, {
+        'grant_type': 'refresh_token',
+        'refresh_token': tokens['refreshToken'],
+        'client_id': CLIENT_ID,
+    })
+    refreshed = normalize_tokens(response, tokens)
+    # Persist the rotated grant before making the access token available.
+    write_tokens(directory, refreshed)
+    return refreshed['accessToken']
+
+
+def login_scopes():
+    metadata = request_json(METADATA_URL)
+    methods = metadata.get('code_challenge_methods_supported')
+    if (metadata.get('issuer') != RESOURCE or metadata.get('authorization_endpoint') != AUTHORIZE_URL
+            or metadata.get('token_endpoint') != TOKEN_URL or not isinstance(methods, list) or 'S256' not in methods):
+        raise AuthError('Slack OAuth metadata changed; review the host helper before signing in.')
+    scopes = metadata.get('scopes_supported')
+    if not isinstance(scopes, list) or not scopes or not all(
+        isinstance(scope, str) and re.fullmatch(r'[a-z][a-z0-9_:.-]+', scope) for scope in scopes
+    ):
+        raise AuthError('Slack did not advertise usable MCP scopes.')
+    return ' '.join(dict.fromkeys(scopes))
+
+
+class CallbackServer(http.server.HTTPServer):
+    def get_request(self):
+        connection, address = super().get_request()
+        connection.settimeout(1)
+        return connection, address
+
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], AuthError):
+            self.shutdown_request(request)
+            raise
+        # Never print callback codes or request data in a traceback.
+
+
+def login(directory):
+    scopes = login_scopes()
+    state = secrets.token_urlsafe(32)
+    verifier = secrets.token_urlsafe(32)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+    result = {}
+
+    class Callback(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            parsed = urllib.parse.urlsplit(self.path)
+            params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+            states = params.get('state', [])
+            valid = (parsed.path == '/callback' and len(states) == 1
+                     and hmac.compare_digest(states[0].encode(), state.encode()))
+            codes = params.get('code', [])
+            if valid and ('error' in params or len(codes) != 1 or not credential(codes[0])):
+                result['error'] = True
+            elif valid:
+                result['code'] = codes[0]
+            self.send_response(200 if valid and 'code' in result else 400)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(b'Authorization received. Return to the terminal.' if valid else b'Invalid callback.')
+
+    with CallbackServer(('127.0.0.1', urllib.parse.urlsplit(REDIRECT_URI).port), Callback) as server:
+        params = {
+            'response_type': 'code', 'client_id': CLIENT_ID,
+            'redirect_uri': REDIRECT_URI, 'state': state,
+            'code_challenge': challenge, 'code_challenge_method': 'S256',
+            'resource': RESOURCE, 'scope': scopes,
+        }
+        url = AUTHORIZE_URL + '?' + urllib.parse.urlencode(params)
+        print('Sign in using the registered Claude Code Slack app (credentials stay in Pi).\nOpen this URL:\n' + url, file=sys.stderr)
+        try:
+            webbrowser.open(url)
+        except (OSError, webbrowser.Error):
+            pass
+        end = time.monotonic() + LOGIN_TIMEOUT
+        while not result:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                raise AuthError('Login timed out; no local credentials were changed.')
+            server.timeout = min(1, remaining)
+            server.handle_request()
+    if 'error' in result:
+        raise AuthError('Login was denied or returned an invalid callback.')
+    response = request_json(TOKEN_URL, {
+        'grant_type': 'authorization_code', 'code': result['code'],
+        'redirect_uri': REDIRECT_URI, 'client_id': CLIENT_ID,
+        'code_verifier': verifier, 'resource': RESOURCE,
+    })
+    write_tokens(directory, normalize_tokens(response))
+
+
+def status(directory):
+    tokens = read_tokens(directory)
+    if tokens is None:
+        return {'state': 'not_signed_in'}
+    return {
+        'state': 'expired' if tokens['expiresAt'] <= time.time() * 1000 else 'access_token_valid',
+        'expires_at_ms': tokens['expiresAt'],
+        'refresh_token_present': True,
+        'refresh_validity': 'not_checked',
+    }
+
+
+def interrupt(_signum, _frame):
+    raise AuthError('Auth command interrupted or timed out; inspect status before retrying.')
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=['login', 'token', 'status', 'logout'])
+    parser.add_argument('--refresh', action='store_true', help='force refresh with token (never opens a browser)')
+    args = parser.parse_args(argv)
+    if args.refresh and args.command != 'token':
+        parser.error('--refresh is only valid with token')
+    for signum in (signal.SIGALRM, signal.SIGTERM):
+        signal.signal(signum, interrupt)
+    signal.alarm(360 if args.command == 'login' else 25)
+    try:
+        directory = store_directory()
+        with locked(directory):
+            if args.command == 'token':
+                print(token(directory, args.refresh))
+            elif args.command == 'login':
+                login(directory)
+                print('Signed in to Slack; credentials saved in the Pi host store.')
+            elif args.command == 'logout':
+                (directory / 'tokens.json').unlink(missing_ok=True)
+                sync_directory(directory)
+                print('Local tokens removed; the Slack app installation was not revoked.')
+            else:
+                print(json.dumps(status(directory)))
+        return 0
+    except AuthError as error:
+        print(f'slack-mcp-auth: {error}', file=sys.stderr)
+    except (OSError, ValueError, KeyboardInterrupt):
+        print('slack-mcp-auth: auth operation failed; check host configuration and credential-store access.', file=sys.stderr)
+    finally:
+        signal.alarm(0)
+    return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
