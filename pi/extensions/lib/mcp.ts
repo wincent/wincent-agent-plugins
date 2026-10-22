@@ -1,5 +1,5 @@
 /** Shared confirmation and classification for native MCP tools. */
-import type {ToolInfo} from '@earendil-works/pi-coding-agent';
+import type {ExtensionAPI, ToolInfo} from '@earendil-works/pi-coding-agent';
 
 type McpPermissionTool = Pick<ToolInfo, 'name' | 'annotations'>;
 
@@ -23,6 +23,44 @@ export function queueMcpConfirmation(
     .then((approved) => approved === true, () => false);
   confirmationQueues.set(ui, result.then(() => {}));
   return result;
+}
+
+export function registerMcpPermissionGate(
+  pi: ExtensionAPI,
+  opts: {
+    server: string;
+    label: string;
+    isWriteTool(tool: McpPermissionTool): boolean;
+  },
+): void {
+  const prefix = `mcp__${opts.server}__`;
+  pi.on('tool_call', async (event, ctx) => {
+    if (!event.toolName.startsWith(prefix)) {
+      return;
+    }
+    const tool = pi.getAllTools().find(({name}) => name === event.toolName);
+    if (tool && !opts.isWriteTool(tool)) {
+      return;
+    }
+    const blocked = {
+      block: true,
+      reason:
+        `${opts.label} tool ${event.toolName} requires per-call user confirmation.`,
+    };
+    if (!ctx.hasUI) {
+      return blocked;
+    }
+    try {
+      const approved = await queueMcpConfirmation(ctx.ui, () =>
+        ctx.ui.confirm(
+          `${opts.label} write operation`,
+          `Allow ${event.toolName}?\n\n${JSON.stringify(event.input, null, 2)}`,
+        ));
+      return approved ? undefined : blocked;
+    } catch {
+      return blocked;
+    }
+  });
 }
 
 // Only explicitly read-only tools can bypass confirmation. Destructive hints

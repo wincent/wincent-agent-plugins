@@ -1,6 +1,6 @@
 /** Per-call write confirmation for the native MCP server named `google_workspace`. */
 import {type ExtensionAPI} from '@earendil-works/pi-coding-agent';
-import {queueMcpConfirmation} from './lib/mcp.js';
+import {registerMcpPermissionGate} from './lib/mcp.js';
 
 const TOOL_PREFIX = 'mcp__google_workspace__';
 const READ_ONLY_TOOL_NAMES = new Set([
@@ -23,36 +23,12 @@ const READ_ONLY_TOOL_NAMES = new Set([
 ]);
 
 export default function googleWorkspaceMcp(pi: ExtensionAPI) {
-  pi.on('tool_call', async (event, ctx) => {
-    if (!event.toolName.startsWith(TOOL_PREFIX)) {
-      return;
-    }
-    const tool = pi.getAllTools().find(({name}) => name === event.toolName);
-    if (
-      tool &&
-      READ_ONLY_TOOL_NAMES.has(event.toolName.slice(TOOL_PREFIX.length)) &&
-      tool.annotations?.readOnlyHint !== false &&
-      tool.annotations?.destructiveHint !== true
-    ) {
-      return;
-    }
-    const blocked = {
-      block: true,
-      reason:
-        `Google Workspace tool ${event.toolName} requires per-call user confirmation.`,
-    };
-    if (!ctx.hasUI) {
-      return blocked;
-    }
-    try {
-      const approved = await queueMcpConfirmation(ctx.ui, () =>
-        ctx.ui.confirm(
-          'Google Workspace write operation',
-          `Allow ${event.toolName}?\n\n${JSON.stringify(event.input, null, 2)}`,
-        ));
-      return approved ? undefined : blocked;
-    } catch {
-      return blocked;
-    }
+  registerMcpPermissionGate(pi, {
+    server: 'google_workspace',
+    label: 'Google Workspace',
+    isWriteTool: (tool) =>
+      !READ_ONLY_TOOL_NAMES.has(tool.name.slice(TOOL_PREFIX.length)) ||
+      tool.annotations?.readOnlyHint === false ||
+      tool.annotations?.destructiveHint === true,
   });
 }

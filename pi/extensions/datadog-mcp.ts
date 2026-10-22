@@ -1,6 +1,6 @@
 /** Per-call write confirmation for the native MCP server named `datadog`. */
 import {type ExtensionAPI} from '@earendil-works/pi-coding-agent';
-import {makeIsWriteTool, queueMcpConfirmation} from './lib/mcp.js';
+import {makeIsWriteTool, registerMcpPermissionGate} from './lib/mcp.js';
 
 const isWriteTool = makeIsWriteTool(
   new Set([
@@ -47,31 +47,9 @@ const isWriteTool = makeIsWriteTool(
 );
 
 export default function datadogMcp(pi: ExtensionAPI) {
-  pi.on('tool_call', async (event, ctx) => {
-    if (!event.toolName.startsWith('mcp__datadog__')) {
-      return;
-    }
-    const tool = pi.getAllTools().find(({name}) => name === event.toolName);
-    if (tool && !isWriteTool(tool)) {
-      return;
-    }
-    const blocked = {
-      block: true,
-      reason:
-        `Datadog tool ${event.toolName} requires per-call user confirmation.`,
-    };
-    if (!ctx.hasUI) {
-      return blocked;
-    }
-    try {
-      const approved = await queueMcpConfirmation(ctx.ui, () =>
-        ctx.ui.confirm(
-          'Datadog write operation',
-          `Allow ${event.toolName}?\n\n${JSON.stringify(event.input, null, 2)}`,
-        ));
-      return approved ? undefined : blocked;
-    } catch {
-      return blocked;
-    }
+  registerMcpPermissionGate(pi, {
+    server: 'datadog',
+    label: 'Datadog',
+    isWriteTool,
   });
 }
