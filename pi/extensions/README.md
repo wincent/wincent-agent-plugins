@@ -57,9 +57,9 @@ Delegates focused tasks to headless Pi agents, with progress in the controlling 
 
 Requires per-call confirmation for writes through Pi's native MCP server named `datadog`, including calls made inside codemode. Unknown or unannotated tools require confirmation too; without a UI they are blocked. Enable built-in MCP and configure the server in `mcp.json` with an `Authorization` header containing the credential proxy's phantom token, not a real credential. Use `/mcp` for connection status and reconnection. The companion `datadog-mcp` skill explains discovery and calls.
 
-Run `bin/datadog-mcp-auth login`, `status`, or `logout` on the host to manage authentication. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token without displaying it. Do not use Pi's native OAuth login for this server or run a legacy Datadog extension against the same grant.
+Run `bin/datadog-mcp-auth login`, `status`, or `logout` on the host to manage authentication. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token without displaying it. Use only this helper to manage the grant, not Pi's native OAuth commands.
 
-The helper defaults to `mcp.datadoghq.com`; `DATADOG_MCP_DOMAIN` selects another site and must match the proxy route and MCP URL. Registrations and tokens remain in private plaintext JSON under the host's `$XDG_STATE_HOME/pi/datadog-mcp/` (default `~/.local/state/pi/datadog-mcp/`). An unset, empty, or relative `XDG_STATE_HOME` uses the default. Never copy this state to a sandbox or VM.
+The helper defaults to `mcp.datadoghq.com`; `DATADOG_MCP_DOMAIN` selects another site and must match the proxy route and MCP URL. Registrations and tokens are stored as private plaintext JSON under `$XDG_STATE_HOME/pi/datadog-mcp/` (default `~/.local/state/pi/datadog-mcp/`). Never copy this state into a sandbox or VM.
 
 ### `google-workspace-mcp.ts`
 
@@ -67,17 +67,17 @@ Requires per-call confirmation for writes through Pi's native MCP server named `
 
 Enable built-in MCP and configure the service's literal HTTPS `/mcp` URL in `mcp.json` with `Authorization: Bearer ${GOOGLE_WORKSPACE_MCP_TOKEN}`, using the credential proxy's phantom token rather than a real credential. Use `/mcp` for connection status and reconnection. The companion `google-workspace-mcp` skill explains native discovery and calls.
 
-On the host, set `GOOGLE_WORKSPACE_MCP_URL` to the matching resource URL and use `bin/google-workspace-mcp-auth login`, `status`, or `logout`. Login uses public-client registration and PKCE; select the work account authorized for the configured service. The callback defaults to port `19877`, overridable with `GOOGLE_WORKSPACE_MCP_CALLBACK_PORT`. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token. Do not use Pi's native OAuth login for this server.
+On the host, set `GOOGLE_WORKSPACE_MCP_URL` to the matching resource URL and use `bin/google-workspace-mcp-auth login`, `status`, or `logout`. Select the work account authorized for the configured service. The callback defaults to port `19877`, overridable with `GOOGLE_WORKSPACE_MCP_CALLBACK_PORT`. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token. Use only this helper to manage the grant, not Pi's native OAuth commands.
 
-Credentials remain in private plaintext JSON under the host's `$XDG_STATE_HOME/pi/google-workspace-mcp-host/` (default `~/.local/state/pi/google-workspace-mcp-host/`). An unset, empty, or relative `XDG_STATE_HOME` uses the default. This store is separate from the legacy extension's grant; it is not imported or deleted automatically. Logout removes the helper's local client and tokens, not server or Google authorization. Never copy credentials or the host helper to a VM.
+Credentials are stored as private plaintext JSON under `$XDG_STATE_HOME/pi/google-workspace-mcp-host/` (default `~/.local/state/pi/google-workspace-mcp-host/`). Logout removes the local client and tokens, not server or Google authorization. Keep credentials and the helper on the host.
 
 ### `slack-mcp.ts`
 
 Requires per-call confirmation for writes through Pi's native MCP server named `slack`, including calls inside codemode. Unknown or unannotated tools require confirmation too; without a UI they are blocked. Configure `https://mcp.slack.com/mcp` in `mcp.json` with an `Authorization` header containing the credential proxy's phantom token, not a real credential. Use `/mcp` for connection status and reconnection. The companion `slack-mcp` skill explains discovery and calls.
 
-Run `bin/slack-mcp-auth login`, `status`, or `logout` on the host to manage authentication. Select the intended workspace on the consent screen. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token without displaying it. Do not use Pi's native OAuth login for this server or run a legacy refresher against the same grant.
+Run `bin/slack-mcp-auth login`, `status`, or `logout` on the host to manage authentication. Select the intended workspace on the consent screen. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token without displaying it. Use only this helper to manage the grant, not Pi's native OAuth commands.
 
-Credentials remain in private plaintext JSON under the host's `$XDG_STATE_HOME/pi/slack-mcp/` (default `~/.local/state/pi/slack-mcp/`). An unset, empty, or relative `XDG_STATE_HOME` uses the default. No Claude installation or credential-store access is needed; the public app registration still attributes Slack activity to Claude Code. Never copy credentials to a sandbox or VM.
+Credentials are stored as private plaintext JSON under `$XDG_STATE_HOME/pi/slack-mcp/` (default `~/.local/state/pi/slack-mcp/`). Never copy this state into a sandbox or VM. Slack attributes activity to Claude Code, but no Claude installation is needed.
 
 ### `context-breakdown.ts`
 

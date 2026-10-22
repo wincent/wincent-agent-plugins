@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Host-only Google Workspace MCP OAuth helper for Pi (Python standard library).
 
-Only token prints credentials. Uses a separate store, never the legacy grant.
+Only token prints credentials.
 The configured service owns Google OAuth and account-domain enforcement.
 Logout clears the local client and tokens, without revoking Google access.
 """
@@ -83,7 +83,6 @@ def origin(resource):
 def store_directory(resource):
     xdg = os.environ.get('XDG_STATE_HOME', '')
     root = Path(xdg) if xdg and Path(xdg).is_absolute() else Path.home() / '.local/state'
-    # Separate from the legacy extension, with an unambiguous endpoint key.
     key = hashlib.sha256(resource.encode()).hexdigest()
     return root / 'pi/google-workspace-mcp-host' / key
 

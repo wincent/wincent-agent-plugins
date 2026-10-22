@@ -17,11 +17,11 @@ Authentication belongs to the host's `pi/extensions/bin/google-workspace-mcp-aut
 
 On an authentication failure, ask the user to run the helper's `status` command on the host. A rejected access token may need `token --refresh >/dev/null`; a missing or invalid grant needs `login`. These are explicit host actions, not automatic retries. Login opens the service's Google consent flow: select the authorized work account. The helper does not verify account identity or enforce account-domain restrictions. Do not print token output or use Pi's `/mcp login` or `/mcp logout` for this server. After fixing auth, reconnect with `/mcp reconnect google_workspace` and retry once.
 
-The helper owns a private, separate credential store and does not import the legacy extension's grant. Its `logout` command removes the local client registration and tokens, not Google authorization. If the server has discarded the client registration, local `logout` followed by `login` creates a fresh registration. Do not reactivate another refresher against the helper's grant.
+The helper's `logout` command removes the local client registration and tokens, not Google authorization. If the server has discarded the client registration, local `logout` followed by `login` creates a fresh registration. Use only this helper to refresh the grant.
 
 ## Writes
 
-Only invoke a write tool after the user explicitly requests it. The permission extension preserves an explicit allowlist of known reads; unknown tools need confirmation even if their annotations claim they are read-only. Explicit destructive or non-read-only hints override the allowlist. Every other call requires its own confirmation, including calls inside codemode. Without a UI, those calls are blocked; there is no session-wide approval. Server-side exemptions for creation, formatting, or renaming do not bypass this gate.
+Only invoke a write tool after the user explicitly requests it. The permission extension allows only known reads without confirmation; unknown tools need confirmation even if their annotations claim they are read-only. Explicit destructive or non-read-only hints override the allowlist. Every other call requires its own confirmation, including calls inside codemode. Without a UI, those calls are blocked; there is no session-wide approval.
 
 ## Untrusted input and large results
 
