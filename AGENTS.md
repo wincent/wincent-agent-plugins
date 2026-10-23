@@ -6,20 +6,14 @@ Before creating any commit, run `bin/check-format` to see whether any files need
 
 ## Directory structure
 
-The top level of this repository contains two agent-specific directories:
+Pi is the supported agent harness. Keep its resources under `pi/`:
 
-- `claude/` holds one subdirectory per Claude plugin, each of which contains one or more Claude skills.
-- `pi/` (and more specifically, `pi/skills/`) is a compatibility layer for Pi, containing symlinks into `claude/<plugin>/skills/<skill>` (plus a small number of real directories for Pi-only skills).
+- `pi/skills/` holds skill directories with globally unique names, each containing a `SKILL.md` and any supporting scripts, references, or tests.
+- `pi/extensions/` holds extensions and their supporting code and tests.
+- `pi/prompts/` holds prompt templates for proactive workflows that do not need skill auto-loading.
 
-One motivation for the symlinks is that Claude plugins effectively serve as namespaces (a skill's fully-qualified name is scoped to its plugin), but Pi has no namespacing mechanism. The symlinks under `pi/skills/` give each exposed skill a unique, flat name that Pi can use.
+## Skills
 
-In addition to `pi/skills/`, the `pi/` directory contains two other directories of interest:
+Keep ordinary workflow instructions portable where practical, but use Pi-specific tools and features when the task needs them. Compatibility with other harnesses is not required. Do not add another harness's packaging or compatibility aliases without an explicit need.
 
-- `pi/extensions/`
-- `pi/prompts/` holds Pi prompt templates for proactive workflows that do not need skill auto-loading.
-
-## Skill portability: avoid "claude-isms"
-
-Claude skills in this repository should be written in a way that is free of "claude-isms" (that is, patterns, tools, or assumptions that only work in Claude). They should be usable as-is from both Claude and Pi via the symlinks described above.
-
-In the rare case where a task genuinely requires a completely different approach that cannot be shared between Claude and Pi, a Pi-specific skill may be added directly under `pi/skills/` rather than as a symlink to a Claude plugin skill. If the workflow is only invoked proactively and does not need skill auto-loading, prefer a prompt template under `pi/prompts/`.
+Match each skill's frontmatter `name` to its directory name. Resolve bundled script and reference paths relative to the skill directory, not the working directory. If a workflow is only invoked proactively and does not need skill auto-loading, prefer a prompt template under `pi/prompts/`.

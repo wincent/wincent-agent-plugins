@@ -1,9 +1,0 @@
-{
-  "name": "atlassian",
-  "version": "1.0.0",
-  "description": "Access Jira and Confluence Cloud through a shared REST wrapper with nono phantom credentials",
-  "author": {
-    "name": "Greg Hurrell",
-    "email": "greg@hurrell.net"
-  }
-}

@@ -1,54 +1,67 @@
 # wincent-agent-plugins
 
-Agent[^agent] plugins, skills, and extensions from Greg Hurrell.
+[Pi](https://pi.dev/) skills, extensions, and prompt templates from Greg Hurrell (for Claude support, see the repo as it existed at commit [`5738a1ed5275e7239`](https://github.com/wincent/wincent-agent-plugins/tree/5738a1ed5275e7239cec4e2b525c140b9893c1e6)).
 
-[^agent]: Originally developed for [Claude](https://claude.com/product/claude-code) but usable with other agent(s) such as [Pi](https://pi.dev/) as well. For anything that can't directly consume the plug-ins as-is, any agent worth its salt should be able to port them into a suitable format if you point it at this repo and ask it to convert things for you.
+## Pi setup
 
-## Plugins
+Clone the repository into `~/.local/share/agents/wincent-agent-plugins`:
 
-### Claude
+```bash
+mkdir -p ~/.local/share/agents
+git clone https://github.com/wincent/wincent-agent-plugins.git \
+  ~/.local/share/agents/wincent-agent-plugins
+```
 
-Plugins live under [`claude/`](./claude):
+Merge these resource paths into your `~/.pi/agent/settings.json`, preserving any existing settings and other resource entries:
 
-- [atlassian](./claude/atlassian): Jira and Confluence Cloud access via a shared REST wrapper with nono phantom credentials.
-- [git](./claude/git): Git version control skills.
-- [jj](./claude/jj): Jujutsu version control skills.
-- [meme](./claude/meme): Generate meme images using popular templates via the imgflip API.
-- [pr](./claude/pr): GitHub pull request creation and review.
-- [shannon](./claude/shannon): Neovim integration via RPC for annotated code review, walkthroughs, and navigation.
+```json
+{
+  "extensions": [
+    "~/.local/share/agents/wincent-agent-plugins/pi/extensions"
+  ],
+  "skills": [
+    "~/.local/share/agents/wincent-agent-plugins/pi/skills"
+  ],
+  "prompts": [
+    "~/.local/share/agents/wincent-agent-plugins/pi/prompts"
+  ]
+}
+```
 
-### Pi
+If you previously loaded this repository from a Claude marketplace checkout, replace those old resource paths rather than loading both copies. No Claude installation is needed.
 
-#### Prompt templates
+Run `/reload` in Pi or start a new session. Individual integrations may need additional tools, credentials, or host-side proxy configuration; see their setup documentation below and the [extensions README](./pi/extensions/README.md).
 
-Pi prompt templates live under [`pi/prompts`](./pi/prompts/):
+To update:
 
-- [`/sweep`](./pi/prompts/sweep.md): Coordinate a campaign of worker subagents, each making a focused change in its own worktree. Requires the [subagent extension](./pi/extensions/subagent/).
+```bash
+git -C ~/.local/share/agents/wincent-agent-plugins pull --ff-only
+```
 
-#### Skills
+Then run `/reload` or start a new Pi session.
 
-Pi skills live under [`pi/skills`](./pi/skills/):
+## Skills
 
-- [atlassian-confluence](./pi/skills/atlassian-confluence)
-- [atlassian-jira](./pi/skills/atlassian-jira)
-- [datadog-mcp](./pi/skills/datadog-mcp) (Pi-only)
-- [google-workspace-mcp](./pi/skills/google-workspace-mcp) (Pi-only)
-- [git-commit](./pi/skills/git-commit)
-- [jj-commit](./pi/skills/jj-commit)
-- [jj-version-control](./pi/skills/jj-version-control)
-- [meme-create](./pi/skills/meme-create)
-- [neovim](./pi/skills/neovim) (corresponds to "shannon" Claude skill, above)
-- [ocr](./pi/skills/ocr) (Pi-only)
-- [pr-create](./pi/skills/pr-create)
-- [pr-review](./pi/skills/pr-review)
-- [slack-mcp](./pi/skills/slack-mcp) (Pi-only)
-- [subagent](./pi/skills/subagent) (Pi-only)
+Skills live under [`pi/skills`](./pi/skills/). Invoke them explicitly with `/skill:<name>` or ask Pi for a matching task.
 
-Many of these are symlinks pointing to the corresponding Claude skills (all the skills have been written to be as agent-agnostic as possible). Some are specific to Pi (ie. the ones marked with "Pi-only"). Note that Pi skills need globally unique names, unlike Claude skills which are namespaced under plugin prefixes.
+- [atlassian-confluence](./pi/skills/atlassian-confluence): Search and read Confluence Cloud through a shared REST wrapper. See [Atlassian setup](./pi/skills/atlassian-confluence/README.md).
+- [atlassian-jira](./pi/skills/atlassian-jira): Search and read Jira Cloud using the same Atlassian setup.
+- [datadog-mcp](./pi/skills/datadog-mcp): Query Datadog through native MCP.
+- [git-commit](./pi/skills/git-commit): Create Git commits or draft commit messages.
+- [google-workspace-mcp](./pi/skills/google-workspace-mcp): Access Google Drive, Sheets, Docs, and Slides through native MCP.
+- [jj-commit](./pi/skills/jj-commit): Create Jujutsu commits or draft commit messages.
+- [jj-version-control](./pi/skills/jj-version-control): Reference for Jujutsu commands and workflows.
+- [meme-create](./pi/skills/meme-create): Generate meme images through imgflip. See [setup](./pi/skills/meme-create/README.md).
+- [neovim](./pi/skills/neovim): Interact with Neovim through Shannon RPC. See [setup](./pi/skills/neovim/README.md).
+- [ocr](./pi/skills/ocr): Extract text from scanned documents and images. Requires the [OCR extension and setup](./pi/extensions/ocr/README.md).
+- [pr-create](./pi/skills/pr-create): Create draft GitHub pull requests. Requires an installed and authenticated [GitHub CLI](https://cli.github.com/) (`gh`).
+- [pr-review](./pi/skills/pr-review): Review GitHub pull requests using `gh`.
+- [slack-mcp](./pi/skills/slack-mcp): Search and interact with Slack through native MCP.
+- [subagent](./pi/skills/subagent): Delegate focused tasks to headless Pi agents. Requires the [subagent extension](./pi/extensions/subagent/).
 
-#### Extensions
+## Extensions
 
-Pi extensions live under [`pi/extensions`](./pi/extensions/):
+Extensions live under [`pi/extensions`](./pi/extensions/). See the [extensions README](./pi/extensions/README.md) for usage and prerequisites.
 
 - [context-breakdown](./pi/extensions/context-breakdown.ts)
 - [datadog-mcp](./pi/extensions/datadog-mcp.ts)
@@ -62,42 +75,11 @@ Pi extensions live under [`pi/extensions`](./pi/extensions/):
 - [subagent](./pi/extensions/subagent)
 - [total-cost](./pi/extensions/total-cost.ts)
 
-## Claude setup
+## Prompt templates
 
-Add the marketplace:
+Prompt templates live under [`pi/prompts`](./pi/prompts/):
 
-```bash
-claude plugin marketplace add wincent/wincent-agent-plugins
-```
-
-Then install any plugin:
-
-```bash
-claude plugin install atlassian
-claude plugin install git
-claude plugin install jj
-claude plugin install meme
-claude plugin install pr
-claude plugin install shannon
-```
-
-## Pi setup
-
-If you install the Claude marketplace, you can configure Pi to look for skills, prompt templates, and extensions under `~/.claude/plugins/marketplaces/wincent-agent-plugins/` in your `~/.pi/agent/settings.json`:
-
-```json
-{
-  "extensions": [
-    "~/.claude/plugins/marketplaces/wincent-agent-plugins/pi/extensions"
-  ],
-  "skills": [
-    "~/.claude/plugins/marketplaces/wincent-agent-plugins/pi/skills"
-  ],
-  "prompts": [
-    "~/.claude/plugins/marketplaces/wincent-agent-plugins/pi/prompts"
-  ]
-}
-```
+- [`/sweep`](./pi/prompts/sweep.md): Coordinate a campaign of worker subagents, each making a focused change in its own worktree. Requires the [subagent extension](./pi/extensions/subagent/).
 
 ## Tests
 

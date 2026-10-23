@@ -4,12 +4,9 @@ A small collection of [Pi](https://github.com/earendil-works/pi/tree/main/packag
 
 ## Installation
 
-Pi auto-discovers extensions placed in either:
+Follow the [top-level Pi setup](../../README.md#pi-setup) to clone this repository into `~/.local/share/agents/wincent-agent-plugins` and configure Pi to load its extensions, skills, and prompt templates. Run `/reload` in a running Pi session or start a new one after changing resource settings.
 
-- `~/.pi/agent/extensions/` (global, all sessions)
-- `.pi/extensions/` (project-local, current repo only)
-
-Symlink or copy the files you want from this directory into one of those locations, then run `/reload` in a running Pi session (or just start a new one). Alternatively, if you've installed the plugin marketplace in Claude, you can configure Pi to look for extensions under `~/.claude/plugins/marketplaces/wincent-agent-plugins/` (see the [top-level README](../../README.md) for details).
+To load only selected extensions, list their files or entry-point directories in Pi's `extensions` setting instead of the entire directory. Keep them in the checkout so relative imports and bundled resources remain available.
 
 See the [pi extensions documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md) for the full lifecycle, event, and API reference.
 
@@ -81,7 +78,7 @@ Credentials are stored as private plaintext JSON under `$XDG_STATE_HOME/pi/slack
 
 ### `context-breakdown.ts`
 
-Adds a `/context` slash command, similar to the one from Claude Code, that shows how the current context window is being used. This is a counterpart to the built-in `/session`, which reports _cumulative_ session billing rather than current context composition, and to the footer, which reports context usage as a single opaque percentage.
+Adds a `/context` slash command that shows how the current context window is being used. This is a counterpart to the built-in `/session`, which reports _cumulative_ session billing rather than current context composition, and to the footer, which reports context usage as a single opaque percentage.
 
 The total uses provider usage once a usable assistant response exists after the latest compaction or context edit; until then, it is estimated. Categories are always estimates, with discrepancies shown as "Unaccounted".
 

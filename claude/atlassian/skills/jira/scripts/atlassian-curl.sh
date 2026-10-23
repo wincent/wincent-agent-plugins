@@ -1,1 +1,0 @@
-../../confluence/scripts/atlassian-curl.sh
