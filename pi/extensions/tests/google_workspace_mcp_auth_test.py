@@ -242,6 +242,40 @@ class WorkspaceAuthTest(unittest.TestCase):
         with self.assertRaises(auth.AuthError):
             self.read()
 
+    def test_full_drive_scope_is_explicitly_requested_and_accepted(self):
+        with patch.object(auth, 'request_json', side_effect=self.fake_request):
+            client = auth.register_client(RESOURCE, self.client['redirectUri'], self.client['issuer'])
+        self.assertIn('https://www.googleapis.com/auth/drive', client['scope'].split())
+        tokens = auth.normalize_tokens(response(scope=client['scope']), client)
+        self.assertEqual(tokens['scope'], client['scope'])
+
+    def test_old_scope_grant_requires_explicit_reset_before_reauthorization(self):
+        old_scope = ' '.join(scope for scope in auth.SCOPES if scope != 'https://www.googleapis.com/auth/drive')
+        self.client['scope'] = self.tokens['scope'] = old_scope
+        self.save()
+        for command in ('token', 'login'):
+            self.assertEqual(self.main(command)[0], 1)
+            self.assertEqual(auth.read_json(self.directory / 'grant.json'), self.grant)
+        self.assertEqual(self.main('logout')[0], 0)
+        self.assertIsNone(self.read())
+        self.assertEqual(json.loads(self.main('status')[1]), {'state': 'not_signed_in'})
+
+    def test_token_validation_diagnostics_identify_fields_without_response_values(self):
+        cases = [
+            ({'refresh_token': None}, 'refreshToken'),
+            ({'access_token': 'private-access\nvalue'}, 'accessToken'),
+            ({'scope': self.client['scope'] + ' private-scope'}, 'scope (missing 0, additional 1, includes full Drive access)'),
+            ({'scope': 'openid'}, f'scope (missing {len(auth.SCOPES) - 1}, additional 0)'),
+            ({'scope': None}, 'scope'),
+        ]
+        for changes, diagnostic in cases:
+            with self.subTest(changes=changes), self.assertRaises(auth.AuthError) as failure:
+                auth.normalize_tokens(response(**changes), self.client)
+            message = str(failure.exception)
+            self.assertIn(diagnostic, message)
+            for private in ('new-access', 'new-refresh', 'private-access', 'private-scope'):
+                self.assertNotIn(private, message)
+
     def test_token_validation_expiry_type_scopes_and_binding(self):
         for changes in ({'expires_in': None}, {'expires_in': False}, {'expires_in': 0}, {'expires_in': -1},
                         {'expires_in': float('inf')}, {'expires_in': 10**400}, {'expires_in': 1e308},
@@ -260,8 +294,9 @@ class WorkspaceAuthTest(unittest.TestCase):
         with patch.object(auth, 'request_json', side_effect=self.fake_request):auth.discover(RESOURCE)
         for target, key, value in [('protected', 'resource', 'https://other.invalid/mcp'),
                                    ('protected', 'authorization_servers', ['https://other.invalid']),
-                                   ('protected', 'scopes_supported', list(auth.SCOPES) + ['unexpected']),
-                                   ('protected', 'scopes_supported', [{}]),
+                                   ('protected', 'scopes_supported', None),
+                                   ('protected', 'scopes_supported', ' '.join(auth.SCOPES)),
+                                   ('protected', 'scopes_supported', list(auth.SCOPES) + [{}]),
                                    ('metadata', 'issuer', 'https://other.invalid'),
                                    ('metadata', 'token_endpoint', 'https://other.invalid/token'),
                                    ('metadata', 'registration_endpoint', BASE + '/other'),
@@ -274,6 +309,22 @@ class WorkspaceAuthTest(unittest.TestCase):
                 with self.subTest(key=key), patch.object(auth, 'request_json', side_effect=self.fake_request), self.assertRaises(auth.AuthError):
                     auth.discover(RESOURCE)
             finally:data[key] = old
+
+    def test_discovery_allows_additional_scopes_without_requesting_them(self):
+        self.protected['scopes_supported'].append('https://www.googleapis.com/auth/gmail.readonly')
+        with patch.object(auth, 'request_json', side_effect=self.fake_request):
+            issuer = auth.discover(RESOURCE)
+            client = auth.register_client(RESOURCE, self.client['redirectUri'], issuer)
+        self.assertEqual(client['scope'], ' '.join(auth.SCOPES))
+        self.assertNotIn('https://www.googleapis.com/auth/gmail.readonly', client['scope'].split())
+
+    def test_discovery_requires_every_requested_scope(self):
+        for missing in auth.SCOPES:
+            self.protected['scopes_supported'] = [scope for scope in auth.SCOPES if scope != missing]
+            self.protected['scopes_supported'].append('https://www.googleapis.com/auth/gmail.readonly')
+            with self.subTest(missing=missing), patch.object(auth, 'request_json', side_effect=self.fake_request):
+                with self.assertRaises(auth.AuthError):
+                    auth.discover(RESOURCE)
 
     def test_discovery_preserves_exact_root_issuer_with_or_without_trailing_slash(self):
         for issuer in (BASE, BASE + '/'):
@@ -376,6 +427,7 @@ class WorkspaceAuthTest(unittest.TestCase):
         with socket.socket() as sock:sock.bind(('127.0.0.1',0));return sock.getsockname()[1]
 
     def test_login_uses_public_dcr_pkce_bound_pair_and_separate_store(self):
+        self.protected['scopes_supported'].append('https://www.googleapis.com/auth/gmail.readonly')
         with patch.dict(os.environ, {'GOOGLE_WORKSPACE_MCP_CALLBACK_PORT': str(self.free_port())}), \
              patch.object(auth, 'request_json', side_effect=self.fake_request) as request, \
              patch.object(auth.webbrowser, 'open', side_effect=self.browser):
@@ -389,6 +441,11 @@ class WorkspaceAuthTest(unittest.TestCase):
         saved=self.read()
         self.assertEqual(saved['client']['clientId'],'registered-client')
         self.assertEqual(saved['tokens']['clientId'],'registered-client')
+        self.assertEqual(self.login_params['scope'], [' '.join(auth.SCOPES)])
+        self.assertEqual(saved['client']['scope'], ' '.join(auth.SCOPES))
+        self.assertEqual(saved['tokens']['scope'], ' '.join(auth.SCOPES))
+        self.assertIn('https://www.googleapis.com/auth/drive', auth.SCOPES)
+        self.assertNotIn('https://www.googleapis.com/auth/gmail.readonly', auth.SCOPES)
         self.assertNotIn('not-needed-and-not-saved',json.dumps(saved))
 
     def test_denial_and_wrong_issuer_preserve_old_pair_without_exchange(self):

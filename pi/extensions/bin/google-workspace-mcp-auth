@@ -38,6 +38,7 @@ MAX_JSON_BYTES = 65_536
 LOGIN_HINT = 'Run google-workspace-mcp-auth login on the host.'
 SCOPES = (
     'openid', 'email', 'profile',
+    'https://www.googleapis.com/auth/drive',
     'https://www.googleapis.com/auth/drive.readonly',
     'https://www.googleapis.com/auth/drive.file',
     'https://www.googleapis.com/auth/spreadsheets',
@@ -204,13 +205,27 @@ def validate_client(value, resource):
 
 
 def validate_tokens(value, client):
-    if (not isinstance(value, dict)
-            or not all(credential(value.get(k)) for k in ('accessToken', 'refreshToken'))
-            or not positive_number(value.get('expiresAt'))
-            or value.get('clientId') != client['clientId']
-            or value.get('resourceUri') != client['resourceUri']
-            or not valid_scope(value.get('scope'))):
-        raise AuthError('Invalid or mismatched Workspace tokens. ' + LOGIN_HINT)
+    if not isinstance(value, dict):
+        raise AuthError('Invalid Workspace token object. ' + LOGIN_HINT)
+    invalid = [key for key in ('accessToken', 'refreshToken') if not credential(value.get(key))]
+    if not positive_number(value.get('expiresAt')):
+        invalid.append('expiresAt')
+    for key in ('clientId', 'resourceUri'):
+        if value.get(key) != client[key]:
+            invalid.append(key)
+    scope = value.get('scope')
+    if not valid_scope(scope):
+        detail = 'scope'
+        if isinstance(scope, str):
+            granted = set(scope.split())
+            detail += f' (missing {len(set(SCOPES) - granted)}, additional {len(granted - set(SCOPES))}'
+            if 'https://www.googleapis.com/auth/drive' in granted:
+                detail += ', includes full Drive access'
+            detail += ')'
+        invalid.append(detail)
+    if invalid:
+        # Report only fixed field names and scope counts, never response values.
+        raise AuthError('Invalid or mismatched Workspace tokens: ' + ', '.join(invalid) + '. ' + LOGIN_HINT)
     return value
 
 
@@ -279,7 +294,7 @@ def discover(resource):
             or servers not in ([base], [base + '/'])
             or not isinstance(protected.get('scopes_supported'), list)
             or not all(isinstance(s, str) for s in protected['scopes_supported'])
-            or set(protected['scopes_supported']) != set(SCOPES)):
+            or not set(SCOPES).issubset(protected['scopes_supported'])):
         raise AuthError('Workspace resource metadata changed; review configuration and scopes before login.')
     metadata = request_json(resource, base + '/.well-known/oauth-authorization-server')
     issuer = servers[0]
