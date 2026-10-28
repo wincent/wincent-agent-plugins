@@ -1,6 +1,6 @@
 # wincent-agent-plugins
 
-[Pi](https://pi.dev/) skills, extensions, and prompt templates from Greg Hurrell (for Claude support, see the repo as it existed at commit [`5738a1ed5275e7239`](https://github.com/wincent/wincent-agent-plugins/tree/5738a1ed5275e7239cec4e2b525c140b9893c1e6)).
+[Pi](https://pi.dev/) skills, extensions, and prompt templates (for Claude support, see the repo as it existed at commit [`5738a1ed5275e7239`](https://github.com/wincent/wincent-agent-plugins/tree/5738a1ed5275e7239cec4e2b525c140b9893c1e6)).
 
 ## Pi setup
 
@@ -12,7 +12,7 @@ git clone https://github.com/wincent/wincent-agent-plugins.git \
   ~/.local/share/agents/wincent-agent-plugins
 ```
 
-Merge these resource paths into your `~/.pi/agent/settings.json`, preserving any existing settings and other resource entries:
+Merge these resource paths into your `~/.pi/agent/settings.json`:
 
 ```json
 {
@@ -28,9 +28,7 @@ Merge these resource paths into your `~/.pi/agent/settings.json`, preserving any
 }
 ```
 
-If you previously loaded this repository from a Claude marketplace checkout, replace those old resource paths rather than loading both copies. No Claude installation is needed.
-
-Run `/reload` in Pi or start a new session. Individual integrations may need additional tools, credentials, or host-side proxy configuration; see their setup documentation below and the [extensions README](./pi/extensions/README.md).
+Individual integrations may need additional tools, credentials, or host-side proxy configuration; see their setup documentation below and the [extensions README](./pi/extensions/README.md).
 
 To update:
 
