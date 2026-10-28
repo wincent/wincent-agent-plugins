@@ -19,12 +19,18 @@ import {join} from 'node:path';
 import {test} from 'node:test';
 import {piPackageImports} from './pi-package.mjs';
 
-const hooks = registerHooks(piPackageImports([
+const packages = piPackageImports([
   '@earendil-works/pi-coding-agent',
   '@earendil-works/pi-ai',
   '@earendil-works/pi-agent-core',
   '@earendil-works/pi-tui',
-]));
+]);
+const hooks = registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier.endsWith('/dialog.js')) specifier = specifier.replace(/\.js$/, '.ts');
+    return packages.resolve(specifier, context, nextResolve);
+  },
+});
 let extension;
 let buildContextEntries;
 let buildSessionProjection;
@@ -193,25 +199,32 @@ async function fixture(t, options = {}) {
       getBranch: () => branch,
     },
   };
+  // Event contexts do not expose the command-only prompt-options getter.
+  const {getSystemPromptOptions: _commandOnly, ...eventCtx} = ctx;
   let output = [];
   let errors = [];
   t.mock.method(console, 'log', (line) => output.push(line));
   t.mock.method(console, 'error', (line) => errors.push(line));
   return {
     ctx,
+    eventCtx,
+    events,
     async observe(message, forcedPrompt, effectivePrompt) {
       const sharedOptions = {...buildOptions};
       await events.get('before_agent_start')({
         systemPromptOptions: sharedOptions,
-      }, ctx);
+      }, eventCtx);
       // Simulate a later handler returning systemPrompt, even if identical to
       // the replayed prompt. The observer must retain the shared reference.
       if (forcedPrompt !== undefined) {
         sharedOptions.forceSystemPrompt = forcedPrompt;
       }
       prompt = effectivePrompt ?? forcedPrompt ?? prompt;
-      await events.get('message_end')({message}, ctx);
-      await events.get('agent_end')({}, ctx);
+      const projected = buildSessionProjection(branch).messages;
+      const index = projected.indexOf(message);
+      await events.get('context_with_system')({messages: index < 0 ? projected : projected.slice(0, index)}, eventCtx);
+      await events.get('message_end')({message}, eventCtx);
+      await events.get('agent_end')({}, eventCtx);
       // Idle ctx.getSystemPrompt() reverts to base options after settlement.
       prompt = options.prompt ?? getCurrentSystemPrompt(messages);
     },
@@ -599,6 +612,95 @@ test('native inline schemas contribute to conversation growth during calibration
   assert.match(text, /2\.00 chars\/token for\nconversation and 4\.00/);
   assertCategory(text, 'Tool definitions', schemaChars([read]));
   assert.ok(text.includes(`Inline tool definitions: ${(Math.ceil(schemaChars([read]) / 2) / 1000).toFixed(1)}k tokens`), text);
+});
+
+test('prepared descriptions and hidden declarations retain calibration', async (t) => {
+  const registered = tool('codemode', 'Raw registration description');
+  const prepared = {...registered, description: 'Prepared description '.repeat(100)};
+  const hidden = tool('read', 'Hidden schema '.repeat(1000));
+  const prompt = 'Instructions '.repeat(200);
+  const reply = assistant((prompt.length + schemaChars([prepared])) / 2);
+  const f = await fixture(t, {
+    messages: [system(prompt, {toolsAdded: [prepared, hidden]}), reply],
+    tools: [registered, hidden],
+    active: ['codemode', 'read'],
+    buildOptions: {selectedTools: ['codemode', 'read'], hiddenTools: ['read'], contextFiles: [], skills: []},
+    tokens: reply.usage.totalTokens,
+  });
+  await f.observe(reply);
+  const {text, error} = await f.run();
+  assert.equal(error, '');
+  assert.match(text, /2\.00 chars\/token/);
+  assert.doesNotMatch(text, /No comparable observed turns/);
+  assert.match(text, /Tool definitions.*1 of 2 tools included/);
+});
+
+test('mid-run loadout changes discard stale visibility and calibration', async (t) => {
+  const read = tool('read', 'Large read schema '.repeat(1000));
+  const code = tool('codemode', 'Prepared description '.repeat(100));
+  const prompt = 'Instructions '.repeat(200);
+  const first = assistant(1000);
+  const second = assistant((prompt.length + schemaChars([code])) / 2);
+  const messages = [system(prompt, {toolsAdded: [read]}), first, system('', {toolsAdded: [code]}), second];
+  const initial = {selectedTools: ['read'], hiddenTools: [], contextFiles: [], skills: []};
+  const options = {messages, tools: [read, code], active: ['read'], buildOptions: initial, tokens: second.usage.totalTokens};
+  const f = await fixture(t, options);
+  await f.events.get('before_agent_start')({systemPromptOptions: {...initial}}, f.eventCtx);
+  await f.events.get('context_with_system')({messages: messages.slice(0, 1)}, f.eventCtx);
+  await f.events.get('message_end')({message: first}, f.eventCtx);
+
+  // setActiveTools rebuilds the base options, while Pi clones (rather than
+  // mutates) the run-start object before sending this next request.
+  options.active = ['read', 'codemode'];
+  f.ctx.getSystemPromptOptions = () => ({...initial, selectedTools: options.active, hiddenTools: ['read']});
+  await f.events.get('context_with_system')({messages: messages.slice(0, 3)}, f.eventCtx);
+  await f.events.get('message_end')({message: second}, f.eventCtx);
+  await f.events.get('agent_end')({}, f.eventCtx);
+  const {text, error} = await f.run();
+  assert.equal(error, '');
+  assert.match(text, /Tool definitions.*1 of 2 tools included/);
+  assertCategory(text, 'Tool definitions', schemaChars([code]));
+  assert.match(text, /No comparable observed turns/);
+  assert.match(text, /Loadout changed during the run/);
+});
+
+test('hidden declarations are removed from native historical additions and removals', async (t) => {
+  const visible = tool('codemode');
+  const hidden = tool('read', 'Hidden schema '.repeat(1000));
+  const f = await fixture(t, {
+    model: nativeAnthropic,
+    messages: [
+      system('Initial', {toolsAdded: [visible, hidden]}),
+      system('', {toolsAdded: [hidden]}),
+      system('', {toolsRemoved: [{name: 'read'}]}),
+    ],
+    tools: [visible, hidden],
+    buildOptions: {selectedTools: ['codemode', 'read'], hiddenTools: ['read'], contextFiles: [], skills: []},
+  });
+  const {text, error} = await f.run();
+  assert.equal(error, '');
+  assertNativeAccounting(text, [visible], []);
+  assert.match(text, /Tool definitions.*1 of 2 tools included/);
+});
+
+test('a changed prepared description starts a new calibration interval', async (t) => {
+  const registered = tool('codemode', 'Raw description');
+  const initial = {...registered, description: 'First prepared description'};
+  const changed = {...registered, description: 'Second prepared description '.repeat(100)};
+  const first = assistant(1000);
+  const second = assistant(3000);
+  const f = await fixture(t, {
+    messages: [system('Instructions', {toolsAdded: [initial]}), first, system('', {toolsAdded: [changed]}), second],
+    tools: [registered],
+    tokens: 3002,
+  });
+  await f.observe(first);
+  await f.observe(second);
+  const {text} = await f.run();
+  assert.doesNotMatch(text, /No comparable observed turns/);
+  const rates = [...text.matchAll(/(\d+\.\d{2}) chars\/token|conversation and (\d+\.\d{2})/g)];
+  assert.equal(rates.length, 2);
+  assert.equal(rates[0][1], rates[1][2]);
 });
 
 test('transcript tool descriptions do not require live registration metadata', async (t) => {

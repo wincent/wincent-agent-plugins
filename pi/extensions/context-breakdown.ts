@@ -76,6 +76,8 @@ import {readFileSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {basename, dirname, join, sep} from 'node:path';
 
+import {queueDialog} from './lib/dialog.js';
+
 // Pi's own compaction heuristic: 4 characters per token, and a flat per-image
 // charge. Kept in sync with ESTIMATED_IMAGE_CHARS in pi's
 // core/compaction/compaction.ts. Used only as a fallback: real sessions are
@@ -206,7 +208,7 @@ interface PromptSnapshot {
   /** Undefined means an observed run did not force its prompt. */
   forcedPrompt: string | undefined;
   prompt: string;
-  toolsKey: string;
+  toolsKey: string | undefined;
   options: BuildSystemPromptOptions;
 }
 
@@ -894,6 +896,30 @@ function toolKey(tools: Tool[]): string {
   );
 }
 
+/** Pi hides declarations from every system checkpoint at request time. */
+function visibleToolMessages(
+  messages: AgentMessage[],
+  hiddenTools: string[] = [],
+): AgentMessage[] {
+  const hidden = new Set(hiddenTools);
+  if (hidden.size === 0) {
+    return messages;
+  }
+  return messages.map((message) =>
+    message.role === 'system'
+      ? {
+        ...message,
+        toolsAdded: message.toolsAdded?.filter((tool) =>
+          !hidden.has(tool.name)
+        ),
+        toolsRemoved: message.toolsRemoved?.filter((tool) =>
+          !hidden.has(tool.name)
+        ),
+      }
+      : message
+  );
+}
+
 /** Built-in serializers that honor the mid-conversation system capability. */
 const MID_SYSTEM_APIS = new Set([
   'anthropic-messages',
@@ -919,6 +945,14 @@ function projectTranscript(
 } {
   const notes: string[] = [];
   let nativeToolChanges = false;
+  const hiddenTools = snapshot?.options.hiddenTools ??
+    ctx.getSystemPromptOptions().hiddenTools ?? [];
+  if (snapshot && snapshot.toolsKey === undefined) {
+    notes.push(
+      'Loadout changed during the run; using current tool visibility without calibration.',
+    );
+  }
+  original = visibleToolMessages(original, hiddenTools);
   const current = getCurrentSystemMessage(original);
   const forced = snapshot?.forcedPrompt;
   const model = ctx.model;
@@ -933,7 +967,9 @@ function projectTranscript(
   if (!current) {
     // Old sessions have no persisted prompt/loadout. This is prospective,
     // rather than a reconstruction of what an earlier request actually sent.
-    sentTools = registered.filter((tool) => active.includes(tool.name));
+    sentTools = registered.filter((tool) =>
+      active.includes(tool.name) && !hiddenTools.includes(tool.name)
+    );
     const head: SystemMessage = {
       role: 'system',
       content: snapshot?.prompt ?? ctx.getSystemPrompt(),
@@ -2101,30 +2137,62 @@ function parseArgs(args: string): ParsedArgs {
 export default function (pi: ExtensionAPI) {
   const snapshots: PromptSnapshots = new WeakMap();
   let runOptions: BuildSystemPromptOptions | undefined;
+  let initialLoadoutKey: string | undefined;
+  let requestSnapshot: PromptSnapshot | undefined;
   pi.on('before_agent_start', (event) => {
     // Keep the shared reference: later handlers (including model-info) may
     // return a forced prompt after this handler has already run.
     runOptions = event.systemPromptOptions;
+    initialLoadoutKey = undefined;
+    requestSnapshot = undefined;
   });
-  pi.on('message_end', (event, ctx) => {
-    if (event.message.role !== 'assistant' || !runOptions) {
+  pi.on('context_with_system', (event, ctx) => {
+    if (!runOptions) {
       return;
     }
-    const active = new Set(pi.getActiveTools());
-    snapshots.set(event.message, {
+    // Checkpoints carry prepared descriptions. Pi filters hidden declarations
+    // after this hook. Its initial run options expose that visibility, but
+    // later loadouts clone those options without publishing the new object to
+    // event handlers (getSystemPromptOptions is command-only). Do not fit a
+    // changed loadout using stale visibility; the report can use live command
+    // options for an explicitly uncalibrated estimate instead.
+    const current = getCurrentSystemMessage(event.messages);
+    const active = pi.getActiveTools();
+    const loadoutKey = toolKey(current?.toolsAdded ?? []) +
+      JSON.stringify([...active].sort());
+    initialLoadoutKey ??= loadoutKey;
+    const hiddenTools = loadoutKey === initialLoadoutKey
+      ? [...(runOptions.hiddenTools ?? [])]
+      : undefined;
+    const visible = getCurrentSystemMessage(
+      visibleToolMessages(event.messages, hiddenTools),
+    );
+    requestSnapshot = {
       forcedPrompt: runOptions.forceSystemPrompt,
       prompt: ctx.getSystemPrompt(),
-      toolsKey: toolKey(
-        pi.getAllTools().filter((tool) => active.has(tool.name)),
-      ),
-      options: {...runOptions, selectedTools: [...active]},
-    });
+      toolsKey: hiddenTools ? toolKey(visible?.toolsAdded ?? []) : undefined,
+      options: {
+        ...runOptions,
+        selectedTools: [...active],
+        hiddenTools,
+      },
+    };
+  });
+  pi.on('message_end', (event) => {
+    if (event.message.role === 'assistant' && requestSnapshot) {
+      snapshots.set(event.message, requestSnapshot);
+      requestSnapshot = undefined;
+    }
   });
   pi.on('agent_end', () => {
     runOptions = undefined;
+    initialLoadoutKey = undefined;
+    requestSnapshot = undefined;
   });
   pi.on('session_start', () => {
     runOptions = undefined;
+    initialLoadoutKey = undefined;
+    requestSnapshot = undefined;
   });
   pi.registerCommand('context', {
     description:
@@ -2178,14 +2246,18 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
-        return new ReportViewer(
-          buildReport(analysis, sections, theme),
-          tui,
-          theme,
-          () => done(undefined),
-        );
-      });
+      await queueDialog(
+        ctx.ui,
+        () =>
+          ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+            return new ReportViewer(
+              buildReport(analysis, sections, theme),
+              tui,
+              theme,
+              () => done(undefined),
+            );
+          }),
+      );
     },
   });
 }
