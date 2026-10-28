@@ -12,15 +12,23 @@ import {test} from 'node:test';
 
 import {piPackageImports} from './pi-package.mjs';
 
-const hooks = registerHooks(piPackageImports([
+const packages = piPackageImports([
   '@earendil-works/pi-coding-agent',
   '@earendil-works/pi-tui',
-]));
+]);
+const hooks = registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier.endsWith('/dialog.js')) specifier = specifier.replace(/\.js$/, '.ts');
+    return packages.resolve(specifier, context, nextResolve);
+  },
+});
 let extension;
+let SessionManager;
 let visibleWidth;
 let stripTerminalSequences;
 try {
   ({default: extension} = await import('../total-cost.ts'));
+  ({SessionManager} = await import('@earendil-works/pi-coding-agent'));
   ({visibleWidth, stripTerminalSequences} = await import('@earendil-works/pi-tui'));
 } finally {
   hooks.deregister();
@@ -120,6 +128,60 @@ test('counts usage by month/model/session without inflating message counts', asy
     ['2026-09', '$4.00', '$4.00', '-', '1', '1'],
     ['2026-08', '$0.75', '-', '$0.75', '0', '1'],
     ['Total', '$4.75', '$4.00', '$0.75', '1', '2'],
+  ]);
+});
+
+test('real session forks do not rebill copied history', async (t) => {
+  const output = await report(t, [], 'no-model-breakdown', undefined, {
+    async setup({dir, project}) {
+      const session = SessionManager.create(dir, project);
+      const first = session.appendMessage({
+        ...assistant('gpt', 1, undefined).message,
+        content: [{type: 'text', text: 'Original answer'}],
+        timestamp: Date.UTC(2026, 8, 21),
+      });
+      session.appendLabelChange(first, 'label removed during fork');
+      session.appendUsage('cache_warm', 'test', 'gpt', {cost: {total: 2}});
+      session.appendMessage({...toolResult(3, undefined).message, content: []});
+      session.createBranchedSession(session.getLeafId());
+      session.appendMessage({...assistant('gpt', 4, undefined).message, content: []});
+      session.createBranchedSession(session.getLeafId());
+      // Cross-project forks copy the same history too.
+      SessionManager.forkFrom(session.getSessionFile(), dir, join(project, '..', 'other-project'));
+    },
+  });
+  assert.deepEqual(rows(output).at(-1), ['Total', '$10.00', '2', '4']);
+  assert.match(output, /Scanned 4 session file\(s\)/);
+});
+
+test('copied usage is counted once even when its original transcript is gone', async (t) => {
+  const shared = [
+    {...assistant('gpt', 1, '2026-09-21'), id: 'message', parentId: 'old-label'},
+    {...usage('gpt', 2, '2026-09-21'), id: 'warm', parentId: 'message'},
+    {...toolResult(3, '2026-09-21'), id: 'tool', parentId: 'warm'},
+  ];
+  const output = await report(t, [shared], 'no-model-breakdown', undefined, {
+    subagentFiles: [shared.map((entry) => ({...entry, parentId: null}))],
+  });
+  assert.deepEqual(rows(output), [
+    ['2026-09', '$6.00', '1', '2'],
+    ['Total', '$6.00', '1', '2'],
+  ]);
+});
+
+test('short ID collisions and ID-less legacy entries are not merged', async (t) => {
+  const message = assistant('gpt', 1, '2026-09-21');
+  const entries = [
+    {...message, id: 'collision'},
+    {...message, id: 'different-id'},
+    {...message, id: 'collision', timestamp: '2026-09-22'},
+    {...message, id: 'collision', message: {...message.message, content: [{type: 'text', text: 'Different answer'}]}},
+    message,
+    message,
+  ];
+  assert.deepEqual(rows(await report(t, [entries], 'no-model-breakdown')), [
+    ['2026-09', '$6.00', '6', '1'],
+    ['Total', '$6.00', '6', '1'],
   ]);
 });
 

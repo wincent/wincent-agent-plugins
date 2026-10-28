@@ -39,9 +39,12 @@ import {
   sliceByColumn,
   visibleWidth,
 } from '@earendil-works/pi-tui';
+import {createHash} from 'node:crypto';
 import {readFile, readdir, stat} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
+
+import {queueDialog} from './lib/dialog.js';
 
 const UNKNOWN_MODEL = 'unknown';
 const TOOL_USAGE_MODEL = 'tools';
@@ -146,6 +149,7 @@ async function collectData(): Promise<RawData> {
   ];
 
   const months = new Map<string, Map<string, ModelStats>>();
+  const seenEntries = new Set<string>();
   let skippedFiles = 0;
 
   for (const file of files) {
@@ -195,6 +199,19 @@ async function collectData(): Promise<RawData> {
         continue;
       }
 
+      // Forks copy entry IDs and billing records, but can re-chain parentId
+      // when labels are removed. Include the record as well as its short ID
+      // so unrelated entries with colliding IDs are not discarded. Legacy
+      // entries without IDs cannot be reliably deduplicated.
+      let duplicate = false;
+      if (typeof entry.id === 'string' && entry.id) {
+        const key = createHash('sha256')
+          .update(JSON.stringify({...entry, parentId: undefined}))
+          .digest('hex');
+        duplicate = seenEntries.has(key);
+        seenEntries.add(key);
+      }
+
       // A tool result may pool several models, so do not attribute its cost
       // to the surrounding assistant or a model named in tool-specific data.
       const model = isToolResult
@@ -213,8 +230,12 @@ async function collectData(): Promise<RawData> {
         stats = {cost: 0, messages: 0, sessions: new Set()};
         byModel.set(model, stats);
       }
-      stats.cost += cost;
-      stats.messages += isAssistant ? 1 : 0;
+      if (!duplicate) {
+        stats.cost += cost;
+        stats.messages += isAssistant ? 1 : 0;
+      }
+      // Count saved sessions containing matching usage, including forks,
+      // independently of which copy supplied the unique billing record.
       stats.sessions.add(file);
     }
   }
@@ -601,49 +622,56 @@ async function showTotals(
     return;
   }
 
-  await ctx.ui.custom((tui, theme, _kb, done) => {
-    const table = new CostTableViewport(buildTableModel(totals, showModels));
-    return {
-      render: (width: number) => {
-        if (width <= 0) {
-          return [];
-        }
-        const padding = Math.min(1, Math.floor((width - 1) / 2));
-        const tableLines = table.render(width - padding * 2, theme);
-        const container = new Container();
-        const border = new DynamicBorder((s: string) => theme.fg('accent', s));
-        container.addChild(border);
-        container.addChild(
-          new Text(theme.fg('accent', theme.bold('Total Cost by Month')), 1, 1),
-        );
-        for (
-          const line of buildLines(
-            totals,
-            theme,
-            showModels,
-            filterTokens,
-            tableLines,
-            table.hint,
-          )
-        ) {
-          container.addChild(new Text(line, 1, 0));
-        }
-        container.addChild(
-          new Text(theme.fg('dim', 'Press Enter or Esc to close'), 1, 1),
-        );
-        container.addChild(border);
-        return container.render(width);
-      },
-      invalidate: () => {},
-      handleInput: (data: string) => {
-        if (matchesKey(data, 'enter') || matchesKey(data, 'escape')) {
-          done(undefined);
-        } else if (table.handleInput(data)) {
-          tui.requestRender();
-        }
-      },
-    };
-  });
+  await queueDialog(ctx.ui, () =>
+    ctx.ui.custom((tui, theme, _kb, done) => {
+      const table = new CostTableViewport(buildTableModel(totals, showModels));
+      return {
+        render: (width: number) => {
+          if (width <= 0) {
+            return [];
+          }
+          const padding = Math.min(1, Math.floor((width - 1) / 2));
+          const tableLines = table.render(width - padding * 2, theme);
+          const container = new Container();
+          const border = new DynamicBorder((s: string) =>
+            theme.fg('accent', s)
+          );
+          container.addChild(border);
+          container.addChild(
+            new Text(
+              theme.fg('accent', theme.bold('Total Cost by Month')),
+              1,
+              1,
+            ),
+          );
+          for (
+            const line of buildLines(
+              totals,
+              theme,
+              showModels,
+              filterTokens,
+              tableLines,
+              table.hint,
+            )
+          ) {
+            container.addChild(new Text(line, 1, 0));
+          }
+          container.addChild(
+            new Text(theme.fg('dim', 'Press Enter or Esc to close'), 1, 1),
+          );
+          container.addChild(border);
+          return container.render(width);
+        },
+        invalidate: () => {},
+        handleInput: (data: string) => {
+          if (matchesKey(data, 'enter') || matchesKey(data, 'escape')) {
+            done(undefined);
+          } else if (table.handleInput(data)) {
+            tui.requestRender();
+          }
+        },
+      };
+    }));
 }
 
 interface ParsedArgs {
