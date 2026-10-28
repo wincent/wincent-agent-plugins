@@ -1,28 +1,17 @@
 /** Shared confirmation and classification for native MCP tools. */
 import type {ExtensionAPI, ToolInfo} from '@earendil-works/pi-coding-agent';
 
-type McpPermissionTool = Pick<ToolInfo, 'name' | 'annotations'>;
+import {queueDialog} from './dialog.js';
 
-// Pi loads extensions with separate module caches. Share queues per UI even
-// across those module instances, without retaining retired UI objects.
-const confirmationQueuesKey = Symbol.for(
-  'wincent-agent-plugins.mcp-confirmations',
-);
-const confirmationState = globalThis as typeof globalThis & {
-  [confirmationQueuesKey]?: WeakMap<object, Promise<void>>;
-};
-const confirmationQueues = confirmationState[confirmationQueuesKey] ??=
-  new WeakMap<object, Promise<void>>();
+type McpPermissionTool = Pick<ToolInfo, 'name' | 'annotations'>;
 
 export function queueMcpConfirmation(
   ui: object,
   prompt: () => Promise<boolean>,
+  signal?: AbortSignal,
 ): Promise<boolean> {
-  const result = (confirmationQueues.get(ui) ?? Promise.resolve())
-    .then(prompt)
-    .then((approved) => approved === true, () => false);
-  confirmationQueues.set(ui, result.then(() => {}));
-  return result;
+  return queueDialog(ui, prompt, signal)
+    .then((approved) => approved === true && !signal?.aborted, () => false);
 }
 
 export function registerMcpPermissionGate(
@@ -50,13 +39,15 @@ export function registerMcpPermissionGate(
     if (!ctx.hasUI) {
       return blocked;
     }
+    const signal = ctx.signal;
     try {
       const approved = await queueMcpConfirmation(ctx.ui, () =>
         ctx.ui.confirm(
           `${opts.label} write operation`,
           `Allow ${event.toolName}?\n\n${JSON.stringify(event.input, null, 2)}`,
-        ));
-      return approved ? undefined : blocked;
+          {signal},
+        ), signal);
+      return approved && !signal?.aborted ? undefined : blocked;
     } catch {
       return blocked;
     }

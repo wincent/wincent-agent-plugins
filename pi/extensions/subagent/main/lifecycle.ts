@@ -20,6 +20,9 @@ export function cancelTask(
 ): Promise<void> {
   if (!task.cancellation) {
     task.cancelReason = options.reason;
+    for (const controller of task.askControllers ?? []) {
+      controller.abort();
+    }
     task.cancellation = (async () => {
       try {
         task.bus.emit('cancel', {
@@ -57,6 +60,9 @@ export function observeTask(
       }
       finishing = true;
       task.status = 'finalizing';
+      for (const controller of task.askControllers ?? []) {
+        controller.abort();
+      }
       clearTimeout(exitTimer);
       let exit: ProcessExit | undefined;
       let error: string | undefined;

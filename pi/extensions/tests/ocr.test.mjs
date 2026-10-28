@@ -27,6 +27,7 @@ const piDir = locatePiPackage();
 const requirePi = createRequire(join(piDir, 'package.json'));
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier.endsWith('/dialog.js')) specifier = specifier.replace(/\.js$/, '.ts');
     if (specifier === 'typebox') return {url: pathToFileURL(requirePi.resolve('typebox')).href, shortCircuit: true};
     if (specifier === './client.js' && context.parentURL?.endsWith('/ocr/index.ts')) return {url: new URL('./client.ts', context.parentURL).href, shortCircuit: true};
     if (specifier === '../lib/subagent-state.js' && context.parentURL?.endsWith('/ocr/index.ts')) return {url: new URL('../lib/subagent-state.ts', context.parentURL).href, shortCircuit: true};
@@ -515,6 +516,7 @@ test('late session confirmation cannot undo revocation or lifecycle resets', asy
     let resolveConfirmation;
     const ctx = approvalContext(fixture.dir, () => new Promise(resolve => { resolveConfirmation = resolve; }));
     const pending = approval.handler('session', ctx);
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(typeof resolveConfirmation, 'function');
     if (action === 'revoke') await approval.handler('revoke', ctx);
     else await events.get(action)({type: action, reason: 'reload'}, ctx);

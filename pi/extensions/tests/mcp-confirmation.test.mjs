@@ -11,6 +11,7 @@ const packages = piPackageImports([
 ]);
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier.endsWith('/dialog.js')) specifier = specifier.replace(/\.js$/, '.ts');
     if (specifier === './lib/mcp.js') {
       // Separate library instances, like Pi's uncached extension imports.
       const caller = new URL(context.parentURL).pathname.split('/').at(-1);

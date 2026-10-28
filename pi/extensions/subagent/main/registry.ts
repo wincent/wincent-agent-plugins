@@ -25,6 +25,7 @@ export interface ActiveTask {
   completion?: Promise<unknown>;
   cancellation?: Promise<void>;
   cancelReason?: string;
+  askControllers?: Set<AbortController>;
   ownerClosed?: boolean;
   bus: Bus;
   mode: TaskMode;

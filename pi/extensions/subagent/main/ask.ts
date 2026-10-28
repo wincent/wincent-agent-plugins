@@ -40,6 +40,7 @@ import type {
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
 
+import {queueDialog} from '../../lib/dialog.js';
 import type {AskPolicy} from './agents.js';
 import {
   type AskAction,
@@ -108,6 +109,8 @@ interface AskContext {
   question: string;
   defaultAnswer: string | undefined;
   policy: AskPolicy;
+  /** Absolute expiry includes time spent in the UI queue and in transit. */
+  deadline?: number;
 }
 
 export async function handleAsk(args: AskContext): Promise<void> {
@@ -115,13 +118,53 @@ export async function handleAsk(args: AskContext): Promise<void> {
   emitLifecycle(pi, 'subagent:asked', {taskId: task.taskId, question});
 
   const action = decideAskAction(policy, task.llmAnswersSinceEscalation);
-  const {text, source} = await executeAction({
-    action,
-    ctx,
-    question,
-    defaultAnswer,
-    agentName: task.agentName,
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  // Background questions belong to the task, not the controller's current turn.
+  const turnSignal = task.mode === 'sync' ? ctx?.signal : undefined;
+  const deadline = args.deadline ?? Date.now() + 5 * 60 * 1000;
+  const remaining = deadline - Date.now();
+  const timer = setTimeout(abort, Math.max(0, remaining));
+  turnSignal?.addEventListener('abort', abort, {once: true});
+  (task.askControllers ??= new Set()).add(controller);
+  const unsubscribe = task.bus.subscribe?.((env) => {
+    if (env.from === 'sub' && env.type === 'done') {
+      abort();
+    }
   });
+  const unsubscribeClose = task.bus.onPeerClose?.(abort);
+  task.cleanup?.push(abort);
+  if (
+    remaining <= 0 || turnSignal?.aborted || task.ownerClosed ||
+    task.cancelReason || task.bus.isClosed
+  ) {
+    abort();
+  }
+  let answer: {text: string; source: AnswerSource};
+  try {
+    answer = await executeAction({
+      action,
+      ctx,
+      question,
+      defaultAnswer,
+      agentName: task.agentName,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+    turnSignal?.removeEventListener('abort', abort);
+    unsubscribe?.();
+    unsubscribeClose?.();
+    task.askControllers.delete(controller);
+    const index = task.cleanup?.indexOf(abort) ?? -1;
+    if (index !== -1) {
+      task.cleanup.splice(index, 1);
+    }
+  }
+  if (controller.signal.aborted) {
+    return;
+  }
+  const {text, source} = answer;
 
   // Update counters based on what actually happened.
   if (source === 'llm') {
@@ -156,15 +199,16 @@ async function executeAction(args: {
   question: string;
   defaultAnswer: string | undefined;
   agentName: string;
+  signal: AbortSignal;
 }): Promise<{text: string; source: AnswerSource}> {
-  const {action, ctx, question, defaultAnswer, agentName} = args;
+  const {action, ctx, question, defaultAnswer, agentName, signal} = args;
 
   switch (action) {
     case 'deny':
       return {text: buildDenyAnswer(), source: 'policy'};
 
     case 'llm': {
-      const llm = await tryAnswerWithLlm(ctx, question);
+      const llm = await tryAnswerWithLlm(ctx, question, signal);
       if (llm !== null) {
         return {text: llm, source: 'llm'};
       }
@@ -177,6 +221,7 @@ async function executeAction(args: {
     case 'human': {
       const result = await askHuman({
         ctx,
+        signal,
         title: `Subagent ${agentName} asks: ${question}`,
         placeholder: HUMAN_INPUT_HINT,
       });
@@ -199,6 +244,7 @@ async function executeAction(args: {
     case 'human-escalated': {
       const result = await askHuman({
         ctx,
+        signal,
         title:
           `Subagent ${agentName} (${LLM_ASK_BUDGET} LLM answers used; Esc to let it proceed): `
           + question,
@@ -236,14 +282,19 @@ async function askHuman(args: {
   ctx: ExtensionContext | undefined;
   title: string;
   placeholder: string;
+  signal: AbortSignal;
 }): Promise<HumanAskResult> {
-  const {ctx, title, placeholder} = args;
+  const {ctx, title, placeholder, signal} = args;
   if (!ctx || !ctx.hasUI) {
     return {kind: 'unavailable'};
   }
   let fromUi: string | undefined;
   try {
-    fromUi = await ctx.ui.input(title, placeholder);
+    fromUi = await queueDialog(
+      ctx.ui,
+      () => ctx.ui.input(title, placeholder, {signal}),
+      signal,
+    );
   } catch (err) {
     process.stderr.write(
       `[subagent main] ctx.ui.input failed: ${(err as Error).message}\n`,
@@ -263,8 +314,9 @@ async function askHuman(args: {
 async function tryAnswerWithLlm(
   ctx: ExtensionContext | undefined,
   question: string,
+  signal: AbortSignal,
 ): Promise<string | null> {
-  if (!ctx?.model) {
+  if (signal.aborted || !ctx?.model) {
     return null;
   }
   let auth;
@@ -294,7 +346,7 @@ async function tryAnswerWithLlm(
       {
         apiKey: auth.apiKey,
         headers: auth.headers,
-        signal: ctx.signal,
+        signal,
       },
     );
     if (response.stopReason === 'aborted' || response.stopReason === 'error') {

@@ -6,6 +6,7 @@ import {mkdtemp, rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {Type} from 'typebox';
+import {queueDialog} from '../lib/dialog.js';
 import {
   provideSubagentState,
   takeSubagentState,
@@ -51,6 +52,10 @@ export default function (pi: ExtensionAPI) {
     signal?: AbortSignal,
     firstUpload?: string,
   ): Promise<boolean> {
+    signal ??= ctx.signal;
+    if (signal?.aborted) {
+      return false;
+    }
     if (sessionApproved) {
       return true;
     }
@@ -65,18 +70,23 @@ export default function (pi: ExtensionAPI) {
     approvalPending = true;
     try {
       const revision = approvalRevision;
-      const approved = await ctx.ui.confirm(
-        'Allow OCR uploads for this session?',
-        [
-          'The agent may send any supported local PDF, PNG, or JPEG it can read to Mistral without further upload prompts.',
-          'Each request uploads the ENTIRE file, including embedded metadata and unselected PDF pages, and incurs API charges.',
-          'There is no session spending cap. Existing per-call limits and the prohibition on automatic retries still apply.',
-          'Approval also applies to subagents launched after approval. It is not saved and resets on session changes, restart, or /reload.',
-          'Revoke with /ocr-approval revoke. Revoking does not cancel an active OCR call or revoke approval in already-running subagents.',
-          ...(firstUpload ? ['', 'First upload:', firstUpload] : []),
-        ].join('\n'),
-        {signal},
-      );
+      const approved = await queueDialog(ctx.ui, () => {
+        if (revision !== approvalRevision) {
+          return Promise.resolve(false);
+        }
+        return ctx.ui.confirm(
+          'Allow OCR uploads for this session?',
+          [
+            'The agent may send any supported local PDF, PNG, or JPEG it can read to Mistral without further upload prompts.',
+            'Each request uploads the ENTIRE file, including embedded metadata and unselected PDF pages, and incurs API charges.',
+            'There is no session spending cap. Existing per-call limits and the prohibition on automatic retries still apply.',
+            'Approval also applies to subagents launched after approval. It is not saved and resets on session changes, restart, or /reload.',
+            'Revoke with /ocr-approval revoke. Revoking does not cancel an active OCR call or revoke approval in already-running subagents.',
+            ...(firstUpload ? ['', 'First upload:', firstUpload] : []),
+          ].join('\n'),
+          {signal},
+        );
+      }, signal);
       // A late dialog response must not undo revocation or a session reset.
       if (!approved || signal?.aborted || revision !== approvalRevision) {
         return false;

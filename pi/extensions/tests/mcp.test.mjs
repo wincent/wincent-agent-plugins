@@ -1,6 +1,19 @@
 import {strict as assert} from 'node:assert';
 import {test} from 'node:test';
-import {makeIsWriteTool} from '../lib/mcp.ts';
+import {registerHooks} from 'node:module';
+
+const hooks = registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === './dialog.js') specifier = './dialog.ts';
+    return nextResolve(specifier, context);
+  },
+});
+let makeIsWriteTool;
+try {
+  ({makeIsWriteTool} = await import('../lib/mcp.ts'));
+} finally {
+  hooks.deregister();
+}
 
 const isWriteTool = makeIsWriteTool(new Set(['post', 'delete', 'update', 'mute', 'run', 'set']));
 

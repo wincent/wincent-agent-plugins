@@ -37,6 +37,8 @@ export function installMainRoutingFor(
           ctx: getCtx(),
           task,
           askId: env.id,
+          deadline: Date.parse(env.ts) +
+            (env.payload.timeoutMs ?? 5 * 60 * 1000),
           question: env.payload.question,
           defaultAnswer: env.payload.default,
           policy: task.askPolicy,

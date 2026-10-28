@@ -428,6 +428,8 @@ async function runSubagentTool(
           ctx,
           task: active,
           askId: env.id,
+          deadline: Date.parse(env.ts) +
+            (env.payload.timeoutMs ?? 5 * 60 * 1000),
           question: env.payload.question,
           defaultAnswer: env.payload.default,
           policy: active.askPolicy,

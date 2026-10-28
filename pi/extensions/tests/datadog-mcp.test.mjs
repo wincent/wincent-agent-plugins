@@ -11,6 +11,7 @@ const packages = piPackageImports([
 ]);
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier.endsWith('/dialog.js')) specifier = specifier.replace(/\.js$/, '.ts');
     if (specifier === './lib/mcp.js' && context.parentURL === new URL('../datadog-mcp.ts', import.meta.url).href) {
       specifier = './lib/mcp.ts';
     }
