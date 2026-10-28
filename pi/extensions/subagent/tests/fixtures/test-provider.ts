@@ -276,6 +276,9 @@ export default function (pi: ExtensionAPI): void {
               agent: scenario.startsWith('worker-') ? 'worker' : 'scout',
               ...(scenario === 'worker-declined' ? {worktree: false} : {}),
               ...(scenario in blankTasks ? {worktree: true} : {}),
+              ...(scenario === 'nested-cwd'
+                ? {cwd: "nested/child's directory"}
+                : {}),
               task: scenario in blankTasks
                 ? blankTasks[scenario]
                 : scenario === 'background' ||

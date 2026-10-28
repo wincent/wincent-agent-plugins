@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import {homedir, tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join, relative} from 'node:path';
 import {test} from 'node:test';
 import {fileURLToPath} from 'node:url';
 
@@ -48,17 +48,31 @@ const cliArgs = [
 ];
 const model = {provider: 'subagent-test', id: 'exact-test-model'};
 
-function setup() {
+function setup(explicitOnly = false) {
   const dir = mkdtempSync(join(tmpdir(), 'sa-'));
   const keys = [
     'PI_CODING_AGENT_DIR',
     'PI_CODING_AGENT_SESSION_DIR',
     'PI_OFFLINE',
     'PI_SUBAGENT_SOCKET_ROOT',
+    'PI_SUBAGENT_TASK_ID',
+    'PI_SUBAGENT_BUS_DIR',
+    'PI_SUBAGENT_SOCKET_PATH',
+    'PI_SUBAGENT_PARENT_ID',
     'XDG_STATE_HOME',
     'TMUX',
   ];
   const previous = keys.map((key) => process.env[key]);
+  for (
+    const key of [
+      'PI_SUBAGENT_TASK_ID',
+      'PI_SUBAGENT_BUS_DIR',
+      'PI_SUBAGENT_SOCKET_PATH',
+      'PI_SUBAGENT_PARENT_ID',
+    ]
+  ) {
+    delete process.env[key];
+  }
   process.env.PI_CODING_AGENT_DIR = join(dir, 'agent');
   process.env.XDG_STATE_HOME = dir;
   process.env.PI_OFFLINE = '1';
@@ -68,8 +82,7 @@ function setup() {
     join(process.env.PI_CODING_AGENT_DIR, 'settings.json'),
     JSON.stringify({
       extensions: [
-        extension,
-        provider,
+        ...(explicitOnly ? [] : [extension, provider]),
         '-builtin:mcp',
         '-builtin:llama.cpp',
         '-builtin:codemode',
@@ -459,7 +472,7 @@ test('real controller keeps long state paths separate from socket allocation', {
         'subagent',
       )[0],
     );
-    assert.equal(result.status, 'ok');
+    assert.equal(result.status, 'ok', JSON.stringify(result));
     assert.ok(result.taskDir.startsWith(process.env.XDG_STATE_HOME));
     const observed = JSON.parse(
       readFileSync(join(result.taskDir, 'observed.json'), 'utf8'),
@@ -664,6 +677,64 @@ test(
   },
 );
 
+for (const explicitOnly of [false, true]) {
+  test(
+    `controller extensions and nested cwd (explicit only: ${explicitOnly})`,
+    {timeout: 30_000},
+    async () => {
+      const {dir, cleanup} = setup(explicitOnly);
+      try {
+        const nested = join(dir, "nested/child's directory");
+        mkdirSync(join(nested, '.pi', 'extensions'), {recursive: true});
+        writeFileSync(
+          join(nested, '.pi', 'extensions', 'untrusted.ts'),
+          'throw new Error("untrusted project extension loaded");',
+        );
+        const controllerCwd = realpathSync(dir);
+        await runController(dir, 'nested-cwd', [
+          entry,
+          '--offline',
+          '--no-approve',
+          ...(explicitOnly ? ['--no-extensions'] : []),
+          '-e',
+          relative(controllerCwd, extension),
+          '--extension',
+          relative(controllerCwd, provider),
+          // Deliberately overlap relative and absolute paths; do not load twice.
+          '--extension',
+          provider,
+        ]);
+        const result = JSON.parse(
+          toolTexts(
+            readFileSync(join(dir, 'requests.jsonl'), 'utf8'),
+            'subagent',
+          )[0],
+        );
+        assert.equal(result.status, 'ok', JSON.stringify(result));
+        assert.equal(
+          result.cwd,
+          join(realpathSync(dir), "nested/child's directory"),
+        );
+        assert.equal(result.finalReport.summary, 'headless report');
+        const session = sessionEntries(result.taskId).find((entry) =>
+          entry.type === 'session'
+        );
+        assert.equal(session.cwd, result.cwd);
+        const stderr = readFileSync(join(result.taskDir, 'stderr.log'), 'utf8');
+        assert.doesNotMatch(
+          stderr,
+          /Extension error|Failed to load extension|conflict|untrusted project/,
+        );
+        const wrapper = readFileSync(join(result.taskDir, 'run.sh'), 'utf8');
+        assert.match(wrapper, /--no-approve/);
+        assert.doesNotMatch(wrapper, /'--approve'/);
+      } finally {
+        cleanup();
+      }
+    },
+  );
+}
+
 function toolTexts(requests: string, toolName: string): string[] {
   const texts: string[] = [];
   for (const line of requests.trim().split('\n')) {
@@ -699,9 +770,13 @@ function completionNotices(requests: string): string[] {
   });
 }
 
-async function runController(dir: string, scenario: string): Promise<void> {
+async function runController(
+  dir: string,
+  scenario: string,
+  runtimeArgs = cliArgs,
+): Promise<void> {
   const child = spawn(process.execPath, [
-    ...cliArgs,
+    ...runtimeArgs,
     '-p',
     '--no-session',
     '--provider',

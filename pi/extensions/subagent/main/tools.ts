@@ -5,7 +5,7 @@ import type {
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
 import {existsSync, symlinkSync, writeFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {join, resolve} from 'node:path';
 import {type Static, Type} from 'typebox';
 
 import {collectSubagentState} from '../../lib/subagent-state.js';
@@ -285,6 +285,7 @@ async function runSubagentTool(
   ctx: ExtensionContext,
   notifications: CompletionNotifications,
 ): Promise<AgentToolResult<SubagentDetails>> {
+  const requestedCwd = resolve(ctx.cwd, params.cwd ?? '.');
   const background = params.background ?? true;
   const mode = background ? 'background' : 'sync';
   // Snapshot before asynchronous worktree/launcher setup or a parent model switch.
@@ -300,7 +301,7 @@ async function runSubagentTool(
     mode,
     pid: null,
     taskDir: '',
-    cwd: params.cwd ?? ctx.cwd,
+    cwd: requestedCwd,
     worktree: {enabled: false},
     status: 'spawning',
     progress: [],
@@ -333,7 +334,7 @@ async function runSubagentTool(
         mode: 0o600,
       },
     );
-    let cwd = params.cwd ?? ctx.cwd;
+    let cwd = requestedCwd;
     if (details.worktree.enabled) {
       worktreePlan = await prepareWorktree(cwd, taskId, agent.name);
       cwd = worktreePlan.path;
