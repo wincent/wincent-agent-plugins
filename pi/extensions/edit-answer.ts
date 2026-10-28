@@ -3,10 +3,13 @@ import type {
   ExtensionContext,
   SessionEntry,
 } from '@earendil-works/pi-coding-agent';
-import {spawnSync} from 'node:child_process';
-import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
+import {getShellConfig} from '@earendil-works/pi-coding-agent';
+import {spawn} from 'node:child_process';
+import {mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+
+import {queueDialog} from './lib/dialog.js';
 
 const MAX_RECENT = 20;
 const PREVIEW_CHARS = 80;
@@ -93,33 +96,79 @@ function preview(text: string, max = PREVIEW_CHARS): string {
     : `${collapsed.slice(0, max - 1)}…`;
 }
 
-/**
- * Write `initial` to a temp file, open $EDITOR on it, and return the resulting
- * file contents. Returns undefined if the editor failed to launch.
- */
-function openInEditor(
+/** Open a trusted $EDITOR command while temporarily releasing Pi's terminal. */
+async function openInEditor(
   initial: string,
   ctx: ExtensionContext,
-): string | undefined {
-  const dir = join(tmpdir(), 'pi-edit-answer');
-  mkdirSync(dir, {recursive: true});
-  const file = join(dir, `answer-${Date.now()}.md`);
-  const seed = initial.endsWith('\n') ? initial : `${initial}\n`;
-  writeFileSync(file, seed, 'utf8');
+): Promise<void> {
+  // Retain the slot until the edited draft is installed: another custom UI
+  // snapshots the current editor text and restores it when that UI closes.
+  await queueDialog(ctx.ui, async () => {
+    let dir: string | undefined;
+    const configuredEditor = process.env.EDITOR;
+    const editor = configuredEditor?.trim() ? configuredEditor : 'vim';
+    try {
+      const {shell, args, commandTransport} = getShellConfig();
+      if (commandTransport === 'stdin') {
+        throw new Error(
+          'The configured shell cannot share stdin with an interactive editor.',
+        );
+      }
+      dir = mkdtempSync(join(tmpdir(), 'pi-edit-answer-'));
+      const file = join(dir, 'answer.md');
+      const seed = initial.endsWith('\n') ? initial : `${initial}\n`;
+      writeFileSync(file, seed, 'utf8');
 
-  ctx.ui.notify(`Opening ${file}`, 'info');
-
-  const editor = process.env.EDITOR || 'vim';
-  const result = spawnSync(editor, [file], {stdio: 'inherit'});
-  if (result.error) {
-    ctx.ui.notify(
-      `Failed to launch ${editor}: ${result.error.message}`,
-      'error',
-    );
-    return;
-  }
-
-  return readFileSync(file, 'utf8');
+      const status = await ctx.ui.custom<number | null>(
+        async (tui, _theme, _kb, done) => {
+          tui.stop();
+          let status: number | null;
+          try {
+            // EDITOR is shell syntax, but the path is data: never interpolate it.
+            // Async spawn also avoids competing console reads on Windows.
+            status = await new Promise<number | null>((resolve, reject) => {
+              const child = spawn(
+                shell,
+                [...args, `${editor} "$1"`, 'pi-edit-answer', file],
+                {stdio: 'inherit', cwd: ctx.cwd},
+              );
+              child.once('error', reject);
+              child.once('close', resolve);
+            });
+          } finally {
+            tui.start();
+            tui.requestRender(true);
+          }
+          done(status);
+          return {render: () => [], invalidate: () => {}};
+        },
+      );
+      if (status !== 0) {
+        throw new Error(
+          status === null
+            ? 'Editor terminated by a signal.'
+            : `Editor exited with status ${status}.`,
+        );
+      }
+      ctx.ui.setEditorText(readFileSync(file, 'utf8'));
+    } catch (error) {
+      ctx.ui.notify(
+        `Failed to edit with ${editor}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        'error',
+      );
+      return;
+    } finally {
+      if (dir) {
+        try {
+          rmSync(dir, {recursive: true, force: true});
+        } catch {
+          // Cleanup is best effort; do not discard a successful edit.
+        }
+      }
+    }
+  });
 }
 
 async function editLatest(ctx: CtxWithIdle) {
@@ -131,10 +180,7 @@ async function editLatest(ctx: CtxWithIdle) {
     return;
   }
 
-  const edited = openInEditor(latest.text, ctx);
-  if (edited !== undefined) {
-    ctx.ui.setEditorText(edited);
-  }
+  await openInEditor(latest.text, ctx);
 }
 
 async function editPicked(ctx: CtxWithIdle) {
@@ -160,7 +206,10 @@ async function editPicked(ctx: CtxWithIdle) {
     return unique;
   });
 
-  const choice = await ctx.ui.select('Pick an answer to edit:', labels);
+  const choice = await queueDialog(
+    ctx.ui,
+    () => ctx.ui.select('Pick an answer to edit:', labels),
+  );
   if (!choice) {
     return;
   }
@@ -170,10 +219,7 @@ async function editPicked(ctx: CtxWithIdle) {
     return;
   }
 
-  const edited = openInEditor(picked.text, ctx);
-  if (edited !== undefined) {
-    ctx.ui.setEditorText(edited);
-  }
+  await openInEditor(picked.text, ctx);
 }
 
 function isPickArg(args: string): boolean {
@@ -195,6 +241,15 @@ export default function (pi: ExtensionAPI) {
       return filtered.length > 0 ? filtered : null;
     },
     handler: async (args, ctx) => {
+      if (ctx.mode !== 'tui') {
+        if (ctx.hasUI) {
+          ctx.ui.notify(
+            'Editing an answer requires the interactive TUI.',
+            'warning',
+          );
+        }
+        return;
+      }
       if (isPickArg(args)) {
         await editPicked(ctx);
       } else {
