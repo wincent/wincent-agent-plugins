@@ -22,17 +22,21 @@ import urllib.parse
 import urllib.request
 from unittest.mock import patch
 
+from mcp_auth_fixture import FakeKeychain, simulated_callback
+
 HELPER = Path(__file__).resolve().parents[1] / 'bin/google-workspace-mcp-auth'
+sys.path.insert(0, str(HELPER.parent))
+import mcp_auth_keychain as keychain
 auth = types.ModuleType('workspace_auth')
 importlib.machinery.SourceFileLoader(auth.__name__, str(HELPER)).exec_module(auth)
 RESOURCE = 'https://workspace.example.invalid/mcp'
 BASE = RESOURCE[:-4]
 REAL_REQUEST = auth.request_json
 WORKER = '''
-import importlib.machinery,sys,time,types
+import sys,time
 from pathlib import Path
-m=types.ModuleType('workspace_worker')
-importlib.machinery.SourceFileLoader(m.__name__,sys.argv[1]).exec_module(m)
+from mcp_auth_fixture import load_auth
+m=load_auth(sys.argv[1])
 def refresh(resource,url,body=None,form=False):
  assert body['refresh_token']=='old-refresh', 'Unexpected second refresh'
  with open(sys.argv[2],'a') as f:f.write('refresh\\n')
@@ -53,9 +57,16 @@ class WorkspaceAuthTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.env = patch.dict(os.environ, {'HOME': self.temp.name, 'XDG_STATE_HOME': self.temp.name,
-                                          'GOOGLE_WORKSPACE_MCP_URL': RESOURCE}, clear=True)
+                                          'GOOGLE_WORKSPACE_MCP_URL': RESOURCE,
+                                          'PYTHONPATH': str(HELPER.parent.parent / 'tests')}, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
+        self.keychain = patch.object(auth, 'Keychain', side_effect=FakeKeychain)
+        self.keychain.start()
+        self.addCleanup(self.keychain.stop)
+        native = patch.object(keychain.ctypes, 'CDLL', side_effect=AssertionError('Tests must not access the host Keychain'))
+        native.start()
+        self.addCleanup(native.stop)
         for name, target in [('request_json', auth), ('open', auth.webbrowser)]:
             mock = patch.object(target, name, side_effect=AssertionError('Unexpected network or browser call'))
             mock.start()
@@ -77,7 +88,20 @@ class WorkspaceAuthTest(unittest.TestCase):
 
     def save(self, value=None):
         with auth.locked(self.directory):
-            auth.write_json(self.directory / 'grant.json', self.grant if value is None else value)
+            # Bypass validation to allow deliberately invalid saved-state fixtures.
+            FakeKeychain(self.directory).write(json.dumps(self.grant if value is None else value).encode())
+
+    def save_legacy(self, raw=None):
+        with auth.locked(self.directory):
+            path = self.directory / 'grant.json'
+            with os.fdopen(auth.private_open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC), 'wb') as file:
+                file.write(json.dumps(self.grant).encode() if raw is None else raw)
+        return path
+
+    def cli(self, *args):
+        return subprocess.run([sys.executable, '-B', '-c',
+                               'import sys; from mcp_auth_fixture import load_auth; sys.exit(load_auth(sys.argv[1]).main(sys.argv[2:]))',
+                               str(HELPER), *args], env=dict(os.environ), capture_output=True, text=True, timeout=10)
 
     def read(self):
         with auth.locked(self.directory):
@@ -180,20 +204,20 @@ class WorkspaceAuthTest(unittest.TestCase):
 
     def test_save_failure_never_emits_new_access_token(self):
         self.save()
-        with patch.object(auth, 'request_json', return_value=response()), patch.object(auth.os, 'replace', side_effect=OSError('private')):
+        with patch.object(auth, 'request_json', return_value=response()), patch.object(FakeKeychain, 'write', side_effect=OSError('private')):
             code, out, err = self.main('token', '--refresh')
         self.assertEqual((code, out), (1, ''))
         self.assertNotIn('new-access', err)
         self.assertEqual(self.read(), self.grant)
         self.assertFalse(list(self.directory.glob('*.tmp')))
 
-    def test_post_replace_sync_failure_retains_complete_new_pair_without_output(self):
+    def test_post_write_verification_failure_retains_complete_new_pair_without_output(self):
         for command in (['token', '--refresh'], ['login']):
             self.save()
             with patch.dict(os.environ, {'GOOGLE_WORKSPACE_MCP_CALLBACK_PORT': str(self.free_port())}), \
                  patch.object(auth, 'request_json', side_effect=self.fake_request), \
                  patch.object(auth.webbrowser, 'open', side_effect=self.browser), \
-                 patch.object(auth, 'sync_directory', side_effect=OSError('private-sync-detail')):
+                 patch.object(FakeKeychain, 'read', side_effect=[json.dumps(self.grant).encode(), OSError('private-sync-detail')]):
                 code, out, err = self.main(*command)
                 if command == ['login']:
                     self.thread.join(5)
@@ -255,7 +279,7 @@ class WorkspaceAuthTest(unittest.TestCase):
         self.save()
         for command in ('token', 'login'):
             self.assertEqual(self.main(command)[0], 1)
-            self.assertEqual(auth.read_json(self.directory / 'grant.json'), self.grant)
+            self.assertEqual(json.loads(FakeKeychain(self.directory).read()), self.grant)
         self.assertEqual(self.main('logout')[0], 0)
         self.assertIsNone(self.read())
         self.assertEqual(json.loads(self.main('status')[1]), {'state': 'not_signed_in'})
@@ -344,7 +368,7 @@ class WorkspaceAuthTest(unittest.TestCase):
                 auth.register_client(RESOURCE, self.client['redirectUri'], self.client['issuer'])
 
     def test_private_modes_hardlinks_and_symlinks(self):
-        self.save(); path = self.directory / 'grant.json'
+        path = self.save_legacy()
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.directory.stat().st_mode & 0o777, 0o700)
         alias = self.directory / 'alias'; os.link(path, alias)
@@ -366,7 +390,7 @@ class WorkspaceAuthTest(unittest.TestCase):
             with auth.locked(self.directory):pass
 
     def test_bounded_malformed_and_oversized_json(self):
-        self.save(); path = self.directory / 'grant.json'
+        path = self.save_legacy()
         for content in ('not json', '[]', ' ' * (auth.MAX_JSON_BYTES + 1)):
             path.write_text(content)
             code, out, err = self.main('status')
@@ -503,6 +527,49 @@ class WorkspaceAuthTest(unittest.TestCase):
         if process.poll() is None:process.kill()
         process.communicate(timeout=5)
 
+    def test_concurrent_migration_and_refresh_use_one_grant(self):
+        self.tokens['expiresAt'] = 1
+        path = self.save_legacy()
+        for process in [self.worker(), self.worker()]:
+            stdout, stderr = process.communicate(timeout=10)
+            self.assertEqual((process.returncode, stdout), (0, 'new-access\n'), stderr)
+        self.assertFalse(path.exists())
+        self.assertEqual((Path(self.temp.name) / 'refreshes').read_text(), 'refresh\n')
+        self.assertEqual(self.read()['tokens']['refreshToken'], 'new-refresh')
+
+    def test_new_login_pair_is_atomic_on_keychain_success_or_failure(self):
+        for failed in [True, False]:
+            with self.subTest(failed=failed):
+                self.save()
+                with simulated_callback(auth), patch.dict(os.environ, {'GOOGLE_WORKSPACE_MCP_CALLBACK_PORT': '19899'}), \
+                     patch.object(auth, 'request_json', side_effect=self.fake_request), contextlib.ExitStack() as stack:
+                    if failed:
+                        stack.enter_context(patch.object(FakeKeychain, 'write', side_effect=OSError('private-error')))
+                    code, stdout, stderr = self.main('login')
+                self.assertEqual(code, 1 if failed else 0, stderr)
+                self.assertNotIn('private-error', stderr)
+                self.assertNotIn('new-access', stdout + stderr)
+                self.assertNotIn('new-refresh', stdout + stderr)
+                saved = self.read()
+                if failed:
+                    self.assertEqual(saved, self.grant)
+                else:
+                    self.assertEqual(saved['client']['clientId'], 'registered-client')
+                    self.assertEqual(saved['tokens']['clientId'], 'registered-client')
+                    self.assertEqual(saved['tokens']['refreshToken'], 'new-refresh')
+                self.assertFalse((self.directory / 'grant.json').exists())
+
+    def test_verification_failure_after_refresh_retains_new_pair_without_output(self):
+        self.save()
+        with patch.object(auth, 'request_json', return_value=response()), \
+             patch.object(FakeKeychain, 'read', side_effect=[json.dumps(self.grant).encode(), OSError('private-error')]):
+            code, stdout, stderr = self.main('token', '--refresh')
+        self.assertEqual((code, stdout), (1, ''))
+        self.assertNotIn('private-error', stderr)
+        saved = self.read()
+        self.assertEqual(saved['client'], self.client)
+        self.assertEqual(saved['tokens']['refreshToken'], 'new-refresh')
+
     def test_concurrent_processes_refresh_once_and_reload_saved_state(self):
         self.tokens['expiresAt']=1;self.save()
         processes=[self.worker(),self.worker()]
@@ -515,7 +582,7 @@ class WorkspaceAuthTest(unittest.TestCase):
     def test_logout_waits_for_refresh_and_is_not_resurrected(self):
         self.tokens['expiresAt']=1;self.save()
         process=self.worker();self.assertEqual(process.stderr.readline(),'refreshing\n')
-        result=subprocess.run([sys.executable,'-B',str(HELPER),'logout'],env=dict(os.environ),capture_output=True,timeout=10)
+        result=self.cli('logout')
         process.communicate(timeout=10)
         self.assertEqual((result.returncode,process.returncode),(0,0))
         self.assertIsNone(self.read())
@@ -548,7 +615,7 @@ class WorkspaceAuthTest(unittest.TestCase):
         with patch.dict(os.environ,{'GOOGLE_WORKSPACE_MCP_CALLBACK_PORT':str(self.free_port())}), \
              patch.object(auth,'request_json',side_effect=self.fake_request), \
              patch.object(auth.webbrowser,'open',side_effect=self.browser), \
-             patch.object(auth.os,'replace',side_effect=OSError('private-detail')):
+             patch.object(FakeKeychain,'write',side_effect=OSError('private-detail')):
             code,out,err=self.main('login');self.thread.join(5)
         self.assertEqual((code,out),(1,''));self.assertNotIn('private-detail',err)
         self.assertEqual(self.read(),self.grant)

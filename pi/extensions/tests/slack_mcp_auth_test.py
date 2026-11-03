@@ -21,9 +21,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from slack_auth_fixture import FakeKeychain
+from mcp_auth_fixture import FakeKeychain
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'bin/slack-mcp-auth'
+sys.path.insert(0, str(SCRIPT.parent))
+import mcp_auth_keychain as keychain
 auth = types.ModuleType('slack_mcp_auth')
 importlib.machinery.SourceFileLoader(auth.__name__, str(SCRIPT)).exec_module(auth)
 REQUEST_JSON = auth.request_json
@@ -32,7 +34,7 @@ KEYCHAIN = auth.Keychain
 # No worker inherits the real HOME/XDG or performs network requests.
 WORKER = '''
 import pathlib, sys, time
-from slack_auth_fixture import load_auth
+from mcp_auth_fixture import load_auth
 module = load_auth(sys.argv[1])
 def refresh(url, body=None):
     assert url == module.TOKEN_URL
@@ -57,7 +59,7 @@ class SlackAuthTest(unittest.TestCase):
                     'PYTHONPATH': str(SCRIPT.parent.parent / 'tests')}
         mock.patch.dict(os.environ, self.env, clear=True).start()
         self.keychain = mock.patch.object(auth, 'Keychain', side_effect=FakeKeychain).start()
-        mock.patch.object(auth.ctypes, 'CDLL', side_effect=AssertionError('Tests must not access the host Keychain')).start()
+        mock.patch.object(keychain.ctypes, 'CDLL', side_effect=AssertionError('Tests must not access the host Keychain')).start()
         self.http = mock.patch.object(auth, 'request_json', side_effect=AssertionError('Unexpected HTTP request')).start()
         self.browser = mock.patch.object(auth.webbrowser, 'open', side_effect=AssertionError('Unexpected browser launch')).start()
         self.addCleanup(mock.patch.stopall)
@@ -91,7 +93,7 @@ class SlackAuthTest(unittest.TestCase):
 
     def cli(self, *args):
         return subprocess.run([sys.executable, '-B', '-c',
-                               'import sys; from slack_auth_fixture import load_auth; sys.exit(load_auth(sys.argv[1]).main(sys.argv[2:]))',
+                               'import sys; from mcp_auth_fixture import load_auth; sys.exit(load_auth(sys.argv[1]).main(sys.argv[2:]))',
                                str(SCRIPT), *args], env=self.env,
                               cwd=self.root, capture_output=True, text=True, timeout=10)
 
@@ -306,6 +308,21 @@ class SlackAuthTest(unittest.TestCase):
         self.assertEqual(self.main('status')[0], 1)
         self.assertEqual(target.read_text(), 'leave untouched')
         self.assertTrue((self.directory / 'tokens.json').exists())
+
+    def test_orphaned_first_save_requires_explicit_logout_instead_of_silent_success(self):
+        path = self.seed_legacy()
+        leftover = self.directory / 'tokens.abc12_34.tmp'
+        path.rename(leftover)
+        for command in ['status', 'token']:
+            code, stdout, stderr = self.main(command)
+            self.assertEqual((code, stdout), (1, ''))
+            self.assertIn('logout', stderr)
+            self.assertNotIn('synthetic', stderr)
+            self.assertTrue(leftover.exists())
+        self.http.assert_not_called()
+        self.assertEqual(self.main('logout')[0], 0)
+        self.assertFalse(leftover.exists())
+        self.assertEqual(json.loads(self.main('status')[1])['state'], 'not_signed_in')
 
     def test_failed_migration_keeps_crash_leftovers(self):
         self.seed_legacy()
@@ -644,20 +661,20 @@ class KeychainBindingTest(unittest.TestCase):
         self.find.return_value = KEYCHAIN.NOT_FOUND
         self.addCleanup(mock.patch.stopall)
         mock.patch.object(auth.sys, 'platform', 'darwin').start()
-        self.loader = mock.patch.object(auth.ctypes, 'CDLL', side_effect=[self.security, self.core]).start()
+        self.loader = mock.patch.object(keychain.ctypes, 'CDLL', side_effect=[self.security, self.core]).start()
         self.store = KEYCHAIN(Path('/synthetic/slack-mcp'))
 
     def found(self, raw=b'synthetic-data'):
-        self.buffer = auth.ctypes.create_string_buffer(raw)
+        self.buffer = keychain.ctypes.create_string_buffer(raw)
         def find(_keychain, service_length, service, account_length, account, length, data, item):
             self.assertEqual(service[:service_length], b'pi.slack-mcp')
             self.assertEqual(account[:account_length], self.store.account)
             if length is not None:
-                auth.ctypes.cast(length, auth.ctypes.POINTER(auth.ctypes.c_uint32))[0] = len(raw)
+                keychain.ctypes.cast(length, keychain.ctypes.POINTER(keychain.ctypes.c_uint32))[0] = len(raw)
             if data is not None:
-                auth.ctypes.cast(data, auth.ctypes.POINTER(auth.ctypes.c_void_p))[0] = auth.ctypes.addressof(self.buffer)
+                keychain.ctypes.cast(data, keychain.ctypes.POINTER(keychain.ctypes.c_void_p))[0] = keychain.ctypes.addressof(self.buffer)
             if item is not None:
-                auth.ctypes.cast(item, auth.ctypes.POINTER(auth.ctypes.c_void_p))[0] = 123
+                keychain.ctypes.cast(item, keychain.ctypes.POINTER(keychain.ctypes.c_void_p))[0] = 123
             return 0
         self.find.side_effect = find
 
@@ -667,7 +684,7 @@ class KeychainBindingTest(unittest.TestCase):
             mock.call('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation'),
         ])
         self.security.SecKeychainSetUserInteractionAllowed.assert_called_once_with(False)
-        self.assertEqual(self.find.restype, auth.ctypes.c_int32)
+        self.assertEqual(self.find.restype, keychain.ctypes.c_int32)
         self.assertEqual(len(self.find.argtypes), 8)
         self.assertEqual(self.store.account, hashlib.sha256(b'/synthetic/slack-mcp').hexdigest().encode())
 
@@ -685,7 +702,7 @@ class KeychainBindingTest(unittest.TestCase):
 
     def test_oversized_native_secret_is_freed_without_copying(self):
         self.found(b'x' * (auth.MAX_JSON_BYTES + 1))
-        with mock.patch.object(auth.ctypes, 'string_at', side_effect=AssertionError('Do not copy oversized data')):
+        with mock.patch.object(keychain.ctypes, 'string_at', side_effect=AssertionError('Do not copy oversized data')):
             with self.assertRaises(auth.AuthError):
                 self.store.read()
         self.security.SecKeychainItemFreeContent.assert_called_once()

@@ -21,7 +21,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from mcp_auth_fixture import FakeKeychain, simulated_callback
+
 SCRIPT = Path(__file__).resolve().parents[1] / 'bin/datadog-mcp-auth'
+sys.path.insert(0, str(SCRIPT.parent))
+import mcp_auth_keychain as keychain
 auth = types.ModuleType('datadog_mcp_auth')
 importlib.machinery.SourceFileLoader(auth.__name__, str(SCRIPT)).exec_module(auth)
 REQUEST_JSON = auth.request_json
@@ -29,9 +33,9 @@ REQUEST_JSON = auth.request_json
 # Workers patch the HTTP boundary before invoking any auth operation. All state
 # and credentials are synthetic; subprocesses never inherit the real HOME/XDG.
 WORKER = '''
-import importlib.machinery, pathlib, sys, time, types
-module = types.ModuleType('auth')
-importlib.machinery.SourceFileLoader('auth', sys.argv[1]).exec_module(module)
+import pathlib, sys, time
+from mcp_auth_fixture import load_auth
+module = load_auth(sys.argv[1])
 def refresh(url, body=None, form=False):
     assert body['refresh_token'] == 'synthetic-refresh'
     print('refreshing', file=sys.stderr, flush=True)
@@ -50,10 +54,13 @@ class AuthTest(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.env = {'HOME': str(self.root / 'home'), 'XDG_STATE_HOME': str(self.root / 'state'),
-                    'PATH': os.environ.get('PATH', ''), 'PYTHONDONTWRITEBYTECODE': '1'}
+                    'PATH': os.environ.get('PATH', ''), 'PYTHONDONTWRITEBYTECODE': '1',
+                    'PYTHONPATH': str(SCRIPT.parent.parent / 'tests')}
         self.environment = mock.patch.dict(os.environ, self.env, clear=True)
         self.environment.start()
         self.addCleanup(self.environment.stop)
+        self.keychain = mock.patch.object(auth, 'Keychain', side_effect=FakeKeychain).start()
+        mock.patch.object(keychain.ctypes, 'CDLL', side_effect=AssertionError('Tests must not access the host Keychain')).start()
         self.http = mock.patch.object(auth, 'request_json', side_effect=AssertionError('Unexpected HTTP request')).start()
         self.browser = mock.patch.object(auth.webbrowser, 'open', side_effect=AssertionError('Unexpected browser launch')).start()
         self.addCleanup(mock.patch.stopall)
@@ -73,7 +80,15 @@ class AuthTest(unittest.TestCase):
     def seed(self, tokens=None, client=None):
         with auth.locked(self.directory):
             auth.write_json(self.directory / 'client.json', self.client if client is None else client)
-            auth.write_json(self.directory / 'tokens.json', self.tokens if tokens is None else tokens)
+            auth.write_tokens(self.directory, self.tokens if tokens is None else tokens)
+
+    def seed_legacy(self, raw=None):
+        with auth.locked(self.directory):
+            auth.write_json(self.directory / 'client.json', self.client)
+            path = self.directory / 'tokens.json'
+            with os.fdopen(auth.private_open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC), 'wb') as file:
+                file.write(json.dumps(self.tokens).encode() if raw is None else raw)
+        return path
 
     def run_main(self, *args):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -82,7 +97,9 @@ class AuthTest(unittest.TestCase):
         return code, stdout.getvalue(), stderr.getvalue()
 
     def cli(self, *args):
-        return subprocess.run([sys.executable, '-B', str(SCRIPT), *args], env=self.env,
+        return subprocess.run([sys.executable, '-B', '-c',
+                               'import sys; from mcp_auth_fixture import load_auth; sys.exit(load_auth(sys.argv[1]).main(sys.argv[2:]))',
+                               str(SCRIPT), *args], env=self.env,
                               cwd=self.root, capture_output=True, text=True, timeout=10)
 
     def worker(self):
@@ -152,7 +169,7 @@ class AuthTest(unittest.TestCase):
             'grant_type': 'refresh_token', 'refresh_token': 'synthetic-refresh',
             'client_id': 'synthetic-client', 'resource': self.client['mcp_resource_uri'],
         }, form=True)
-        saved = auth.read_json(self.directory / 'tokens.json')
+        saved = auth.read_tokens(self.directory)
         self.assertEqual(saved['refreshToken'], 'synthetic-new-refresh')
         self.assertEqual(saved['scope'], self.tokens['scope'])
         self.assertGreaterEqual(saved['expiresAt'], before + 3_600_000)
@@ -183,12 +200,12 @@ class AuthTest(unittest.TestCase):
 
     def test_refresh_failure_does_not_retry_or_modify_store(self):
         self.seed({**self.tokens, 'expiresAt': 1})
-        original = (self.directory / 'tokens.json').read_bytes()
+        original = FakeKeychain(self.directory).read()
         self.http.side_effect = auth.AuthError('OAuth request failed.')
         code, stdout, stderr = self.run_main('token')
         self.assertEqual((code, stdout), (1, ''))
         self.assertNotIn('synthetic', stderr)
-        self.assertEqual((self.directory / 'tokens.json').read_bytes(), original)
+        self.assertEqual(FakeKeychain(self.directory).read(), original)
         self.http.assert_called_once()
 
     def test_missing_refresh_token_or_client_never_attempts_login(self):
@@ -204,11 +221,11 @@ class AuthTest(unittest.TestCase):
         self.seed({**self.tokens, 'expiresAt': 1})
         self.http.side_effect = None
         self.http.return_value = {'access_token': 'secret-new-access', 'refresh_token': 'secret-new-refresh'}
-        with mock.patch.object(auth, 'write_json', side_effect=OSError('secret-new-refresh')):
+        with mock.patch.object(FakeKeychain, 'write', side_effect=OSError('secret-new-refresh')):
             code, stdout, stderr = self.run_main('token')
         self.assertEqual((code, stdout), (1, ''))
         self.assertNotIn('secret', stderr)
-        self.assertEqual(auth.read_json(self.directory / 'tokens.json')['refreshToken'], 'synthetic-refresh')
+        self.assertEqual(auth.read_tokens(self.directory)['refreshToken'], 'synthetic-refresh')
 
     def test_token_validation_rejects_malformed_values_without_echoing_them(self):
         for updates in [{'accessToken': ''}, {'accessToken': ' '}, {'accessToken': 'secret\r\nheader'}, {'expiresAt': True},
@@ -229,7 +246,7 @@ class AuthTest(unittest.TestCase):
                 auth.https_url(url)
 
     def test_files_are_private_atomic_and_symlinks_or_hardlinks_are_rejected(self):
-        self.seed()
+        self.seed_legacy()
         for path in [self.directory.parent, self.directory]:
             self.assertEqual(path.stat().st_mode & 0o777, 0o700)
         for path in self.directory.iterdir():
@@ -259,25 +276,68 @@ class AuthTest(unittest.TestCase):
         (self.directory / '.lock').symlink_to(self.directory / 'tokens.json')
         self.assertEqual(self.run_main('status')[0], 1)
 
-    def test_failed_atomic_replace_keeps_old_tokens_and_cleans_temporary_file(self):
+    def test_failed_keychain_write_keeps_old_tokens_without_plaintext(self):
         self.seed()
-        with mock.patch.object(auth.os, 'replace', side_effect=OSError('write failed')):
+        with mock.patch.object(FakeKeychain, 'write', side_effect=OSError('write failed')):
             with self.assertRaises(OSError):
-                auth.write_json(self.directory / 'tokens.json', {**self.tokens, 'accessToken': 'new'})
-        self.assertEqual(auth.read_json(self.directory / 'tokens.json'), self.tokens)
+                auth.write_tokens(self.directory, {**self.tokens, 'accessToken': 'new'})
+        self.assertEqual(auth.read_tokens(self.directory), self.tokens)
         self.assertEqual(list(self.directory.glob('*.tmp')), [])
 
     def test_malformed_oversized_and_public_files_fail_without_printing_contents(self):
-        self.seed()
-        path = self.directory / 'tokens.json'
+        path = self.seed_legacy()
         for data in ['secret invalid JSON', '[]', 'x' * (auth.MAX_JSON_BYTES + 1)]:
             path.write_text(data)
             code, stdout, stderr = self.run_main('token')
             self.assertEqual((code, stdout), (1, ''))
             self.assertNotIn('secret', stderr)
-        self.seed()
+        self.seed_legacy()
         path.chmod(0o644)
         self.assertEqual(self.run_main('token')[0], 1)
+
+    def test_concurrent_migration_and_refresh_use_one_grant(self):
+        self.tokens['expiresAt'] = 1
+        path = self.seed_legacy()
+        for process in [self.worker(), self.worker()]:
+            stdout, stderr = process.communicate(timeout=10)
+            self.assertEqual((process.returncode, stdout), (0, 'synthetic-new-access\n'), stderr)
+        self.assertFalse(path.exists())
+        self.assertEqual((self.root / 'refreshes').read_text(), 'refresh\n')
+        self.assertEqual(auth.read_tokens(self.directory)['refreshToken'], 'synthetic-new-refresh')
+
+    def test_new_login_keeps_only_public_registration_metadata_on_disk(self):
+        with simulated_callback(auth), mock.patch.object(auth, 'register_client', return_value=self.client), \
+             mock.patch.object(auth, 'request_json', return_value={'access_token': 'new-access', 'refresh_token': 'new-refresh'}):
+            code, stdout, stderr = self.run_main('login')
+        self.assertEqual(code, 0, stderr)
+        self.assertNotIn('new-access', stdout + stderr)
+        self.assertNotIn('new-refresh', stdout + stderr)
+        self.assertEqual(auth.read_tokens(self.directory)['refreshToken'], 'new-refresh')
+        self.assertEqual(auth.read_json(self.directory / 'client.json'), self.client)
+        self.assertEqual({p.name for p in self.directory.iterdir()}, {'.lock', 'client.json', 'test-keychain'})
+
+    def test_login_keychain_failure_cannot_pair_old_tokens_with_new_registration(self):
+        self.seed(client={**self.client, 'redirect_uris': ['http://localhost:1/callback']})
+        new_client = {**self.client, 'client_id': 'new-client'}
+        with simulated_callback(auth), mock.patch.object(auth, 'register_client', return_value=new_client), \
+             mock.patch.object(auth, 'request_json', return_value={'access_token': 'new-access'}), \
+             mock.patch.object(FakeKeychain, 'write', side_effect=OSError('private-error')):
+            code, stdout, stderr = self.run_main('login')
+        self.assertEqual((code, stdout), (1, ''))
+        self.assertNotIn('private-error', stderr)
+        self.assertNotIn('new-access', stderr)
+        self.assertEqual(auth.read_json(self.directory / 'client.json'), new_client)
+        self.assertIsNone(auth.read_tokens(self.directory))
+        self.assertFalse((self.directory / 'tokens.json').exists())
+
+    def test_login_reusing_registration_retains_old_tokens_if_keychain_write_fails(self):
+        self.seed()
+        with simulated_callback(auth), \
+             mock.patch.object(auth, 'request_json', return_value={'access_token': 'new-access'}), \
+             mock.patch.object(FakeKeychain, 'write', side_effect=OSError('private-error')):
+            self.assertEqual(self.run_main('login')[0], 1)
+        self.assertEqual(auth.read_tokens(self.directory), self.tokens)
+        self.assertEqual(auth.read_json(self.directory / 'client.json'), self.client)
 
     def test_concurrent_helpers_reread_under_lock_and_refresh_only_once(self):
         self.seed({**self.tokens, 'expiresAt': 1})
@@ -287,7 +347,7 @@ class AuthTest(unittest.TestCase):
             self.assertEqual(process.returncode, 0, stderr)
             self.assertEqual(stdout, 'synthetic-new-access\n')
         self.assertEqual((self.root / 'refreshes').read_text(), 'refresh\n')
-        self.assertEqual(auth.read_json(self.directory / 'tokens.json')['refreshToken'], 'synthetic-new-refresh')
+        self.assertEqual(auth.read_tokens(self.directory)['refreshToken'], 'synthetic-new-refresh')
 
     def test_logout_serializes_after_refresh_and_does_not_get_resurrected(self):
         self.seed({**self.tokens, 'expiresAt': 1})
@@ -298,6 +358,7 @@ class AuthTest(unittest.TestCase):
         worker.communicate(timeout=10)
         self.assertEqual(worker.returncode, 0)
         self.assertFalse((self.directory / 'tokens.json').exists())
+        self.assertIsNone(auth.read_tokens(self.directory))
         self.assertEqual(auth.read_json(self.directory / 'client.json'), self.client)
 
     def test_lock_wait_is_bounded_and_process_death_releases_lock(self):
@@ -320,7 +381,7 @@ class AuthTest(unittest.TestCase):
         for _ in range(2):
             self.assertEqual(self.run_main('logout')[0], 0)
         self.assertEqual(auth.read_json(self.directory / 'client.json'), self.client)
-        self.assertIsNone(auth.read_json(self.directory / 'tokens.json'))
+        self.assertIsNone(auth.read_tokens(self.directory))
         self.http.assert_not_called()
 
     def test_http_transport_disables_proxies_redirects_and_bounds_requests(self):
@@ -426,7 +487,7 @@ class AuthTest(unittest.TestCase):
         self.assertEqual(callbacks[0]['code_challenge_method'], ['S256'])
         self.assertNotIn('scope', callbacks[0])
         self.assertNotIn('synthetic-login-', stdout + stderr)
-        self.assertEqual(auth.read_json(self.directory / 'tokens.json')['refreshToken'], 'synthetic-login-refresh')
+        self.assertEqual(auth.read_tokens(self.directory)['refreshToken'], 'synthetic-login-refresh')
 
     def test_registration_preserves_overrides_and_omits_scope(self):
         self.http.side_effect = [
@@ -446,12 +507,12 @@ class AuthTest(unittest.TestCase):
         code, stdout, stderr = self.run_main('login')
         self.assertEqual((code, stdout), (1, ''))
         self.assertNotIn('secret-provider-error', stderr)
-        self.assertEqual(auth.read_json(self.directory / 'tokens.json'), self.tokens)
+        self.assertEqual(auth.read_tokens(self.directory), self.tokens)
         self.http.assert_not_called()
         self.browser.side_effect = None
         with mock.patch.object(auth, 'LOGIN_TIMEOUT', 0):
             self.assertEqual(self.run_main('login')[0], 1)
-        self.assertEqual(auth.read_json(self.directory / 'tokens.json'), self.tokens)
+        self.assertEqual(auth.read_tokens(self.directory), self.tokens)
         self.http.assert_not_called()
 
     def test_failed_new_login_does_not_replace_registration(self):
@@ -463,7 +524,7 @@ class AuthTest(unittest.TestCase):
             self.http.side_effect = auth.AuthError('Exchange failed')
             self.assertEqual(self.run_main('login')[0], 1)
         self.assertEqual(auth.read_json(self.directory / 'client.json'), old_client)
-        self.assertEqual(auth.read_json(self.directory / 'tokens.json'), self.tokens)
+        self.assertEqual(auth.read_tokens(self.directory), self.tokens)
 
     def test_new_registration_cannot_be_paired_with_old_tokens_on_write_failure(self):
         self.prepare_login()
@@ -477,6 +538,7 @@ class AuthTest(unittest.TestCase):
             self.assertEqual(self.run_main('login')[0], 1)
         self.assertEqual(auth.read_json(self.directory / 'client.json'), old_client)
         self.assertFalse((self.directory / 'tokens.json').exists())
+        self.assertIsNone(auth.read_tokens(self.directory))
 
     def test_cancellation_during_callback_handling_aborts_login_without_exchange(self):
         self.prepare_login()
@@ -494,7 +556,7 @@ class AuthTest(unittest.TestCase):
                 self.assertIn('interrupted', stderr)
                 self.assertNotIn('Traceback', stderr)
                 self.http.assert_not_called()
-                self.assertEqual(auth.read_json(self.directory / 'tokens.json'), self.tokens)
+                self.assertEqual(auth.read_tokens(self.directory), self.tokens)
 
     def test_callback_errors_are_silent_and_browser_failure_allows_manual_login(self):
         self.prepare_login()

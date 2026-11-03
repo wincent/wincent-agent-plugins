@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-only Datadog MCP OAuth helper (Python standard library, macOS/Linux).
+"""Host-only Datadog MCP OAuth helper (Python standard library, macOS Keychain).
 
 Only `token` writes a secret to stdout; other commands report nonsecret status.
 """
@@ -28,6 +28,8 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
+from mcp_auth_keychain import AuthError, Keychain as HostKeychain, reject_orphaned_credentials
+
 DEFAULT_DOMAIN = 'mcp.datadoghq.com'
 REFRESH_BUFFER_MS = 300_000
 HTTP_TIMEOUT = 10
@@ -37,8 +39,8 @@ MAX_JSON_BYTES = 65_536
 LOGIN_HINT = 'Run datadog-mcp-auth login on the host.'
 
 
-class AuthError(Exception):
-    pass
+class Keychain(HostKeychain):
+    SERVICE = b'pi.datadog-mcp'
 
 
 def resolve_domain():
@@ -131,6 +133,60 @@ def sync_directory(directory):
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def decode_tokens(raw):
+    if len(raw) > MAX_JSON_BYTES:
+        raise AuthError('Credential data is too large.')
+    try:
+        return validate_tokens(json.loads(raw))
+    except (ValueError, UnicodeError):
+        raise AuthError('Credential data contains invalid JSON.') from None
+
+
+def read_tokens(directory):
+    raw = Keychain(directory).read()
+    if raw is not None:
+        tokens = decode_tokens(raw)
+        # Keychain is authoritative after a save, even if cleanup was interrupted.
+        remove_legacy_tokens(directory)
+        return tokens
+    tokens = read_json(directory / 'tokens.json')
+    if tokens is not None:
+        write_tokens(directory, tokens)
+    else:
+        reject_orphaned_credentials(directory, 'tokens.json')
+    return tokens
+
+
+def remove_legacy_tokens(directory):
+    # The old writer used the full JSON filename as its mkstemp prefix.
+    for path in directory.glob('tokens.json.*.tmp'):
+        if re.fullmatch(r'tokens\.json\.[a-z0-9_]{8}\.tmp', path.name):
+            fd = private_open(path, os.O_RDONLY)
+            os.close(fd)
+            path.unlink()
+    (directory / 'tokens.json').unlink(missing_ok=True)
+    sync_directory(directory)
+
+
+def write_tokens(directory, tokens):
+    validate_tokens(tokens)
+    raw = json.dumps(tokens, allow_nan=False).encode()
+    if len(raw) > MAX_JSON_BYTES:
+        raise AuthError('Credential data is too large.')
+    keychain = Keychain(directory)
+    keychain.write(raw)
+    if keychain.read() != raw:
+        raise AuthError('Keychain credential verification failed; legacy credentials were not removed.')
+    remove_legacy_tokens(directory)
+
+
+def delete_tokens(directory):
+    keychain = Keychain(directory)
+    # Do not leave a plaintext grant that could resurrect after Keychain deletion.
+    remove_legacy_tokens(directory)
+    keychain.delete()
 
 
 def nonempty(value):
@@ -231,7 +287,7 @@ def normalize_tokens(response, previous=None):
 
 
 def token(directory, force_refresh=False):
-    tokens = validate_tokens(read_json(directory / 'tokens.json'))
+    tokens = validate_tokens(read_tokens(directory))
     if not force_refresh and tokens['expiresAt'] - REFRESH_BUFFER_MS > time.time() * 1000:
         return tokens['accessToken']
     client = validate_client(read_json(directory / 'client.json'))
@@ -245,7 +301,7 @@ def token(directory, force_refresh=False):
     }, form=True)
     refreshed = normalize_tokens(response, tokens)
     # A short-lived helper must save rotated tokens BEFORE releasing a token.
-    write_json(directory / 'tokens.json', refreshed)
+    write_tokens(directory, refreshed)
     return refreshed['accessToken']
 
 
@@ -290,6 +346,8 @@ class CallbackServer(http.server.HTTPServer):
 
 
 def login(directory, domain):
+    # Check host credential access before registration or browser side effects.
+    Keychain(directory).read()
     redirect = callback_url()
     old_client = read_json(directory / 'client.json')
     client = validate_client(old_client) if old_client is not None else None
@@ -354,15 +412,14 @@ def login(directory, domain):
     }, form=True))
     if client != old_client:
         # Never pair an old grant with a new client, even if interrupted between writes.
-        (directory / 'tokens.json').unlink(missing_ok=True)
-        sync_directory(directory)
+        delete_tokens(directory)
         write_json(directory / 'client.json', client)
-    write_json(directory / 'tokens.json', tokens)
+    write_tokens(directory, tokens)
 
 
 def status(directory):
+    tokens = read_tokens(directory)
     client = read_json(directory / 'client.json')
-    tokens = read_json(directory / 'tokens.json')
     if client is not None:
         validate_client(client)
     if tokens is None:
@@ -400,10 +457,9 @@ def main(argv=None):
                 print(token(directory, args.refresh))
             elif args.command == 'login':
                 login(directory, domain)
-                print('Signed in to Datadog.')
+                print('Signed in to Datadog; credentials saved in the host macOS Keychain.')
             elif args.command == 'logout':
-                (directory / 'tokens.json').unlink(missing_ok=True)
-                sync_directory(directory)
+                delete_tokens(directory)
                 print('Local tokens removed; server-side grant was not revoked.')
             else:
                 print(json.dumps(status(directory)))

@@ -22,13 +22,13 @@ import secrets
 import signal
 import stat
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
 
+from mcp_auth_keychain import AuthError, Keychain as HostKeychain, reject_orphaned_credentials
 
 REFRESH_BUFFER_MS = 300_000
 HTTP_TIMEOUT = 10
@@ -56,8 +56,8 @@ OAUTH_ERRORS = frozenset((
 ))
 
 
-class AuthError(Exception):
-    pass
+class Keychain(HostKeychain):
+    SERVICE = b'pi.google-workspace-mcp'
 
 
 def resource_url():
@@ -156,20 +156,6 @@ def read_json(path):
     return value
 
 
-def write_json(path, value):
-    fd, temporary = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=path.parent)
-    try:
-        with os.fdopen(fd, 'w') as file:
-            json.dump(value, file, allow_nan=False)
-            file.write('\n')
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(temporary, path)
-        sync_directory(path.parent)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
-
-
 def sync_directory(directory):
     fd = os.open(directory, os.O_RDONLY)
     try:
@@ -229,12 +215,62 @@ def validate_tokens(value, client):
     return value
 
 
-def read_grant(directory, resource):
-    grant = read_json(directory / 'grant.json')
-    if grant is not None:
-        client = validate_client(grant.get('client'), resource)
-        validate_tokens(grant.get('tokens'), client)
+def validate_grant(grant, resource):
+    if not isinstance(grant, dict):
+        raise AuthError('Invalid Workspace grant object. ' + LOGIN_HINT)
+    client = validate_client(grant.get('client'), resource)
+    validate_tokens(grant.get('tokens'), client)
     return grant
+
+
+def read_grant(directory, resource):
+    raw = Keychain(directory).read()
+    if raw is not None:
+        if len(raw) > MAX_JSON_BYTES:
+            raise AuthError('Credential data is too large.')
+        try:
+            grant = json.loads(raw)
+        except (ValueError, UnicodeError):
+            raise AuthError('Credential data contains invalid JSON.') from None
+        validate_grant(grant, resource)
+        # Never replace a saved Keychain grant with a stale plaintext copy.
+        remove_legacy_grant(directory)
+    else:
+        grant = read_json(directory / 'grant.json')
+        if grant is not None:
+            write_grant(directory, grant, resource)
+        else:
+            reject_orphaned_credentials(directory, 'grant.json')
+    return grant
+
+
+def remove_legacy_grant(directory):
+    for path in directory.glob('grant.json.*.tmp'):
+        if re.fullmatch(r'grant\.json\.[a-z0-9_]{8}\.tmp', path.name):
+            fd = private_open(path, os.O_RDONLY)
+            os.close(fd)
+            path.unlink()
+    (directory / 'grant.json').unlink(missing_ok=True)
+    sync_directory(directory)
+
+
+def write_grant(directory, grant, resource):
+    validate_grant(grant, resource)
+    raw = json.dumps(grant, allow_nan=False).encode()
+    if len(raw) > MAX_JSON_BYTES:
+        raise AuthError('Credential data is too large.')
+    keychain = Keychain(directory)
+    # The client and tokens must always be saved as one bound pair.
+    keychain.write(raw)
+    if keychain.read() != raw:
+        raise AuthError('Keychain credential verification failed; legacy credentials were not removed.')
+    remove_legacy_grant(directory)
+
+
+def delete_grant(directory):
+    keychain = Keychain(directory)
+    remove_legacy_grant(directory)
+    keychain.delete()
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -371,7 +407,7 @@ def token(directory, resource, force_refresh=False):
         'client_id': client['clientId'], 'resource': resource,
     }, form=True)
     refreshed = normalize_tokens(response, client, tokens)
-    write_json(directory / 'grant.json', {'client': client, 'tokens': refreshed})
+    write_grant(directory, {'client': client, 'tokens': refreshed}, resource)
     return refreshed['accessToken']
 
 
@@ -450,7 +486,7 @@ def login(directory, resource):
         'redirect_uri': redirect, 'client_id': client['clientId'],
         'code_verifier': verifier, 'resource': resource,
     }, form=True)
-    write_json(directory / 'grant.json', {'client': client, 'tokens': normalize_tokens(response, client)})
+    write_grant(directory, {'client': client, 'tokens': normalize_tokens(response, client)}, resource)
 
 
 def status(directory, resource):
@@ -486,10 +522,9 @@ def main(argv=None):
                 print(token(directory, resource, args.refresh))
             elif args.command == 'login':
                 login(directory, resource)
-                print('Workspace MCP grant saved in the Pi host store.')
+                print('Workspace MCP grant saved in the host macOS Keychain.')
             elif args.command == 'logout':
-                (directory / 'grant.json').unlink(missing_ok=True)
-                sync_directory(directory)
+                delete_grant(directory)
                 print('Local grant removed; no server or Google authorization was revoked.')
             else:
                 print(json.dumps(status(directory, resource)))

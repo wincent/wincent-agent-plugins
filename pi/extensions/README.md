@@ -56,7 +56,7 @@ Requires per-call confirmation for writes through Pi's native MCP server named `
 
 Run `bin/datadog-mcp-auth login`, `status`, or `logout` on the host to manage authentication. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token without displaying it. Use only this helper to manage the grant, not Pi's native OAuth commands.
 
-The helper defaults to `mcp.datadoghq.com`; `DATADOG_MCP_DOMAIN` selects another site and must match the proxy route and MCP URL. Registrations and tokens are stored as private plaintext JSON under `$XDG_STATE_HOME/pi/datadog-mcp/` (default `~/.local/state/pi/datadog-mcp/`). Never copy this state into a sandbox or VM.
+The helper defaults to `mcp.datadoghq.com`; `DATADOG_MCP_DOMAIN` selects another site and must match the proxy route and MCP URL. Tokens are stored in the macOS host's default Keychain under service `pi.datadog-mcp`. Run `status` on the host for each configured site to migrate its plaintext tokens; deletion follows a verified Keychain save. Keep the same `$XDG_STATE_HOME` (default `~/.local/state`): `$XDG_STATE_HOME/pi/datadog-mcp/` selects the grants and retains locks and public client-registration metadata. Logout removes tokens but preserves registration. Use the same Python interpreter for host commands and proxy capture, with an unlocked Keychain that permits it access. There is no plaintext fallback or Keychain prompt. All agent modes continue using the host credential proxy; never copy credentials into a sandbox or VM.
 
 ### `google-workspace-mcp.ts`
 
@@ -66,7 +66,7 @@ Enable built-in MCP and configure the service's literal HTTPS `/mcp` URL in `mcp
 
 On the host, set `GOOGLE_WORKSPACE_MCP_URL` to the matching resource URL and use `bin/google-workspace-mcp-auth login`, `status`, or `logout`. Select the work account authorized for the configured service. The callback defaults to port `19877`, overridable with `GOOGLE_WORKSPACE_MCP_CALLBACK_PORT`. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token. Use only this helper to manage the grant, not Pi's native OAuth commands.
 
-Credentials are stored as private plaintext JSON under `$XDG_STATE_HOME/pi/google-workspace-mcp-host/` (default `~/.local/state/pi/google-workspace-mcp-host/`). Logout removes the local client and tokens, not server or Google authorization. Keep credentials and the helper on the host.
+The client and tokens are stored together in the macOS host's default Keychain under service `pi.google-workspace-mcp`. Run `status` on the host with the configured `GOOGLE_WORKSPACE_MCP_URL` to migrate its plaintext grant; deletion follows a verified Keychain save. Keep the same `$XDG_STATE_HOME` (default `~/.local/state`): `$XDG_STATE_HOME/pi/google-workspace-mcp-host/` selects the grants and holds their locks. Use the same Python interpreter for host commands and proxy capture, with an unlocked Keychain that permits it access. There is no plaintext fallback or Keychain prompt. Logout removes the local client and tokens, not server or Google authorization. All agent modes continue using the host credential proxy; keep credentials and the helper on the host.
 
 ### `slack-mcp.ts`
 

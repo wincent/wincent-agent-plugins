@@ -9,7 +9,6 @@ reads or writes Claude credentials. Slack app attribution remains Claude Code.
 import argparse
 import base64
 import contextlib
-import ctypes
 import fcntl
 import hashlib
 import hmac
@@ -30,6 +29,8 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
+from mcp_auth_keychain import AuthError, Keychain as HostKeychain, reject_orphaned_credentials
+
 # https://docs.slack.dev/ai/slack-mcp-server/connect-to-claude/
 CLIENT_ID = '1601185624273.8899143856786'
 REDIRECT_URI = 'http://localhost:3118/callback'
@@ -45,8 +46,8 @@ MAX_JSON_BYTES = 65_536
 LOGIN_HINT = 'Run slack-mcp-auth login on the host; do not run legacy Slack refreshers.'
 
 
-class AuthError(Exception):
-    pass
+class Keychain(HostKeychain):
+    SERVICE = b'pi.slack-mcp'
 
 
 def store_directory():
@@ -91,101 +92,6 @@ def locked(directory):
         yield
 
 
-class Keychain:
-    """Generic password in the host's default Keychain; no secrets in argv/files."""
-
-    NOT_FOUND = -25300
-    SERVICE = b'pi.slack-mcp'
-
-    def __init__(self, directory):
-        if sys.platform != 'darwin':
-            raise AuthError('Slack credentials require the macOS host Keychain. Use the host credential proxy from sandboxes and VMs.')
-        self.account = hashlib.sha256(os.fsencode(directory.resolve())).hexdigest().encode()
-        self.security = ctypes.CDLL('/System/Library/Frameworks/Security.framework/Security')
-        self.core = ctypes.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
-        pointer = ctypes.c_void_p
-        uint = ctypes.c_uint32
-        signatures = {
-            'SecKeychainSetUserInteractionAllowed': [ctypes.c_ubyte],
-            'SecKeychainCopyDefault': [ctypes.POINTER(pointer)],
-            'SecKeychainFindGenericPassword': [pointer, uint, pointer, uint, pointer,
-                                               ctypes.POINTER(uint), ctypes.POINTER(pointer), ctypes.POINTER(pointer)],
-            'SecKeychainAddGenericPassword': [pointer, uint, pointer, uint, pointer, uint, pointer, ctypes.POINTER(pointer)],
-            'SecKeychainItemModifyAttributesAndData': [pointer, pointer, uint, pointer],
-            'SecKeychainItemDelete': [pointer],
-            'SecKeychainItemFreeContent': [pointer, pointer],
-        }
-        for name, args in signatures.items():
-            function = getattr(self.security, name)
-            function.argtypes = args
-            function.restype = ctypes.c_int32
-        self.core.CFRelease.argtypes = [pointer]
-        self.core.CFRelease.restype = None
-        # Proxy capture commands must not hang waiting for a GUI prompt.
-        self.check(self.security.SecKeychainSetUserInteractionAllowed(False))
-
-    @staticmethod
-    def check(status):
-        if status:
-            raise AuthError(f'macOS Keychain operation failed (OSStatus {status}); unlock the host Keychain and check helper access. No plaintext fallback.')
-
-    @contextlib.contextmanager
-    def opened(self):
-        keychain = ctypes.c_void_p()
-        self.check(self.security.SecKeychainCopyDefault(ctypes.byref(keychain)))
-        try:
-            yield keychain
-        finally:
-            self.core.CFRelease(keychain)
-
-    def find(self, keychain, length=None, data=None, item=None):
-        return self.security.SecKeychainFindGenericPassword(
-            keychain, len(self.SERVICE), self.SERVICE, len(self.account), self.account,
-            length, data, item,
-        )
-
-    def read(self):
-        with self.opened() as keychain:
-            length, data = ctypes.c_uint32(), ctypes.c_void_p()
-            status = self.find(keychain, ctypes.byref(length), ctypes.byref(data))
-            if status == self.NOT_FOUND:
-                return None
-            self.check(status)
-            try:
-                if length.value > MAX_JSON_BYTES:
-                    raise AuthError('Keychain credential is too large.')
-                return ctypes.string_at(data, length.value)
-            finally:
-                self.security.SecKeychainItemFreeContent(None, data)
-
-    def write(self, raw):
-        with self.opened() as keychain:
-            item = ctypes.c_void_p()
-            status = self.find(keychain, item=ctypes.byref(item))
-            if status == self.NOT_FOUND:
-                self.check(self.security.SecKeychainAddGenericPassword(
-                    keychain, len(self.SERVICE), self.SERVICE, len(self.account), self.account, len(raw), raw, None,
-                ))
-            else:
-                self.check(status)
-                try:
-                    self.check(self.security.SecKeychainItemModifyAttributesAndData(item, None, len(raw), raw))
-                finally:
-                    self.core.CFRelease(item)
-
-    def delete(self):
-        with self.opened() as keychain:
-            item = ctypes.c_void_p()
-            status = self.find(keychain, item=ctypes.byref(item))
-            if status == self.NOT_FOUND:
-                return
-            self.check(status)
-            try:
-                self.check(self.security.SecKeychainItemDelete(item))
-            finally:
-                self.core.CFRelease(item)
-
-
 def decode_tokens(raw):
     if len(raw) > MAX_JSON_BYTES:
         raise AuthError('Credential data is too large.')
@@ -216,6 +122,8 @@ def read_tokens(directory):
     tokens = read_legacy_tokens(directory)
     if tokens is not None:
         write_tokens(directory, tokens)
+    else:
+        reject_orphaned_credentials(directory, 'tokens')
     return tokens
 
 
