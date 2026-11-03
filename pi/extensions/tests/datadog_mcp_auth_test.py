@@ -472,7 +472,7 @@ class AuthTest(unittest.TestCase):
         self.http.return_value = {'access_token': 'synthetic-login-access', 'refresh_token': 'synthetic-login-refresh'}
         code, stdout, stderr = self.run_main('login')
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(stdout, 'Signed in to Datadog.\n')
+        self.assertEqual(stdout, 'Signed in to Datadog; credentials saved in the host macOS Keychain.\n')
         self.http.assert_called_once()
         url = self.http.call_args.args[0]
         body = self.http.call_args.args[1]
