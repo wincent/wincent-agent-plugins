@@ -74,7 +74,7 @@ Requires per-call confirmation for writes through Pi's native MCP server named `
 
 Run `bin/slack-mcp-auth login`, `status`, or `logout` on the host to manage authentication. Select the intended workspace on the consent screen. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token without displaying it. Use only this helper to manage the grant, not Pi's native OAuth commands.
 
-Credentials are stored as private plaintext JSON under `$XDG_STATE_HOME/pi/slack-mcp/` (default `~/.local/state/pi/slack-mcp/`). Never copy this state into a sandbox or VM. Slack attributes activity to Claude Code, but no Claude installation is needed.
+Credentials are stored in the macOS host's default Keychain under service `pi.slack-mcp`. Run `status` on the host to migrate an existing plaintext `tokens.json`; the file is removed only after the Keychain save is verified. Keep the same `$XDG_STATE_HOME` (default `~/.local/state`), which selects the grant and holds its lock. Use the same Python interpreter for host commands and proxy capture. The host Keychain must be unlocked and permit that interpreter access; failures do not fall back to plaintext or open Keychain prompts. Sandboxed, non-sandboxed, and VM agents use the same host credential proxy and phantom token; never copy credentials into an agent environment. Slack attributes activity to Claude Code, but no Claude installation is needed.
 
 ### `context-breakdown.ts`
 

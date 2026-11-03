@@ -21,16 +21,19 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from slack_auth_fixture import FakeKeychain
+
 SCRIPT = Path(__file__).resolve().parents[1] / 'bin/slack-mcp-auth'
 auth = types.ModuleType('slack_mcp_auth')
 importlib.machinery.SourceFileLoader(auth.__name__, str(SCRIPT)).exec_module(auth)
 REQUEST_JSON = auth.request_json
+KEYCHAIN = auth.Keychain
 
 # No worker inherits the real HOME/XDG or performs network requests.
 WORKER = '''
-import importlib.machinery, pathlib, sys, time, types
-module = types.ModuleType('auth')
-importlib.machinery.SourceFileLoader('auth', sys.argv[1]).exec_module(module)
+import pathlib, sys, time
+from slack_auth_fixture import load_auth
+module = load_auth(sys.argv[1])
 def refresh(url, body=None):
     assert url == module.TOKEN_URL
     assert body['refresh_token'] == 'synthetic-refresh'
@@ -50,8 +53,11 @@ class SlackAuthTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.env = {'HOME': str(self.root / 'home'), 'XDG_STATE_HOME': str(self.root / 'state'),
-                    'PATH': os.environ.get('PATH', ''), 'PYTHONDONTWRITEBYTECODE': '1'}
+                    'PATH': os.environ.get('PATH', ''), 'PYTHONDONTWRITEBYTECODE': '1',
+                    'PYTHONPATH': str(SCRIPT.parent.parent / 'tests')}
         mock.patch.dict(os.environ, self.env, clear=True).start()
+        self.keychain = mock.patch.object(auth, 'Keychain', side_effect=FakeKeychain).start()
+        mock.patch.object(auth.ctypes, 'CDLL', side_effect=AssertionError('Tests must not access the host Keychain')).start()
         self.http = mock.patch.object(auth, 'request_json', side_effect=AssertionError('Unexpected HTTP request')).start()
         self.browser = mock.patch.object(auth.webbrowser, 'open', side_effect=AssertionError('Unexpected browser launch')).start()
         self.addCleanup(mock.patch.stopall)
@@ -70,6 +76,13 @@ class SlackAuthTest(unittest.TestCase):
         with auth.locked(self.directory):
             auth.write_tokens(self.directory, {**self.tokens, **(updates or {})})
 
+    def seed_legacy(self, raw=None):
+        with auth.locked(self.directory):
+            path = self.directory / 'tokens.json'
+            with os.fdopen(auth.private_open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC), 'wb') as file:
+                file.write(json.dumps(self.tokens).encode() if raw is None else raw)
+        return path
+
     def main(self, *args):
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -77,7 +90,9 @@ class SlackAuthTest(unittest.TestCase):
         return code, stdout.getvalue(), stderr.getvalue()
 
     def cli(self, *args):
-        return subprocess.run([sys.executable, '-B', str(SCRIPT), *args], env=self.env,
+        return subprocess.run([sys.executable, '-B', '-c',
+                               'import sys; from slack_auth_fixture import load_auth; sys.exit(load_auth(sys.argv[1]).main(sys.argv[2:]))',
+                               str(SCRIPT), *args], env=self.env,
                               cwd=self.root, capture_output=True, text=True, timeout=10)
 
     def worker(self):
@@ -155,11 +170,11 @@ class SlackAuthTest(unittest.TestCase):
 
     def test_refresh_failure_never_retries_or_changes_saved_grant(self):
         self.seed({'expiresAt': 1})
-        before = (self.directory / 'tokens.json').read_bytes()
+        before = FakeKeychain(self.directory).read()
         self.http.side_effect = auth.AuthError('OAuth rejected.')
         code, stdout, stderr = self.main('token')
         self.assertEqual((code, stdout), (1, ''))
-        self.assertEqual((self.directory / 'tokens.json').read_bytes(), before)
+        self.assertEqual(FakeKeychain(self.directory).read(), before)
         self.assertNotIn('synthetic', stderr)
         self.http.assert_called_once()
 
@@ -203,7 +218,7 @@ class SlackAuthTest(unittest.TestCase):
                 auth.validate_tokens({**self.tokens, **updates})
 
     def test_private_storage_and_symlink_hardlink_protection(self):
-        self.seed()
+        self.seed_legacy()
         for path in [self.directory.parent, self.directory]:
             self.assertEqual(path.stat().st_mode & 0o777, 0o700)
         for path in self.directory.iterdir():
@@ -233,25 +248,171 @@ class SlackAuthTest(unittest.TestCase):
         (self.directory / '.lock').symlink_to(self.directory / 'tokens.json')
         self.assertEqual(self.main('status')[0], 1)
 
-    def test_atomic_replace_failure_leaves_previous_grant_and_no_temporaries(self):
+    def test_keychain_write_failure_leaves_previous_grant(self):
         self.seed()
-        with mock.patch.object(auth.os, 'replace', side_effect=OSError('failure')):
-            with self.assertRaises(OSError):
+        with mock.patch.object(FakeKeychain, 'write', side_effect=auth.AuthError('Keychain unavailable')):
+            with self.assertRaises(auth.AuthError):
                 auth.write_tokens(self.directory, {**self.tokens, 'accessToken': 'new'})
         self.assertEqual(auth.read_tokens(self.directory), self.tokens)
-        self.assertEqual(list(self.directory.glob('*.tmp')), [])
+        self.assertFalse((self.directory / 'tokens.json').exists())
 
     def test_malformed_oversized_and_public_files_fail_silently(self):
-        self.seed()
-        path = self.directory / 'tokens.json'
+        path = self.seed_legacy()
         for raw in ['secret invalid json', '[]', 'x' * (auth.MAX_JSON_BYTES + 1)]:
             path.write_text(raw)
             code, stdout, stderr = self.main('token')
             self.assertEqual((code, stdout), (1, ''))
             self.assertNotIn('secret', stderr)
-        self.seed()
+        self.seed_legacy()
         path.chmod(0o644)
         self.assertEqual(self.main('token')[0], 1)
+
+    def test_status_migrates_legacy_credentials_without_network_or_secret_output(self):
+        path = self.seed_legacy()
+        code, stdout, stderr = self.main('status')
+        self.assertEqual(code, 0, stderr)
+        self.assertNotIn('synthetic', stdout + stderr)
+        self.assertFalse(path.exists())
+        self.assertEqual(auth.read_tokens(self.directory), self.tokens)
+        self.http.assert_not_called()
+
+    def test_migration_and_logout_remove_crash_leftovers_but_not_unrelated_files(self):
+        for command in ['status', 'logout']:
+            with self.subTest(command=command):
+                self.seed_legacy()
+                leftover = self.directory / 'tokens.abc12_34.tmp'
+                leftover.write_bytes(json.dumps(self.tokens).encode())
+                leftover.chmod(0o600)
+                unrelated = self.directory / 'tokens.backup.tmp'
+                unrelated.write_text('unrelated')
+                code, stdout, stderr = self.main(command)
+                self.assertEqual(code, 0, stderr)
+                self.assertFalse(leftover.exists())
+                self.assertFalse((self.directory / 'tokens.json').exists())
+                self.assertEqual(unrelated.read_text(), 'unrelated')
+                self.assertNotIn('synthetic', stdout + stderr)
+
+    def test_leftover_cleanup_does_not_follow_symlinks_or_remove_hardlinked_files(self):
+        self.seed_legacy()
+        target = self.root / 'outside'
+        target.write_text('leave untouched')
+        target.chmod(0o600)
+        leftover = self.directory / 'tokens.abc12_34.tmp'
+        leftover.symlink_to(target)
+        self.assertEqual(self.main('status')[0], 1)
+        self.assertTrue(leftover.is_symlink())
+        leftover.unlink()
+        os.link(target, leftover)
+        self.assertEqual(self.main('status')[0], 1)
+        self.assertEqual(target.read_text(), 'leave untouched')
+        self.assertTrue((self.directory / 'tokens.json').exists())
+
+    def test_failed_migration_keeps_crash_leftovers(self):
+        self.seed_legacy()
+        leftover = self.directory / 'tokens.abc12_34.tmp'
+        leftover.write_bytes(json.dumps(self.tokens).encode())
+        leftover.chmod(0o600)
+        with mock.patch.object(FakeKeychain, 'write', side_effect=auth.AuthError('Keychain unavailable')):
+            self.assertEqual(self.main('status')[0], 1)
+        self.assertTrue(leftover.exists())
+        self.assertTrue((self.directory / 'tokens.json').exists())
+
+    def test_failed_migration_preserves_plaintext_and_does_not_release_token(self):
+        path = self.seed_legacy()
+        before = path.read_bytes()
+        for method in ['read', 'write']:
+            with self.subTest(method=method), mock.patch.object(FakeKeychain, method, side_effect=auth.AuthError('Keychain unavailable')):
+                code, stdout, stderr = self.main('token')
+                self.assertEqual((code, stdout), (1, ''))
+                self.assertNotIn('synthetic', stderr)
+            self.assertEqual(path.read_bytes(), before)
+        self.http.assert_not_called()
+
+    def test_migration_requires_readback_before_removing_plaintext(self):
+        path = self.seed_legacy()
+        with mock.patch.object(FakeKeychain, 'read', return_value=None):
+            code, stdout, stderr = self.main('token')
+        self.assertEqual((code, stdout), (1, ''))
+        self.assertIn('verification failed', stderr)
+        self.assertTrue(path.exists())
+        self.assertEqual(self.main('token'), (0, 'synthetic-access\n', ''))
+        self.assertFalse(path.exists())
+
+    def test_existing_keychain_wins_over_stale_legacy_grant(self):
+        self.seed({'accessToken': 'current-access', 'refreshToken': 'current-refresh'})
+        path = self.seed_legacy()
+        self.assertEqual(self.main('token'), (0, 'current-access\n', ''))
+        self.assertFalse(path.exists())
+        self.http.assert_not_called()
+
+    def test_failed_legacy_removal_retries_without_overwriting_keychain(self):
+        path = self.seed_legacy()
+        with mock.patch.object(auth, 'remove_legacy_tokens', side_effect=OSError('failure')):
+            self.assertEqual(self.main('token')[0], 1)
+        self.assertTrue(path.exists())
+        with mock.patch.object(FakeKeychain, 'write', side_effect=AssertionError('Must not overwrite saved grant')):
+            self.assertEqual(self.main('token'), (0, 'synthetic-access\n', ''))
+        self.assertFalse(path.exists())
+
+    def test_corrupt_keychain_does_not_fall_back_to_legacy(self):
+        path = self.seed_legacy()
+        for raw in [b'secret invalid', b'[]', b'x' * (auth.MAX_JSON_BYTES + 1)]:
+            with self.subTest(raw=raw[:20]), mock.patch.object(FakeKeychain, 'read', return_value=raw):
+                code, stdout, stderr = self.main('token')
+                self.assertEqual((code, stdout), (1, ''))
+                self.assertNotIn('secret invalid', stderr)
+                self.assertTrue(path.exists())
+        self.http.assert_not_called()
+
+    def test_fresh_storage_and_refresh_never_create_plaintext(self):
+        self.seed({'expiresAt': 1})
+        self.http.side_effect = None
+        self.http.return_value = self.response
+        self.assertEqual(self.main('token')[0], 0)
+        self.assertFalse((self.directory / 'tokens.json').exists())
+        self.assertEqual(list(self.directory.glob('tokens.*')), [])
+
+    def test_logout_removes_both_stores_and_does_not_migrate(self):
+        self.seed()
+        self.seed_legacy()
+        with mock.patch.object(FakeKeychain, 'write', side_effect=AssertionError('Logout must not migrate')):
+            self.assertEqual(self.main('logout')[0], 0)
+        self.assertFalse((self.directory / 'tokens.json').exists())
+        self.assertIsNone(FakeKeychain(self.directory).read())
+
+    def test_interrupted_logout_cannot_resurrect_legacy_grant(self):
+        self.seed_legacy()
+        with mock.patch.object(FakeKeychain, 'delete', side_effect=auth.AuthError('Keychain unavailable')):
+            self.assertEqual(self.main('logout')[0], 1)
+        self.assertFalse((self.directory / 'tokens.json').exists())
+        self.assertEqual(json.loads(self.main('status')[1])['state'], 'not_signed_in')
+
+    def test_unsupported_host_fails_closed_without_touching_legacy_credentials(self):
+        path = self.seed_legacy()
+        self.keychain.side_effect = KEYCHAIN
+        with mock.patch.object(auth.sys, 'platform', 'linux'):
+            for command in ['token', 'status', 'login', 'logout']:
+                code, stdout, stderr = self.main(command)
+                self.assertEqual((code, stdout), (1, ''))
+                self.assertIn('host credential proxy', stderr)
+                self.assertTrue(path.exists())
+        self.http.assert_not_called()
+        self.browser.assert_not_called()
+
+    def test_keychain_failure_prevents_login_consent(self):
+        with mock.patch.object(FakeKeychain, 'read', side_effect=auth.AuthError('Keychain unavailable')):
+            self.assertEqual(self.main('login')[0], 1)
+        self.http.assert_not_called()
+        self.browser.assert_not_called()
+
+    def test_concurrent_migration_and_refresh_use_one_grant(self):
+        self.tokens['expiresAt'] = 1
+        path = self.seed_legacy()
+        for worker in [self.worker(), self.worker()]:
+            stdout, stderr = worker.communicate(timeout=10)
+            self.assertEqual((worker.returncode, stdout), (0, 'new-access\n'), stderr)
+        self.assertFalse(path.exists())
+        self.assertEqual((self.root / 'refreshes').read_text(), 'refresh\n')
 
     def test_concurrent_helpers_refresh_once_and_reread_rotated_grant(self):
         self.seed({'expiresAt': 1})
@@ -406,7 +567,7 @@ class SlackAuthTest(unittest.TestCase):
         self.assertEqual(callbacks[0]['scope'], ['search:read.public chat:write'])
         self.assertEqual(callbacks[0]['resource'], [auth.RESOURCE])
         self.assertEqual(auth.read_tokens(self.directory)['refreshToken'], 'new-refresh')
-        self.assertEqual({p.name for p in self.directory.iterdir()}, {'.lock', 'tokens.json'})
+        self.assertEqual({p.name for p in self.directory.iterdir()}, {'.lock', 'test-keychain'})
         self.assertFalse(Path(self.env['HOME']).exists())
 
     def test_denied_login_does_not_exchange_or_change_existing_grant(self):
@@ -470,6 +631,100 @@ class SlackAuthTest(unittest.TestCase):
             result = self.cli(*args)
             self.assertEqual(result.returncode, expected)
         self.assertFalse(self.directory.exists())
+
+
+class KeychainBindingTest(unittest.TestCase):
+    def setUp(self):
+        self.security, self.core = mock.Mock(), mock.Mock()
+        for name in ['SecKeychainSetUserInteractionAllowed', 'SecKeychainCopyDefault',
+                     'SecKeychainAddGenericPassword', 'SecKeychainItemModifyAttributesAndData',
+                     'SecKeychainItemDelete', 'SecKeychainItemFreeContent']:
+            getattr(self.security, name).return_value = 0
+        self.find = self.security.SecKeychainFindGenericPassword
+        self.find.return_value = KEYCHAIN.NOT_FOUND
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(auth.sys, 'platform', 'darwin').start()
+        self.loader = mock.patch.object(auth.ctypes, 'CDLL', side_effect=[self.security, self.core]).start()
+        self.store = KEYCHAIN(Path('/synthetic/slack-mcp'))
+
+    def found(self, raw=b'synthetic-data'):
+        self.buffer = auth.ctypes.create_string_buffer(raw)
+        def find(_keychain, service_length, service, account_length, account, length, data, item):
+            self.assertEqual(service[:service_length], b'pi.slack-mcp')
+            self.assertEqual(account[:account_length], self.store.account)
+            if length is not None:
+                auth.ctypes.cast(length, auth.ctypes.POINTER(auth.ctypes.c_uint32))[0] = len(raw)
+            if data is not None:
+                auth.ctypes.cast(data, auth.ctypes.POINTER(auth.ctypes.c_void_p))[0] = auth.ctypes.addressof(self.buffer)
+            if item is not None:
+                auth.ctypes.cast(item, auth.ctypes.POINTER(auth.ctypes.c_void_p))[0] = 123
+            return 0
+        self.find.side_effect = find
+
+    def test_native_libraries_signatures_and_no_gui_prompts(self):
+        self.assertEqual(self.loader.call_args_list, [
+            mock.call('/System/Library/Frameworks/Security.framework/Security'),
+            mock.call('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation'),
+        ])
+        self.security.SecKeychainSetUserInteractionAllowed.assert_called_once_with(False)
+        self.assertEqual(self.find.restype, auth.ctypes.c_int32)
+        self.assertEqual(len(self.find.argtypes), 8)
+        self.assertEqual(self.store.account, hashlib.sha256(b'/synthetic/slack-mcp').hexdigest().encode())
+
+    def test_missing_read_and_delete_are_not_errors(self):
+        self.assertIsNone(self.store.read())
+        self.store.delete()
+        self.security.SecKeychainItemDelete.assert_not_called()
+        self.assertEqual(self.core.CFRelease.call_count, 2)
+
+    def test_read_copies_and_frees_native_memory(self):
+        self.found()
+        self.assertEqual(self.store.read(), b'synthetic-data')
+        self.security.SecKeychainItemFreeContent.assert_called_once()
+        self.core.CFRelease.assert_called_once()
+
+    def test_oversized_native_secret_is_freed_without_copying(self):
+        self.found(b'x' * (auth.MAX_JSON_BYTES + 1))
+        with mock.patch.object(auth.ctypes, 'string_at', side_effect=AssertionError('Do not copy oversized data')):
+            with self.assertRaises(auth.AuthError):
+                self.store.read()
+        self.security.SecKeychainItemFreeContent.assert_called_once()
+        self.core.CFRelease.assert_called_once()
+
+    def test_write_adds_missing_item_and_updates_existing_item_in_place(self):
+        self.store.write(b'first')
+        self.assertEqual(self.security.SecKeychainAddGenericPassword.call_args.args[5:7], (5, b'first'))
+        self.found()
+        self.store.write(b'second')
+        self.assertEqual(self.security.SecKeychainItemModifyAttributesAndData.call_args.args[1:], (None, 6, b'second'))
+        self.security.SecKeychainItemDelete.assert_not_called()
+        self.assertEqual(self.core.CFRelease.call_count, 3)
+
+    def test_delete_releases_item_and_keychain(self):
+        self.found()
+        self.store.delete()
+        self.security.SecKeychainItemDelete.assert_called_once()
+        self.assertEqual(self.core.CFRelease.call_count, 2)
+
+    def test_access_errors_are_not_treated_as_absent_items(self):
+        for operation in [self.store.read, lambda: self.store.write(b'synthetic'), self.store.delete]:
+            for status in [-25293, -25308, -128]:
+                self.find.return_value = status
+                with self.subTest(status=status), self.assertRaises(auth.AuthError) as caught:
+                    operation()
+                self.assertIn(f'OSStatus {status}', str(caught.exception))
+        self.security.SecKeychainAddGenericPassword.assert_not_called()
+        self.security.SecKeychainItemModifyAttributesAndData.assert_not_called()
+        self.security.SecKeychainItemDelete.assert_not_called()
+
+    def test_failed_update_releases_references_without_delete_or_add(self):
+        self.found()
+        self.security.SecKeychainItemModifyAttributesAndData.return_value = -25293
+        with self.assertRaises(auth.AuthError):
+            self.store.write(b'synthetic')
+        self.assertEqual(self.core.CFRelease.call_count, 2)
+        self.security.SecKeychainItemDelete.assert_not_called()
+        self.security.SecKeychainAddGenericPassword.assert_not_called()
 
 
 if __name__ == '__main__':
