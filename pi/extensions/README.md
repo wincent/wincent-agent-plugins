@@ -42,6 +42,14 @@ Adds the active model and thinking level to the system prompt, reflecting `/mode
 
 Adds an `ocr` tool for local PDFs and PNG/JPEG images through the nono credential proxy, plus `/ocr-status` and `/ocr-approval`. Uploads require session-wide approval and incur API charges. See the [OCR README](ocr/README.md) for setup, limits, approval inheritance, and privacy; the companion `ocr` skill covers document handling.
 
+### `program-status.ts`
+
+Automatically reports interactive Pi activity inside tmux using OSC 7501: working, blocked on an extension dialog, finished, failed, or idle. Subagents and non-interactive sessions do not report.
+
+The extension stays silent outside tmux. To actually see this in kitty (0.50.0 or newer), include `{tab.program_status}` in `tab_title_template` (and `active_tab_title_template`).
+
+Requires `set -g allow-passthrough all` in `~/.config/tmux/tmux.conf`.
+
 ### `sandbox.ts`
 
 Shows `Sandbox ✔` in the TUI footer when `NONO_CAP_FILE` is non-empty. This is a launcher hint, not verification of sandbox enforcement.
