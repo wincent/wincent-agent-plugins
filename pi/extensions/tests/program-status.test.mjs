@@ -1,13 +1,36 @@
 import {strict as assert} from 'node:assert';
 import fs from 'node:fs';
+import {registerHooks} from 'node:module';
 import {test} from 'node:test';
-import extension from '../program-status.ts';
+
+const hooks = registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === './lib/subagent-identity.js') specifier = './lib/subagent-identity.ts';
+    return nextResolve(specifier, context);
+  },
+});
+let extension;
+try {
+  ({default: extension} = await import('../program-status.ts'));
+} finally {
+  hooks.deregister();
+}
+
+const subagentEnv = (pid = process.pid) => ({
+  PI_SUBAGENT_TASK_ID: 'child-123',
+  PI_SUBAGENT_BUS_DIR: '/test-bus',
+  PI_SUBAGENT_SOCKET_PATH: '/test-bus/socket',
+  PI_SUBAGENT_PID: String(pid),
+});
 
 function harness(t, options = {}) {
   for (const [key, value] of Object.entries({
     PI_PROGRAM_STATUS: undefined,
     TMUX: '/tmp/tmux-123/default,1,0',
     PI_SUBAGENT_TASK_ID: undefined,
+    PI_SUBAGENT_BUS_DIR: undefined,
+    PI_SUBAGENT_SOCKET_PATH: undefined,
+    PI_SUBAGENT_PID: undefined,
     ...options.env,
   })) {
     const original = process.env[key];
@@ -185,7 +208,7 @@ for (const mode of ['rpc', 'json', 'print']) {
   });
 }
 
-for (const options of [{tty: false}, {env: {PI_SUBAGENT_TASK_ID: 'child-123'}}]) {
+for (const options of [{tty: false}, {env: subagentEnv()}]) {
   test(`does not report from ${options.tty === false ? 'redirected output' : 'a marked subagent, even in TUI mode'}`, (t) => {
     const h = harness(t, options);
     h.start();
@@ -301,3 +324,13 @@ test('terminal write failures never interrupt the agent', (t) => {
     h.emit('session_shutdown');
   });
 });
+
+for (const env of [subagentEnv(process.pid + 1), {PI_SUBAGENT_TASK_ID: 'child-123'}]) {
+  test(`reports normally from a process that merely inherited ${Object.keys(env).length === 1 ? 'partial ' : ''}subagent variables`, (t) => {
+    const h = harness(t, {env});
+    h.start();
+    h.emit('agent_start');
+    h.settle();
+    assert.deepEqual(h.states(), ['idle', 'working', 'done']);
+  });
+}

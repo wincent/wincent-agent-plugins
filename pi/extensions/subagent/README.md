@@ -19,7 +19,7 @@ Requires an installed Node/Bun Pi CLI, a POSIX environment with `bash`, Unix dom
 | `subagent_cancel` | Cancel a task, escalating to SIGTERM/SIGKILL if needed.              |
 | `subagent_status` | List active/recent completed tasks or retrieve a task's full report. |
 
-Children receive `report`, `progress`, and `ask` tools instead of delegation tools. Lifecycle events are available on `pi.events` under `subagent:*`; see [events.ts](main/events.ts) for the event contract.
+Children receive `report`, `progress`, and `ask` tools instead of delegation tools. Only the spawned child process is a subagent: its descendants (tool processes, or programs that embed Pi) inherit its `PI_SUBAGENT_*` variables but run as normal Pi processes, printing a warning instead of joining or exiting for the child's task. Use `isSubagentProcess()` from [subagent-identity.ts](../lib/subagent-identity.ts) rather than testing those variables directly. Lifecycle events are available on `pi.events` under `subagent:*`; see [events.ts](main/events.ts) for the event contract.
 
 `background` defaults to `true`. Set `background: false` only when the user explicitly requests synchronous execution. Continue independent work or yield the turn; do not busy-poll. Sequential campaigns can launch one background worker at a time. Overlap only independent work and avoid concurrent writes to shared files.
 

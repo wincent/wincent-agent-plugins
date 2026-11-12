@@ -19,7 +19,6 @@ import {
   saveArtifacts,
 } from '../ocr/client.ts';
 
-import {collectSubagentState, SUBAGENT_STATE_ENV} from '../lib/subagent-state.ts';
 import {locatePiPackage} from './pi-package.mjs';
 
 // Use Pi's runtime TypeBox, just as the extension loader does (no npm install).
@@ -31,11 +30,23 @@ const hooks = registerHooks({
     if (specifier === 'typebox') return {url: pathToFileURL(requirePi.resolve('typebox')).href, shortCircuit: true};
     if (specifier === './client.js' && context.parentURL?.endsWith('/ocr/index.ts')) return {url: new URL('./client.ts', context.parentURL).href, shortCircuit: true};
     if (specifier === '../lib/subagent-state.js' && context.parentURL?.endsWith('/ocr/index.ts')) return {url: new URL('../lib/subagent-state.ts', context.parentURL).href, shortCircuit: true};
+    if (specifier === './subagent-identity.js' && context.parentURL?.endsWith('/lib/subagent-state.ts')) return {url: new URL('./subagent-identity.ts', context.parentURL).href, shortCircuit: true};
     return nextResolve(specifier, context);
   },
 });
-let extension;
-try { ({default: extension} = await import('../ocr/index.ts')); } finally { hooks.deregister(); }
+let extension, collectSubagentState, SUBAGENT_STATE_ENV;
+try {
+  ({default: extension} = await import('../ocr/index.ts'));
+  ({collectSubagentState, SUBAGENT_STATE_ENV} = await import('../lib/subagent-state.ts'));
+} finally { hooks.deregister(); }
+
+// Only the process the controller spawned (matching PID) is a subagent.
+function markSubagent(t) {
+  setEnv(t, 'PI_SUBAGENT_TASK_ID', 'test-child');
+  setEnv(t, 'PI_SUBAGENT_BUS_DIR', '/test-bus');
+  setEnv(t, 'PI_SUBAGENT_SOCKET_PATH', '/test-bus/socket');
+  setEnv(t, 'PI_SUBAGENT_PID', String(process.pid));
+}
 
 function setEnv(t, name, value) {
   const previous = process.env[name];
@@ -399,7 +410,7 @@ test('first use grants sticky session approval, skips subsequent PDF/image promp
 test('controller approval is inherited once by new headless children, without live updates', async (t) => {
   const fixture = await fakeCurl(t, `process.stdout.write(${JSON.stringify(imageResponse + '\n200')});`);
   await writeFile(join(fixture.dir, 'input.pdf'), pdf);
-  setEnv(t, 'PI_SUBAGENT_TASK_ID', 'test-child');
+  markSubagent(t);
   setEnv(t, SUBAGENT_STATE_ENV, undefined);
   const parent = registered();
   const parentCtx = approvalContext(fixture.dir);
@@ -435,7 +446,7 @@ test('controller approval is inherited once by new headless children, without li
 });
 
 test('inherited approval displays a dim, compact footer when a UI is present', async (t) => {
-  setEnv(t, 'PI_SUBAGENT_TASK_ID', 'test-child');
+  markSubagent(t);
   setEnv(t, SUBAGENT_STATE_ENV, JSON.stringify({ocr: true}));
   const child = registered();
   const ctx = approvalContext(process.cwd());
@@ -445,9 +456,22 @@ test('inherited approval displays a dim, compact footer when a UI is present', a
   assert.equal(ctx.statuses.get('ocr-approval'), undefined);
 });
 
+test('descendants of a subagent that inherit its environment never import its approval', async (t) => {
+  markSubagent(t);
+  setEnv(t, 'PI_SUBAGENT_PID', String(process.pid + 1));
+  setEnv(t, SUBAGENT_STATE_ENV, JSON.stringify({ocr: true}));
+  const fixture = await fakeCurl(t, `process.stdout.write('should not execute');`);
+  const ctx = {hasUI: false, cwd: fixture.dir};
+  const descendant = registered();
+  await descendant.events.get('session_start')({reason: 'startup'}, ctx);
+  await assert.rejects(() => descendant.tool.execute('inherited', {path: 'input.pdf'}, undefined, undefined, ctx), /require session approval/);
+  assert.equal(process.env[SUBAGENT_STATE_ENV], JSON.stringify({ocr: true}), 'Only the owning subagent consumes the snapshot');
+  await assert.rejects(() => readFile(fixture.capture), {code: 'ENOENT'});
+});
+
 test('missing, malformed, and non-boolean inherited OCR approvals fail closed', async (t) => {
   const fixture = await fakeCurl(t, `process.stdout.write('should not execute');`);
-  setEnv(t, 'PI_SUBAGENT_TASK_ID', 'test-child');
+  markSubagent(t);
   setEnv(t, SUBAGENT_STATE_ENV, undefined);
   const ctx = {hasUI: false, cwd: fixture.dir};
   for (const snapshot of [undefined, '{', 'null', '{}', '{"ocr":false}', '{"ocr":"true"}', '{"ocr":1}', '{"ocr":{"approved":true}}']) {

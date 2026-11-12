@@ -18,6 +18,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import {join} from 'node:path';
+import {isSubagentProcess} from '../../../lib/subagent-identity.js';
 import {
   provideSubagentState,
   takeSubagentState,
@@ -29,7 +30,7 @@ export default function (pi: ExtensionAPI): void {
   let turn = 0;
   let continued = false;
   let backgroundFinished = false;
-  const isChild = !!process.env.PI_SUBAGENT_TASK_ID;
+  const isChild = isSubagentProcess();
   let inheritedState: unknown;
   provideSubagentState(
     pi,
@@ -45,6 +46,17 @@ export default function (pi: ExtensionAPI): void {
     }
   });
   pi.on('before_agent_start', (_event, ctx) => {
+    if (scenario === 'grandchild-probe') {
+      writeFileSync(
+        join(ctx.cwd, 'probe.json'),
+        JSON.stringify({
+          isChild,
+          inheritedState: inheritedState ?? null,
+          tools: pi.getAllTools().map((tool) => tool.name).sort(),
+        }),
+      );
+      return;
+    }
     writeFileSync(
       join(
         isChild ? process.env.PI_SUBAGENT_BUS_DIR! : ctx.cwd,
@@ -199,7 +211,7 @@ export default function (pi: ExtensionAPI): void {
       };
       const respond = () => {
         const current = turn++;
-        const dir = process.env.PI_SUBAGENT_BUS_DIR ?? process.cwd();
+        const dir = isChild ? process.env.PI_SUBAGENT_BUS_DIR! : process.cwd();
         appendFileSync(
           join(dir, 'requests.jsonl'),
           JSON.stringify({turn: current, messages: context.messages}) + '\n',
@@ -264,7 +276,9 @@ export default function (pi: ExtensionAPI): void {
             ? JSON.parse(text.text).taskId
             : 'missing';
           call = {name: 'subagent_status', arguments: {task_id: taskId}};
-        } else if (!isChild && current === 0) {
+        } else if (
+          !isChild && current === 0 && scenario !== 'grandchild-probe'
+        ) {
           const blankTasks: Record<string, string> = {
             'empty-task': '',
             'whitespace-task': ' \t\r\n',

@@ -3,6 +3,7 @@ import type {
   ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
 
+import {subagentEnvironment} from '../lib/subagent-identity.js';
 import {AuditLog} from './bus/audit-log.js';
 import {Bus} from './bus/bus.js';
 import type {DoneStatus} from './bus/envelope.js';
@@ -14,26 +15,46 @@ import {installSubRouting} from './sub/routing.js';
 import {registerSubTools} from './sub/tools.js';
 
 export default function subagentExtension(pi: ExtensionAPI): void {
-  const taskId = process.env.PI_SUBAGENT_TASK_ID;
-  const busDir = process.env.PI_SUBAGENT_BUS_DIR;
-  const socketPath = process.env.PI_SUBAGENT_SOCKET_PATH;
-  if (
-    taskId === undefined && busDir === undefined && socketPath === undefined
-  ) {
-    pi.on('session_start', () => {
-      reapStaleEntries();
-    });
-    registerMainTools({pi});
-    installStatus(pi);
+  const environment = subagentEnvironment();
+  if (environment.kind === 'child') {
+    const {busDir, socketPath} = environment.identity;
+    installSubMode(pi, busDir, socketPath);
     return;
   }
-  if (!taskId || !busDir || !socketPath) {
+  if (environment.kind === 'invalid') {
+    // This is the spawned child, so there is no safe task to execute.
     process.stderr.write(
-      'subagent extension: PI_SUBAGENT_TASK_ID, PI_SUBAGENT_BUS_DIR, and PI_SUBAGENT_SOCKET_PATH must all be set, or all be absent\n',
+      `subagent extension: ${
+        environment.missing.join(', ')
+      } must be set in a subagent process\n`,
     );
     process.exit(1);
   }
-  installSubMode(pi, busDir, socketPath);
+  if (environment.kind === 'inherited') {
+    warnInherited(environment.ownerPid);
+  }
+  pi.on('session_start', () => {
+    reapStaleEntries();
+  });
+  registerMainTools({pi});
+  installStatus(pi);
+}
+
+const WARNED = Symbol.for('wincent.subagent.inherited-environment-warned');
+
+// Descendants of a subagent (its tools, or hosts that embed Pi) inherit the
+// child's variables but must never join, or exit for, someone else's task.
+function warnInherited(ownerPid: string | undefined): void {
+  const global = globalThis as {[WARNED]?: boolean};
+  if (global[WARNED]) {
+    return;
+  }
+  global[WARNED] = true;
+  process.stderr.write(
+    `subagent extension: ignoring PI_SUBAGENT_* variables inherited from ${
+      ownerPid ? `subagent process ${ownerPid}` : 'another process'
+    }; running as a normal Pi process\n`,
+  );
 }
 
 function installSubMode(

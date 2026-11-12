@@ -4,6 +4,7 @@ import {closeSync, mkdirSync, openSync, writeFileSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {join, resolve} from 'node:path';
 
+import {SUBAGENT_PID_ENV} from '../../lib/subagent-identity.js';
 import {SUBAGENT_STATE_ENV} from '../../lib/subagent-state.js';
 import {
   type PiRuntime,
@@ -215,6 +216,8 @@ export function renderWrapper(
     `export PI_SUBAGENT_BUS_DIR=${shellQuote(args.taskDir)}`,
     `export PI_SUBAGENT_SOCKET_PATH=${shellQuote(args.socketPath)}`,
     `export PI_SUBAGENT_PARENT_ID=${shellQuote(args.parentId)}`,
+    // `exec` keeps this PID, so only Pi itself (not its descendants) matches.
+    `export ${SUBAGENT_PID_ENV}=$$`,
   ];
   const command = [runtime.executable, ...runtime.args].map(shellQuote).join(
     ' ',

@@ -5,6 +5,8 @@ import type {
 import {randomBytes} from 'node:crypto';
 import fs from 'node:fs';
 
+import {isSubagentProcess} from './lib/subagent-identity.js';
+
 type RestingState = 'idle' | 'done' | 'error';
 type State = RestingState | 'working' | 'blocked' | 'clear';
 
@@ -63,7 +65,7 @@ export default function (pi: ExtensionAPI) {
     cleanup();
     if (
       ctx.mode !== 'tui' || !process.stdout.isTTY ||
-      !process.env.TMUX || process.env.PI_SUBAGENT_TASK_ID
+      !process.env.TMUX || isSubagentProcess()
     ) {
       return;
     }

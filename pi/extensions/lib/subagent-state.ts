@@ -1,5 +1,7 @@
 import type {ExtensionAPI} from '@earendil-works/pi-coding-agent';
 
+import {isSubagentProcess} from './subagent-identity.js';
+
 export const SUBAGENT_STATE_ENV = 'PI_SUBAGENT_EXTENSION_STATE';
 const COLLECT_EVENT = 'subagent:collect-state';
 
@@ -31,8 +33,10 @@ export function collectSubagentState(pi: Pick<ExtensionAPI, 'events'>): string {
 export function takeSubagentState(
   namespace: string,
   env: NodeJS.ProcessEnv = process.env,
+  pid: number = process.pid,
 ): unknown {
-  if (!env.PI_SUBAGENT_TASK_ID) {
+  // Descendants inherit the snapshot too; only the spawned child may use it.
+  if (!isSubagentProcess(env, pid)) {
     return undefined;
   }
   try {

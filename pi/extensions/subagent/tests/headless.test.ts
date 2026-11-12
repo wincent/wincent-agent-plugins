@@ -316,7 +316,12 @@ test(
         } else {
           env.PI_SUBAGENT_SOCKET_PATH = socketPath;
         }
-        const run = spawnSync(process.execPath, [
+        // Bootstrap validation applies to the spawned child, which owns its PID.
+        const run = spawnSync('bash', [
+          '-c',
+          'export PI_SUBAGENT_PID=$$; exec "$@"',
+          'bash',
+          process.execPath,
           ...cliArgs,
           '--no-session',
           '--provider',
@@ -335,6 +340,67 @@ test(
           !existsSync(join(dir, 'requests.jsonl')),
           'Invalid bootstrap must not submit the prompt',
         );
+      }
+    } finally {
+      cleanup();
+    }
+  },
+);
+
+test(
+  'processes that merely inherit a subagent environment run as normal Pi without exiting',
+  {timeout: 60_000},
+  () => {
+    const {dir, cleanup} = setup();
+    try {
+      const full = {
+        PI_SUBAGENT_TASK_ID: 'test_inherited',
+        PI_SUBAGENT_BUS_DIR: dir,
+        PI_SUBAGENT_SOCKET_PATH: join(dir, 'unreachable.sock'),
+        PI_SUBAGENT_PARENT_ID: 'test_parent',
+        PI_SUBAGENT_EXTENSION_STATE: JSON.stringify({
+          'test-preference': {language: 'de'},
+        }),
+      };
+      const owner = String(process.pid);
+      for (
+        const [name, inherited] of Object.entries({
+          'full': {...full, PI_SUBAGENT_PID: owner},
+          'full, no owner': full,
+          'partial': {PI_SUBAGENT_TASK_ID: 'test_inherited'},
+          'partial, with owner': {
+            PI_SUBAGENT_TASK_ID: 'test_inherited',
+            PI_SUBAGENT_PID: owner,
+          },
+        })
+      ) {
+        const cwd = mkdtempSync(join(dir, 'descendant-'));
+        const run = spawnSync(process.execPath, [
+          ...cliArgs,
+          '--no-session',
+          '--provider',
+          model.provider,
+          '--model',
+          model.id,
+          '-p',
+          'grandchild-probe',
+        ], {
+          cwd,
+          env: {...process.env, ...inherited},
+          encoding: 'utf8',
+          timeout: 15_000,
+        });
+        assert.equal(run.status, 0, `${name}: ${run.stderr}`);
+        assert.match(run.stderr, /ignoring PI_SUBAGENT_\* variables/, name);
+        assert.doesNotMatch(run.stderr, /startup failed|must be set/, name);
+        const probe = JSON.parse(readFileSync(join(cwd, 'probe.json'), 'utf8'));
+        assert.equal(probe.isChild, false, name);
+        assert.equal(probe.inheritedState, null, name);
+        assert.ok(probe.tools.includes('subagent'), name);
+        assert.ok(!probe.tools.includes('report'), name);
+        assert.ok(existsSync(join(cwd, 'requests.jsonl')), name);
+        assert.ok(!existsSync(join(dir, 'requests.jsonl')), name);
+        assert.ok(!existsSync(join(dir, 'bus.jsonl')), name);
       }
     } finally {
       cleanup();
