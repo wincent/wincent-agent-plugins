@@ -64,6 +64,14 @@ Requires per-call confirmation for writes through Pi's native MCP server named `
 
 Run `bin/datadog-mcp-auth login`, `status`, or `logout` on the host to manage authentication. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token without displaying it. Use only this helper to manage the grant, not Pi's native OAuth commands.
 
+#### Troubleshoot `credential_capture_failed`
+
+If Pi reports `datadog: failed` with HTTP 503 and `credential_capture_failed`, nono could not obtain credentials from the host helper and did not forward the MCP request to Datadog. Pi's `Run /mcp to fix` hint opens connection controls; it does not repair host credentials.
+
+1. From this directory in a host terminal outside the sandbox, run `bin/datadog-mcp-auth status`. An `expired` access token with `refresh_token_present: true` does not mean the grant is invalid: `refresh_validity: not_checked` means `status` did not test the refresh token.
+2. If the access token expired and a refresh token is present, run `bin/datadog-mcp-auth token --refresh >/dev/null`. If the grant is missing, the refresh is rejected, or the helper asks you to sign in, run `bin/datadog-mcp-auth login` on the host. For other failures, check the helper's error and the nono proxy logs; re-signing in won't fix a network or Keychain access problem.
+3. Once the helper is working, run `/mcp reconnect datadog` in Pi. Do not use Pi's `/mcp login` or `/mcp logout` for this server.
+
 The helper defaults to `mcp.datadoghq.com`; `DATADOG_MCP_DOMAIN` selects another site and must match the proxy route and MCP URL. Tokens are stored in the macOS host's default Keychain under service `pi.datadog-mcp`. Run `status` on the host for each configured site to migrate its plaintext tokens; deletion follows a verified Keychain save. Keep the same `$XDG_STATE_HOME` (default `~/.local/state`): `$XDG_STATE_HOME/pi/datadog-mcp/` selects the grants and retains locks and public client-registration metadata. Logout removes tokens but preserves registration. Use the same Python interpreter for host commands and proxy capture, with an unlocked Keychain that permits it access. There is no plaintext fallback or Keychain prompt. All agent modes continue using the host credential proxy; never copy credentials into a sandbox or VM.
 
 ### `google-workspace-mcp.ts`
