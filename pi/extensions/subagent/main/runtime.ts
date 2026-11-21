@@ -1,4 +1,4 @@
-import {existsSync, readFileSync, realpathSync} from 'node:fs';
+import {existsSync, readFileSync, realpathSync, statSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {dirname, isAbsolute, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -8,18 +8,30 @@ export interface PiRuntime {
   args: string[];
 }
 
-/**
- * Carry explicit CLI resources, not the controller's discovered project code.
- * ExtensionAPI has no loaded-extension inventory. Use Pi's public parser so
- * prompts, option values, aliases, and the -- terminator keep CLI semantics.
- */
+export const PI_ENTRYPOINT_ENV = 'PI_SUBAGENT_PI_ENTRYPOINT';
+
+interface SelectedPiRuntime {
+  mode: 'cli' | 'sdk';
+  runtime: PiRuntime;
+}
+
 export async function subagentPiRuntime(
-  argv = process.argv.slice(2),
+  {mode, runtime}: SelectedPiRuntime = resolvePiRuntime(),
+  argv?: string[],
   cwd = process.cwd(),
-  runtime = runningPiRuntime(),
 ): Promise<PiRuntime> {
+  const entry = realpathSync(
+    fileURLToPath(new URL('../index.ts', import.meta.url)),
+  );
+  if (mode === 'sdk') {
+    // Host arguments are not Pi arguments, even when some spellings overlap.
+    return {...runtime, args: [...runtime.args, '--extension', entry]};
+  }
+
+  // Carry explicit CLI resources, not discovered project code. Use Pi's parser
+  // so prompts, option values, aliases, and the -- terminator keep CLI semantics.
   const {parseArgs} = await import('@earendil-works/pi-coding-agent');
-  const parsed = parseArgs(argv);
+  const parsed = parseArgs(argv ?? process.argv.slice(2));
   const args = [...runtime.args];
   for (
     const [enabled, flag] of [
@@ -41,12 +53,11 @@ export async function subagentPiRuntime(
   // Pi deduplicates canonical extension files across explicit sources and
   // discovery. Its bare directory sources are not equivalent to index.ts, so
   // normalize this extension's directory before ensuring the required entry.
-  const entry = fileURLToPath(new URL('../index.ts', import.meta.url));
   const extensions = new Set([
     ...(parsed.extensions ?? []).map((source) => {
       const resolved = extensionSource(source, cwd);
       try {
-        if (realpathSync(resolved) === realpathSync(dirname(entry))) {
+        if (realpathSync(resolved) === dirname(entry)) {
           return entry;
         }
       } catch {
@@ -77,46 +88,72 @@ function extensionSource(source: string, cwd: string): string {
   return resolve(cwd, path);
 }
 
-/** Reuse the running CLI, never a PATH shim or a sandbox bootstrap wrapper. */
-export function runningPiRuntime(
+/** Reuse a running CLI first; only SDK hosts need a launcher-provided bin. */
+export function resolvePiRuntime(
   executable = process.execPath,
   entrypoint = process.argv[1],
-): PiRuntime {
+  env = process.env,
+): SelectedPiRuntime {
   try {
-    if (!entrypoint || !isAbsolute(entrypoint) || !isAbsolute(executable)) {
-      throw new Error('expected absolute runtime and CLI paths');
-    }
-    const cli = realpathSync(entrypoint);
-    let directory = dirname(cli);
-    while (true) {
-      const manifest = join(directory, 'package.json');
-      if (existsSync(manifest)) {
-        const pkg = JSON.parse(readFileSync(manifest, 'utf8'));
-        if (pkg.name === '@earendil-works/pi-coding-agent') {
-          const bin = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.pi;
-          if (
-            typeof bin !== 'string' ||
-            realpathSync(join(directory, bin)) !== cli
-          ) {
-            throw new Error(
-              'controller entrypoint is not the installed Pi CLI',
-            );
-          }
-          return {executable: realpathSync(executable), args: [cli]};
-        }
+    return {mode: 'cli', runtime: validatePiRuntime(executable, entrypoint)};
+  } catch (cliError) {
+    const configured = env[PI_ENTRYPOINT_ENV];
+    let reason = `the controller is not a validated Pi CLI (${
+      (cliError as Error).message
+    })`;
+    if (configured !== undefined) {
+      try {
+        return {
+          mode: 'sdk',
+          runtime: validatePiRuntime(executable, configured),
+        };
+      } catch (error) {
+        reason = `${PI_ENTRYPOINT_ENV} is invalid (${
+          (error as Error).message
+        })`;
       }
-      const parent = dirname(directory);
-      if (parent === directory) {
-        break;
-      }
-      directory = parent;
     }
-    throw new Error('controller entrypoint has no Pi package manifest');
-  } catch (error) {
     throw new Error(
-      `Cannot identify the controlling Pi runtime: ${
-        (error as Error).message
-      }. Subagents require an installed Node/Bun Pi CLI; no PATH or launcher fallback is used.`,
+      `Cannot dispatch subagent: ${reason}. Set ${PI_ENTRYPOINT_ENV} in the SDK host or launcher to the absolute path of the installed @earendil-works/pi-coding-agent JavaScript pi bin. No PATH or launcher fallback is used.`,
     );
   }
+}
+
+/** Trust the selected installation, not a shim that merely forwards to it. */
+export function validatePiRuntime(
+  executable: string,
+  entrypoint: string | undefined,
+): PiRuntime {
+  if (!entrypoint || !isAbsolute(entrypoint) || !isAbsolute(executable)) {
+    throw new Error('expected absolute runtime and CLI paths');
+  }
+
+  const interpreter = realpathSync(executable);
+  const cli = realpathSync(entrypoint);
+  if (!statSync(interpreter).isFile() || !statSync(cli).isFile()) {
+    throw new Error('expected runtime and CLI files');
+  }
+
+  let directory = dirname(cli);
+  while (true) {
+    const manifest = join(directory, 'package.json');
+    if (existsSync(manifest)) {
+      const pkg = JSON.parse(readFileSync(manifest, 'utf8'));
+      if (pkg.name === '@earendil-works/pi-coding-agent') {
+        const bin = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.pi;
+        if (
+          typeof bin !== 'string' || realpathSync(join(directory, bin)) !== cli
+        ) {
+          throw new Error('entrypoint is not the declared Pi bin');
+        }
+        return {executable: interpreter, args: [cli]};
+      }
+    }
+    const parent = dirname(directory);
+    if (parent === directory) {
+      break;
+    }
+    directory = parent;
+  }
+  throw new Error('entrypoint has no Pi package manifest');
 }

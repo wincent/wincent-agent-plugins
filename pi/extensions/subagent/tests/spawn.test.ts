@@ -3,17 +3,21 @@ import {spawnSync} from 'node:child_process';
 import {
   closeSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join, relative, resolve} from 'node:path';
 import {beforeEach, test} from 'node:test';
+import {fileURLToPath} from 'node:url';
 
 import {SUBAGENT_STATE_ENV} from '../../lib/subagent-state.js';
 import {AuditLog} from '../bus/audit-log.js';
@@ -21,6 +25,7 @@ import {Bus} from '../bus/bus.js';
 import {launchSubagent} from '../main/launch.js';
 import {cancelTask, observeTask} from '../main/lifecycle.js';
 import {type ActiveTask, trackBus} from '../main/registry.js';
+import {PI_ENTRYPOINT_ENV} from '../main/runtime.js';
 import {
   type SpawnArgs,
   type SpawnedProcess,
@@ -147,6 +152,69 @@ test('session storage failure stops launch without an ephemeral fallback', async
   );
   assert.ok(!existsSync(join(base, 'run.sh')));
   assert.ok(!existsSync(join(base, 'sessions')));
+});
+
+test('SDK spawn resolves the configured bin and never forwards host argv', async (t) => {
+  const dir = process.env.PI_CODING_AGENT_DIR!;
+  const previous = process.env[PI_ENTRYPOINT_ENV];
+  const argv = process.argv;
+  t.after(() => {
+    restoreEnv(PI_ENTRYPOINT_ENV, previous);
+    process.argv = argv;
+  });
+  process.argv = [
+    process.execPath,
+    fileURLToPath(import.meta.url),
+    '--approve',
+    '--no-extensions',
+    '--no-mcp',
+    '-e',
+    './sdk-only.ts',
+    '--extension',
+    'file://%',
+    '--thinking',
+    'off',
+    'host-input',
+  ];
+  delete process.env[PI_ENTRYPOINT_ENV];
+  const args = argsFor(dir);
+  await assert.rejects(spawnSubagent(args), /Set PI_SUBAGENT_PI_ENTRYPOINT/);
+  assert.ok(!existsSync(join(dir, 'run.sh')));
+
+  const pkg = join(dir, 'pi-package');
+  mkdirSync(pkg);
+  writeFileSync(
+    join(pkg, 'package.json'),
+    JSON.stringify({
+      name: '@earendil-works/pi-coding-agent',
+      bin: {pi: './cli.mjs'},
+    }),
+  );
+  const cli = join(pkg, 'cli.mjs');
+  writeFileSync(cli, 'console.log(JSON.stringify(process.argv.slice(1)))');
+  const link = join(dir, 'pi');
+  symlinkSync(cli, link);
+  process.env[PI_ENTRYPOINT_ENV] = link;
+  const child = await spawnSubagent(args);
+  try {
+    const exit = await waitForExit(child, 3_000);
+    assert.equal(exit?.code, 0, readFileSync(child.stderrPath, 'utf8'));
+    assert.deepEqual(JSON.parse(readFileSync(child.stdoutPath, 'utf8')), [
+      realpathSync(cli),
+      '--extension',
+      realpathSync(fileURLToPath(new URL('../index.ts', import.meta.url))),
+      '-p',
+      '--append-system-prompt',
+      args.systemPromptPath,
+      '--session-dir',
+      subagentSessionDir(args.taskId),
+      '--tools',
+      'read,bash,report,progress,ask',
+      '--',
+    ]);
+  } finally {
+    await terminateProcess(child, 0, 100);
+  }
 });
 
 test('wrapper passes the exact model and thinking level in headless mode', async () => {

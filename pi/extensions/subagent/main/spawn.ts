@@ -6,11 +6,7 @@ import {join, resolve} from 'node:path';
 
 import {SUBAGENT_PID_ENV} from '../../lib/subagent-identity.js';
 import {SUBAGENT_STATE_ENV} from '../../lib/subagent-state.js';
-import {
-  type PiRuntime,
-  runningPiRuntime,
-  subagentPiRuntime,
-} from './runtime.js';
+import {type PiRuntime, subagentPiRuntime} from './runtime.js';
 
 export interface SpawnArgs {
   taskId: string;
@@ -57,7 +53,7 @@ export async function spawnSubagent(
   runtime?: PiRuntime,
 ): Promise<SpawnedProcess> {
   validateTask(args.task);
-  runtime ??= await subagentPiRuntime();
+  const selectedRuntime = runtime ?? await subagentPiRuntime();
   // A storage error must fail launch, never fall back to ephemeral sessions.
   mkdirSync(subagentSessionDir(args.taskId), {recursive: true, mode: 0o700});
   writeFileSync(join(args.taskDir, 'task.txt'), args.task, {
@@ -65,7 +61,7 @@ export async function spawnSubagent(
     mode: 0o600,
   });
   const wrapperPath = join(args.taskDir, 'run.sh');
-  writeFileSync(wrapperPath, renderWrapper(args, runtime), {
+  writeFileSync(wrapperPath, renderWrapper(args, selectedRuntime), {
     encoding: 'utf-8',
     mode: 0o700,
   });
@@ -209,7 +205,7 @@ export async function terminateProcess(
 
 export function renderWrapper(
   args: SpawnArgs,
-  runtime: PiRuntime = runningPiRuntime(),
+  runtime: PiRuntime,
 ): string {
   const exports = [
     `export PI_SUBAGENT_TASK_ID=${shellQuote(args.taskId)}`,

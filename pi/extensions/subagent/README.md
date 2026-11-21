@@ -8,7 +8,16 @@ Load the extension as described in the [parent README](../README.md). The six bu
 
 The companion [skill](../../skills/subagent/) and [`/sweep` workflow prompt](../../prompts/sweep.md) are loaded by the skill and prompt paths in the [top-level Pi setup](../../../README.md#pi-setup). Loading only the extension does not load these resources. For a standalone installation, add this repository's `pi/skills/subagent` to Pi's `skills` setting and `pi/prompts` to its `prompts` setting, then run `/reload` (or start a new session). Configure only one prompt path for `/sweep`; do not also add the extension's `prompts` directory.
 
-Requires an installed Node/Bun Pi CLI, a POSIX environment with `bash`, Unix domain sockets, and process-group signals. SDK hosts and standalone compiled binaries are not supported. Workers require git; isolated worktrees require a repository with at least one commit.
+Requires an installed Node/Bun Pi CLI, a POSIX environment with `bash`, Unix domain sockets, and process-group signals. Standalone compiled Pi binaries are not supported. Workers require git; isolated worktrees require a repository with at least one commit.
+
+### Runtime selection
+
+- **Pi CLI:** The child reuses the running CLI and its Node/Bun executable. Supported CLI discovery flags and explicit extension sources carry over, but `--approve` does not.
+- **Pi SDK host:** Set `PI_SUBAGENT_PI_ENTRYPOINT` in the trusted host or launcher environment before starting the host. Use the absolute path to the JavaScript `pi` bin declared by an installed `@earendil-works/pi-coding-agent` package (a symlink to that bin also works). Choose an installation compatible with the host's SDK version. The child uses the host's Node/Bun executable. The setting is ignored when the controller already runs a validated Pi CLI.
+
+An intermediate launcher only needs to preserve this environment variable. The setting is not read from project configuration and cannot name a shell command, a `PATH` entry, or a launcher wrapper. If the host has no valid runtime configured, subagent dispatch fails with setup instructions; the host session can still run. There is no fallback to `PATH` or to rerunning a launcher.
+
+In SDK mode the child uses normal Pi discovery. Configure any providers or tools the child needs through Pi's own configuration. SDK command-line arguments, host-only extensions and inline tools, and the host's project trust approval do not carry over. Bind the SDK session's extensions and use a shutdown path that emits and awaits `session_shutdown` (for example, `await runtime.dispose()` on an `AgentSessionRuntime`); disposing a bare `AgentSession` is not sufficient to run extension cleanup.
 
 ## Tools and execution
 
@@ -64,7 +73,7 @@ Authorize the installed runtime, task files, transcript directory, worktree path
 
 Set `PI_SUBAGENT_SOCKET_ROOT` to an existing, absolute, user-owned private directory (mode `0700`), and authorize socket bind/connect beneath it. An invalid or overlong configured root fails without fallback. Without an override, unsandboxed and Linux launches use the OS temporary directory. If socket paths exceed platform limits, choose a shorter permitted root. Abrupt controller death can leave orphaned socket directories.
 
-For a wrapper smoke test, run `node pi/extensions/subagent/tests/sandbox-smoke.mjs /absolute/path/to/bin/pi` from the repository root (or supply your unsandboxed wrapper). It uses a deterministic provider without paid model calls and retains diagnostic artifacts. It does not test sandbox denial or proxy endpoint access; forced-crash recovery and the sandboxed linked-worktree/subdirectory matrix remain unverified.
+For a wrapper smoke test, run `node pi/extensions/subagent/tests/sandbox-smoke.mjs /absolute/path/to/bin/pi` from the repository root (or supply your unsandboxed wrapper). It uses a deterministic provider without paid model calls and retains diagnostic artifacts. That wrapper test does not check sandbox denial or proxy access. The SDK smoke test below checks both with a disposable nono sandbox and loopback upstream.
 
 ## State and inspection
 
@@ -96,4 +105,6 @@ After the child exits, committed output is retained on `subagent/<agent>/<task_i
 - Children cannot recursively delegate.
 - Prompt-only restrictions are not security boundaries, and children share the controller's proxy capabilities.
 
-Run `node pi/extensions/subagent/tests/run.mjs` from the repository root. The suite uses an in-memory provider without network requests or credentials; real sandbox/proxy compatibility needs separate checks.
+Run `node pi/extensions/subagent/tests/run.mjs` from the repository root. The suite uses a deterministic provider with no paid calls or real credentials. Its SDK smoke test runs an installed Pi CLI, validates a report, and verifies that SDK shutdown reaps a still-active child.
+
+To also check filesystem denial and proxy inheritance, run `NONO_SDK_INTEGRATION=1 node --test pi/extensions/subagent/tests/sdk-smoke.test.mjs` where nono and loopback sockets are available. It uses nono's built-in default profile, a synthetic denied file, and a local HTTP upstream, not your site config or credentials.

@@ -1,5 +1,5 @@
 import {strict as assert} from 'node:assert';
-import {mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
+import {mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
 import {registerHooks} from 'node:module';
 import {homedir, tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
@@ -20,8 +20,9 @@ test('child runtime inherits explicit extensions using the public Pi parser', as
     });
     const {subagentPiRuntime} = await jiti.import('../main/runtime.ts');
     const runtime = {executable: '/runtime/node', args: ['/runtime/pi.js']};
-    const entry = fileURLToPath(new URL('../index.ts', import.meta.url));
+    const entry = realpathSync(fileURLToPath(new URL('../index.ts', import.meta.url)));
     const cwd = "/controller's project";
+    const cliRuntime = (argv) => subagentPiRuntime({mode: 'cli', runtime}, argv, cwd);
     const {parseArgs, DefaultResourceLoader, SettingsManager} = await import(
       '@earendil-works/pi-coding-agent'
     );
@@ -33,10 +34,8 @@ test('child runtime inherits explicit extensions using the public Pi parser', as
         'git:github.com/test/provider', 'https://github.com/test/provider',
         pathToFileURL('/file url/provider.ts').href,
       ];
-      const result = await subagentPiRuntime(
+      const result = await cliRuntime(
         sources.flatMap((source, index) => [index % 2 ? '--extension' : '-e', source]),
-        cwd,
-        runtime,
       );
       assert.equal(result.executable, runtime.executable);
       assert.deepEqual(parseArgs(result.args.slice(1)).extensions, [
@@ -48,13 +47,13 @@ test('child runtime inherits explicit extensions using the public Pi parser', as
     });
 
     await t.test('only recognized selections propagate, never prompt text or approval', async () => {
-      const result = await subagentPiRuntime([
+      const result = await cliRuntime([
         '-ne', '-ns', '-np', '--no-themes', '-nc', '--no-mcp', '--offline',
         '--approve', '--system-prompt', '-e',
         '--extensions', 'not-a-session-alias.ts',
         '-e', './provider.ts', '--extension', './provider.ts',
         '--extension', entry, '--', '-e', './untrusted.ts',
-      ], cwd, runtime);
+      ]);
       const parsed = parseArgs(result.args.slice(1));
       assert.deepEqual(parsed.extensions, [resolve(cwd, 'provider.ts'), entry]);
       assert.equal(parsed.projectTrustOverride, undefined);
@@ -64,17 +63,17 @@ test('child runtime inherits explicit extensions using the public Pi parser', as
       ]) assert.equal(parsed[name], true, name);
       assert.deepEqual(parsed.messages, []);
       assert.equal(parsed.systemPrompt, undefined);
-      const denied = await subagentPiRuntime(['-na'], cwd, runtime);
+      const denied = await cliRuntime(['-na']);
       assert.equal(parseArgs(denied.args.slice(1)).projectTrustOverride, false);
     });
 
     await t.test('required handlers load even with no explicit extensions', async () => {
-      const result = await subagentPiRuntime(['--no-extensions'], cwd, runtime);
+      const result = await cliRuntime(['--no-extensions']);
       assert.deepEqual(parseArgs(result.args.slice(1)).extensions, [entry]);
     });
 
     await t.test('required extension directory and entry point do not load twice', async () => {
-      const result = await subagentPiRuntime(['-e', resolve(entry, '..'), '-e', entry], cwd, runtime);
+      const result = await cliRuntime(['-e', resolve(entry, '..'), '-e', entry]);
       assert.deepEqual(parseArgs(result.args.slice(1)).extensions, [entry]);
     });
 
