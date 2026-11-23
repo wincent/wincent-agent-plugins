@@ -16,6 +16,14 @@ Run `bin/typecheck` from the repository root. Missing type stubs are copied auto
 
 After each Pi upgrade, run `bin/install-types` manually; otherwise checks may still use the previous version's API. Do not run `npm install` here: extensions use Pi's runtime dependencies, and this directory needs only their types.
 
+## MCP authentication
+
+From the repository root on the macOS host, run [`bin/auth status`](../../bin/auth) for expiry dates and suggested fixes. Pass `datadog`, `google`, or `slack` to check just one service. Use `bin/auth login <service>`, `bin/auth refresh <service>`, or `bin/auth logout <service>` to manage it; logout only removes local credentials.
+
+If Pi reports an auth error such as `credential_capture_failed`, start with `bin/auth status`. It checks local credentials only, so if the server rejects an unexpired token, try `bin/auth refresh <service>`. Once auth is fixed, use `/mcp reconnect <server>` in Pi, not `/mcp login` or `/mcp logout`.
+
+Pi uses the host credential proxy. Put only the proxy's phantom token in MCP configuration, and keep real credentials on the host.
+
 ## Extensions
 
 ### `edit-answer.ts`
@@ -62,17 +70,7 @@ Delegates focused tasks to headless Pi agents, with progress in the controlling 
 
 Requires per-call confirmation for writes through Pi's native MCP server named `datadog`, including calls made inside codemode. Unknown or unannotated tools require confirmation too; without a UI they are blocked. Enable built-in MCP and configure the server in `mcp.json` with an `Authorization` header containing the credential proxy's phantom token, not a real credential. Use `/mcp` for connection status and reconnection. The companion `datadog-mcp` skill explains discovery and calls.
 
-Run `bin/datadog-mcp-auth login`, `status`, or `logout` on the host to manage authentication. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token without displaying it. Use only this helper to manage the grant, not Pi's native OAuth commands.
-
-#### Troubleshoot `credential_capture_failed`
-
-If Pi reports `datadog: failed` with HTTP 503 and `credential_capture_failed`, nono could not obtain credentials from the host helper and did not forward the MCP request to Datadog. Pi's `Run /mcp to fix` hint opens connection controls; it does not repair host credentials.
-
-1. From this directory in a host terminal outside the sandbox, run `bin/datadog-mcp-auth status`. An `expired` access token with `refresh_token_present: true` does not mean the grant is invalid: `refresh_validity: not_checked` means `status` did not test the refresh token.
-2. If the access token expired and a refresh token is present, run `bin/datadog-mcp-auth token --refresh >/dev/null`. If the grant is missing, the refresh is rejected, or the helper asks you to sign in, run `bin/datadog-mcp-auth login` on the host. For other failures, check the helper's error and the nono proxy logs; re-signing in won't fix a network or Keychain access problem.
-3. Once the helper is working, run `/mcp reconnect datadog` in Pi. Do not use Pi's `/mcp login` or `/mcp logout` for this server.
-
-The helper defaults to `mcp.datadoghq.com`; `DATADOG_MCP_DOMAIN` selects another site and must match the proxy route and MCP URL. Tokens are stored in the macOS host's default Keychain under service `pi.datadog-mcp`. Run `status` on the host for each configured site to migrate its plaintext tokens; deletion follows a verified Keychain save. Keep the same `$XDG_STATE_HOME` (default `~/.local/state`): `$XDG_STATE_HOME/pi/datadog-mcp/` selects the grants and retains locks and public client-registration metadata. Logout removes tokens but preserves registration. Use the same Python interpreter for host commands and proxy capture, with an unlocked Keychain that permits it access. There is no plaintext fallback or Keychain prompt. All agent modes continue using the host credential proxy; never copy credentials into a sandbox or VM.
+Datadog defaults to `mcp.datadoghq.com`. For another site, set `DATADOG_MCP_DOMAIN` on the host to match the proxy route and MCP URL.
 
 ### `google-workspace-mcp.ts`
 
@@ -80,17 +78,13 @@ Requires per-call confirmation for writes through Pi's native MCP server named `
 
 Enable built-in MCP and configure the service's literal HTTPS `/mcp` URL in `mcp.json` with `Authorization: Bearer ${GOOGLE_WORKSPACE_MCP_TOKEN}`, using the credential proxy's phantom token rather than a real credential. Use `/mcp` for connection status and reconnection. The companion `google-workspace-mcp` skill explains native discovery and calls.
 
-On the host, set `GOOGLE_WORKSPACE_MCP_URL` to the matching resource URL and use `bin/google-workspace-mcp-auth login`, `status`, or `logout`. Select the work account authorized for the configured service. The callback defaults to port `19877`, overridable with `GOOGLE_WORKSPACE_MCP_CALLBACK_PORT`. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token. Use only this helper to manage the grant, not Pi's native OAuth commands.
-
-The client and tokens are stored together in the macOS host's default Keychain under service `pi.google-workspace-mcp`. Run `status` on the host with the configured `GOOGLE_WORKSPACE_MCP_URL` to migrate its plaintext grant; deletion follows a verified Keychain save. Keep the same `$XDG_STATE_HOME` (default `~/.local/state`): `$XDG_STATE_HOME/pi/google-workspace-mcp-host/` selects the grants and holds their locks. Use the same Python interpreter for host commands and proxy capture, with an unlocked Keychain that permits it access. There is no plaintext fallback or Keychain prompt. Logout removes the local client and tokens, not server or Google authorization. All agent modes continue using the host credential proxy; keep credentials and the helper on the host.
+Set `GOOGLE_WORKSPACE_MCP_URL` on the host to that same HTTPS `/mcp` URL before running `bin/auth`. When signing in, select the authorized work account.
 
 ### `slack-mcp.ts`
 
 Requires per-call confirmation for writes through Pi's native MCP server named `slack`, including calls inside codemode. Unknown or unannotated tools require confirmation too; without a UI they are blocked. Configure `https://mcp.slack.com/mcp` in `mcp.json` with an `Authorization` header containing the credential proxy's phantom token, not a real credential. Use `/mcp` for connection status and reconnection. The companion `slack-mcp` skill explains discovery and calls.
 
-Run `bin/slack-mcp-auth login`, `status`, or `logout` on the host to manage authentication. Select the intended workspace on the consent screen. The credential proxy invokes `token` with capture caching disabled; `token --refresh >/dev/null` explicitly refreshes a rejected token without displaying it. Use only this helper to manage the grant, not Pi's native OAuth commands.
-
-Credentials are stored in the macOS host's default Keychain under service `pi.slack-mcp`. Run `status` on the host to migrate an existing plaintext `tokens.json`; the file is removed only after the Keychain save is verified. Keep the same `$XDG_STATE_HOME` (default `~/.local/state`), which selects the grant and holds its lock. Use the same Python interpreter for host commands and proxy capture. The host Keychain must be unlocked and permit that interpreter access; failures do not fall back to plaintext or open Keychain prompts. Sandboxed, non-sandboxed, and VM agents use the same host credential proxy and phantom token; never copy credentials into an agent environment. Slack attributes activity to Claude Code, but no Claude installation is needed.
+When signing in, select the intended Slack workspace. Slack attributes activity to Claude Code, but no Claude installation is needed.
 
 ### `context-breakdown.ts`
 

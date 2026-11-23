@@ -13,11 +13,9 @@ Use `codemode` to discover tools with `searchTools(query, {namespace: "mcp__slac
 
 ## Authentication
 
-Authentication belongs to the host's `pi/extensions/bin/slack-mcp-auth` executable in the wincent-agent-plugins checkout. Pi uses a phantom token through the credential proxy; never copy credentials into a sandbox or VM or put them in MCP configuration.
+On an auth failure, ask the user to run `bin/auth status slack` from the repository root on the host and follow its suggestions. Do not run auth commands on the user's behalf or use Pi's `/mcp login` or `/mcp logout`. Once auth is fixed, reconnect with `/mcp reconnect slack` and retry once.
 
-On an authentication failure, ask the user to run the helper's `status` command on the host. A rejected token may need `token --refresh >/dev/null`; an invalid or missing grant needs `login`. Login opens Slack consent: select the intended workspace, entering its Enterprise address if necessary. These are explicit host actions, not automatic retries. Do not print token output or use Pi's `/mcp login` or `/mcp logout` for this server. After fixing auth, reconnect with `/mcp reconnect slack` and retry once.
-
-Slack attributes activity to Claude Code, but no Claude installation is needed. Use only the host helper to refresh the grant.
+Pi uses the credential proxy's phantom token. Never copy real credentials into a sandbox, VM, or MCP configuration.
 
 ## Writes
 

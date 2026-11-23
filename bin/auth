@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Manage Datadog, Google Workspace, and Slack MCP authentication on the host."""
+
+import argparse
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+
+SERVICES = {
+    'datadog': ('Datadog', 'datadog-mcp-auth'),
+    'google': ('Google Workspace', 'google-workspace-mcp-auth'),
+    'slack': ('Slack', 'slack-mcp-auth'),
+}
+HELPERS = Path(__file__).resolve().parents[1] / 'pi/extensions/bin'
+
+
+def summarize(service, status, command):
+    login = f'{command} login {service}'
+    state = status.get('state') if isinstance(status, dict) else None
+    if state == 'not_signed_in':
+        return f'not signed in. Run: {login}'
+    if state not in ('access_token_valid', 'expired'):
+        raise ValueError('Unexpected auth state')
+
+    expiry_ms = status.get('expires_at_ms')
+    if type(expiry_ms) not in (int, float):
+        raise ValueError('Missing or invalid expiry')
+    expiry = datetime.fromtimestamp(expiry_ms / 1000, timezone.utc).astimezone()
+    stamp = expiry.strftime('%Y-%m-%d %H:%M:%S %Z')
+
+    missing = []
+    if not status.get('refresh_token_present'):
+        missing.append('refresh token')
+    if status.get('client_registered') is False:
+        missing.append('client registration')
+    if state == 'expired':
+        summary = f'access token expired {stamp}.'
+        if missing:
+            return f'{summary} Missing {" and ".join(missing)}; run: {login}'
+        return (f'{summary} Refresh not checked. Try: {command} refresh {service}; '
+                f'if rejected, run: {login}')
+    summary = f'access token expires {stamp}.'
+    if missing:
+        return f'{summary} Missing {" and ".join(missing)}; sign in before expiry: {login}'
+    return summary
+
+
+def show_status(services):
+    command = shlex.quote(sys.argv[0])
+    failed = False
+    for service in services:
+        label, name = SERVICES[service]
+        try:
+            result = subprocess.run([HELPERS / name, 'status'], capture_output=True, text=True, check=True)
+            message = summarize(service, json.loads(result.stdout), command)
+        except subprocess.CalledProcessError as error:
+            detail = error.stderr.strip().removeprefix(f'{name}: ') or f'helper exited with status {error.returncode}'
+            message = f'could not check status: {detail}'
+            failed = True
+        except OSError:
+            message = f'could not check status: unable to run {name} or read the expiry date'
+            failed = True
+        except (ValueError, OverflowError):
+            message = 'could not check status: unexpected status output'
+            failed = True
+        print(f'{label}: {message}')
+    return int(failed)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest='command', required=True)
+    for command, help_text in (
+        ('status', 'Show local auth status for one service or all three'),
+        ('login', 'Sign in on the host'),
+        ('logout', 'Remove the local grant'),
+        ('refresh', 'Refresh the access token without displaying it'),
+    ):
+        subparser = commands.add_parser(command, help=help_text, description=help_text)
+        if command == 'status':
+            subparser.add_argument('service', nargs='?', choices=SERVICES)
+        else:
+            subparser.add_argument('service', choices=SERVICES)
+
+    args = parser.parse_args(argv)
+    if args.command == 'status':
+        return show_status([args.service] if args.service else SERVICES)
+
+    label, name = SERVICES[args.service]
+    helper = HELPERS / name
+    try:
+        if args.command == 'refresh':
+            code = subprocess.run([helper, 'token', '--refresh'], stdout=subprocess.DEVNULL).returncode
+            if code == 0:
+                print(f'{label}: access token refreshed.')
+            return code
+        return subprocess.run([helper, args.command]).returncode
+    except OSError as error:
+        print(f'{label}: could not run {name}: {error.strerror}', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

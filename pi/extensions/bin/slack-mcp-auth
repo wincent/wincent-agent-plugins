@@ -30,6 +30,7 @@ import urllib.request
 import webbrowser
 
 from mcp_auth_keychain import AuthError, Keychain as HostKeychain, reject_orphaned_credentials
+from mcp_auth_status import print_status
 
 # https://docs.slack.dev/ai/slack-mcp-server/connect-to-claude/
 CLIENT_ID = '1601185624273.8899143856786'
@@ -384,7 +385,9 @@ def main(argv=None):
                 delete_tokens(directory)
                 print('Local tokens removed; the Slack app installation was not revoked.')
             else:
-                print(json.dumps(status(directory)))
+                result = status(directory)
+        if args.command == 'status':
+            print_status(result)
         return 0
     except AuthError as error:
         print(f'slack-mcp-auth: {error}', file=sys.stderr)

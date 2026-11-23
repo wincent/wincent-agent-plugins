@@ -29,6 +29,7 @@ import urllib.request
 import webbrowser
 
 from mcp_auth_keychain import AuthError, Keychain as HostKeychain, reject_orphaned_credentials
+from mcp_auth_status import print_status
 
 REFRESH_BUFFER_MS = 300_000
 HTTP_TIMEOUT = 10
@@ -527,7 +528,9 @@ def main(argv=None):
                 delete_grant(directory)
                 print('Local grant removed; no server or Google authorization was revoked.')
             else:
-                print(json.dumps(status(directory, resource)))
+                result = status(directory, resource)
+        if args.command == 'status':
+            print_status(result)
         return 0
     except AuthError as error:
         print(f'google-workspace-mcp-auth: {error}', file=sys.stderr)
