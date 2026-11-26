@@ -1,6 +1,6 @@
 ---
 name: jj-commit
-description: Create a commit (or draft a commit message) in a Jujutsu repository
+description: Create a commit (or draft a commit message) in a Jujutsu repository. Always load before creating or describing a Jujutsu commit.
 ---
 
 # Create a commit (or draft a commit message) in a Jujutsu repository

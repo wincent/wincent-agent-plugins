@@ -1,6 +1,6 @@
 ---
 name: git-commit
-description: Create a commit (or draft a commit message) in a Git repository
+description: Create a commit (or draft a commit message) in a Git repository. Always load before running `git commit` or drafting a commit message.
 ---
 
 # Create a commit (or draft a commit message) in a Git repository
