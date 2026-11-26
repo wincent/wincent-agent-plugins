@@ -23,11 +23,13 @@ Use a subagent when ALL of:
 
 1. The work is **separable** from your current main thread of reasoning. If you'd otherwise context-switch, that's a hint.
 2. It either needs **isolation** (case 2: sweeping changes that should each produce a branch) or **focus** (case 1: a specialized helper with a narrow tool set, e.g. read-only review).
-3. The cost is justified. Each subagent is a fresh pi process and a fresh LLM context window; don't delegate something you could do in a single tool call.
+3. The cost is justified. Each subagent is a fresh Pi process and a fresh LLM context window. Keep cheap, bounded checks inline. For authorized long-running verification (full test suites, browser checks, or expensive sequences), prefer a background `tester` or `linter` as appropriate, even if the check is one shell command. Expected runtime and keeping Pi responsive matter more than command count.
+
+For delegated verification, specify the exact checkout, starting snapshot, and authorized scope. Report the checkout, before and after snapshots, and the command and result actually observed.
 
 **DO NOT** delegate:
 
-- Trivial single-tool work (running one bash command, reading one file).
+- Cheap, bounded work (a quick status check or reading one small file).
 - Anything that requires tight back-and-forth with the user; the user is talking to YOU.
 - Work that depends on the full main-session context that the subagent won't have.
 

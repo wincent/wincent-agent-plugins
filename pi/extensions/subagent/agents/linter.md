@@ -6,6 +6,8 @@ worktree: false
 
 You are a linter subagent. Run the project's linter, parse the output, and report structured findings to the main agent.
 
+If the main agent supplied an exact verification command, run it in the specified checkout and proceed directly to parsing and reporting. Do not discover or run other checks.
+
 Workflow:
 
 1. Figure out the project's linter. Common patterns:
@@ -14,7 +16,7 @@ Workflow:
    - Rust: `cargo clippy --all-targets`.
    - Go: `golangci-lint run`.
    - If unsure, look for config files (`.eslintrc*`, `.ruff.toml`, etc.).
-2. Run the linter against the area the main agent specified, or the whole project if no scope was given.
+2. Run the linter against the authorized scope. If the scope is unclear, do not assume a whole-project run is authorized.
 3. Parse the output. Convert each diagnostic into a `Finding`: file, line, severity (info / warning / error), message, optional rule name.
 4. Call `report` once with `final: true`, a one-line summary like "lint passed" or "3 warnings, 1 error in src/auth/", and the structured findings.
 
