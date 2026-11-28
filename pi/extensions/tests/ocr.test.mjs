@@ -2,11 +2,10 @@ import {strict as assert} from 'node:assert';
 import {EventEmitter} from 'node:events';
 import fs from 'node:fs';
 import {mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile} from 'node:fs/promises';
-import {createRequire, registerHooks, syncBuiltinESMExports} from 'node:module';
+import {registerHooks, syncBuiltinESMExports} from 'node:module';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {test} from 'node:test';
-import {pathToFileURL} from 'node:url';
 import {
   curlConfig,
   ENDPOINT,
@@ -19,19 +18,17 @@ import {
   saveArtifacts,
 } from '../ocr/client.ts';
 
-import {locatePiPackage} from './pi-package.mjs';
+import {piPackageImports} from './pi-package.mjs';
 
 // Use Pi's runtime TypeBox, just as the extension loader does (no npm install).
-const piDir = locatePiPackage();
-const requirePi = createRequire(join(piDir, 'package.json'));
+const packages = piPackageImports(['typebox']);
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier.endsWith('/dialog.js')) specifier = specifier.replace(/\.js$/, '.ts');
-    if (specifier === 'typebox') return {url: pathToFileURL(requirePi.resolve('typebox')).href, shortCircuit: true};
     if (specifier === './client.js' && context.parentURL?.endsWith('/ocr/index.ts')) return {url: new URL('./client.ts', context.parentURL).href, shortCircuit: true};
     if (specifier === '../lib/subagent-state.js' && context.parentURL?.endsWith('/ocr/index.ts')) return {url: new URL('../lib/subagent-state.ts', context.parentURL).href, shortCircuit: true};
     if (specifier === './subagent-identity.js' && context.parentURL?.endsWith('/lib/subagent-state.ts')) return {url: new URL('./subagent-identity.ts', context.parentURL).href, shortCircuit: true};
-    return nextResolve(specifier, context);
+    return packages.resolve(specifier, context, nextResolve);
   },
 });
 let extension, collectSubagentState, SUBAGENT_STATE_ENV;
